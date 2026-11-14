@@ -63,9 +63,93 @@ jobs:
       - name: Build
         run: |
           make build
-          for p in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; do
+          for p in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do
             GOOS=${p%/*} GOARCH=${p#*/} CGO_ENABLED=0 go build -o /dev/null ./cmd/setdrift
           done
+
+  # The release archives, built as a release would build them but published
+  # nowhere, for the install jobs below.
+  release-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
+        with:
+          version: "~> v2"
+          args: release --snapshot --clean
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/checksums.txt
+          retention-days: 3
+
+  # The install commands in README.md, on each OS and CPU a release supports:
+  # each installer fetches those archives from a local server (as from a
+  # release), checks the checksum, installs, and runs setdrift.
+  install-unix:
+    needs: release-build
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist
+      - name: install.sh
+        run: |
+          (cd dist && python3 -m http.server 8765 >/dev/null 2>&1 &)
+          sleep 2
+          version=$(ls dist/*_linux_amd64.tar.gz | sed 's#.*/setdrift_##; s#_linux_amd64.tar.gz##')
+          SETDRIFT_VERSION=$version SETDRIFT_DOWNLOAD_URL=http://127.0.0.1:8765 sh scripts/install.sh
+          bin=$(command -v setdrift || echo "$HOME/.local/bin/setdrift")
+          "$bin" version | grep -F "v$version"
+          "$bin" export --help >/dev/null
+
+  install-windows:
+    needs: release-build
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, windows-11-arm]
+        # PowerShell 7, and the Windows PowerShell 5.1 that every Windows has.
+        shell: [pwsh, powershell]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist
+      - name: install.ps1
+        run: |
+          Start-Process python -ArgumentList '-m', 'http.server', '8765' -WorkingDirectory dist -WindowStyle Hidden
+          Start-Sleep -Seconds 3
+          $version = (Get-ChildItem dist/*_windows_amd64.zip).Name -replace '^setdrift_(.*)_windows_amd64\.zip$', '$1'
+          $env:SETDRIFT_VERSION = $version
+          $env:SETDRIFT_DOWNLOAD_URL = 'http://127.0.0.1:8765'
+          Get-Content -Raw scripts/install.ps1 | Invoke-Expression
+          $exe = Join-Path $env:LOCALAPPDATA 'Programs\setdrift\setdrift.exe'
+          $out = & $exe version
+          $out
+          if ($out -notlike "*v$version*") { throw "setdrift version printed $out" }
+          # On the PATH of this session, and of new terminals.
+          (Get-Command setdrift).Source
+          if (-not ([Environment]::GetEnvironmentVariable('Path', 'User') -split ';' -contains (Split-Path $exe))) { throw 'not on the user PATH' }
 
   # Not here yet: end-to-end export, restore and verify against EKS for the
   # three Kubernetes versions EKS supports (n-2). The harness is in test/e2e;

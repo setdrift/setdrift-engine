@@ -28,9 +28,6 @@ builds:
     # scripts/third-party-notices.sh.
     goos: [linux, darwin, windows]
     goarch: [amd64, arm64]
-    ignore:
-      - goos: windows
-        goarch: arm64
     flags:
       - -trimpath
     ldflags:
@@ -101,7 +98,9 @@ release:
   # v0.1.0-rc.1 and the like are marked pre-release.
   prerelease: auto
   footer: |
-    Install: `brew install setdrift/tap/setdrift`, or
+    Install on macOS and Linux: `brew install setdrift/tap/setdrift`, or
     `curl -fsSL https://raw.githubusercontent.com/setdrift/setdrift-engine/main/scripts/install.sh | sh`.
+    On Windows, in PowerShell:
+    `irm https://raw.githubusercontent.com/setdrift/setdrift-engine/main/scripts/install.ps1 | iex`.
     Each archive's SHA-256 is in checksums.txt, and GitHub attests where each was built:
     `gh attestation verify <archive> --repo setdrift/setdrift-engine`.

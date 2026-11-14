@@ -9,7 +9,7 @@
 # It downloads the archive for this OS and CPU, checks it against the
 # release's checksums.txt, and installs the binary to SETDRIFT_INSTALL_DIR,
 # else /usr/local/bin when writable, else ~/.local/bin. macOS and Linux;
-# on Windows, download the zip from the releases page.
+# on Windows, use scripts/install.ps1 from PowerShell.
 set -eu
 
 repo=setdrift/setdrift-engine
@@ -18,13 +18,12 @@ say() { printf '%s\n' "$*" >&2; }
 fail() { say "setdrift install: $*"; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || fail "needs $1"; }
 
-need curl
-need tar
 need uname
-
 case $(uname -s) in
   Darwin) os=darwin ;;
   Linux) os=linux ;;
+  MINGW* | MSYS* | CYGWIN*)
+    fail "on Windows, install from PowerShell: irm https://raw.githubusercontent.com/$repo/main/scripts/install.ps1 | iex" ;;
   *) fail "unsupported OS $(uname -s): download a release from https://github.com/$repo/releases" ;;
 esac
 case $(uname -m) in
@@ -32,6 +31,8 @@ case $(uname -m) in
   arm64 | aarch64) arch=arm64 ;;
   *) fail "unsupported CPU $(uname -m): download a release from https://github.com/$repo/releases" ;;
 esac
+need curl
+need tar
 
 version=${SETDRIFT_VERSION:-}
 if [ -z "$version" ]; then

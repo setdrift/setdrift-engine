@@ -42,22 +42,33 @@ In a few seconds you get:
 
 ## Install
 
-```sh
-# macOS and Linux, with Homebrew
-brew install setdrift/tap/setdrift
+One command on each OS, for Intel/AMD and ARM:
 
-# macOS and Linux, without Homebrew: the latest release, checked against its checksums
-curl -fsSL https://raw.githubusercontent.com/setdrift/setdrift-engine/main/scripts/install.sh | sh
+| OS | Command |
+|---|---|
+| macOS, Linux (Homebrew) | `brew install setdrift/tap/setdrift` |
+| macOS, Linux, WSL | `curl -fsSL https://raw.githubusercontent.com/setdrift/setdrift-engine/main/scripts/install.sh \| sh` |
+| Windows (PowerShell) | `irm https://raw.githubusercontent.com/setdrift/setdrift-engine/main/scripts/install.ps1 \| iex` |
+| Any, with Go 1.27+ | `go install setdrift.io/setdrift-engine/cmd/setdrift@latest` |
 
-# With Go
-go install setdrift.io/setdrift-engine/cmd/setdrift@latest
-```
+- **The scripts** download the latest release for your OS and CPU, check it
+  against the release's `checksums.txt`, and install `setdrift`:
+  - `install.sh` installs to `/usr/local/bin` when it can write there,
+    else `~/.local/bin`;
+  - `install.ps1` installs to `%LOCALAPPDATA%\Programs\setdrift` and adds it
+    to your user PATH.
 
-On Windows, download the zip from the
-[releases](https://github.com/setdrift/setdrift-engine/releases). Each
-release lists its archives' SHA-256 in `checksums.txt`, and GitHub attests
-where each was built (`gh attestation verify <archive> --repo
-setdrift/setdrift-engine`).
+  `SETDRIFT_VERSION=v0.1.0` installs a given release, and
+  `SETDRIFT_INSTALL_DIR` sets the directory. Neither script needs
+  administrator rights.
+- **By hand:** every archive is on the
+  [releases](https://github.com/setdrift/setdrift-engine/releases) page: a
+  `.tar.gz` for macOS and Linux, a `.zip` for Windows. Unpack it and put
+  `setdrift` on your PATH.
+- **Checking a release:** GitHub attests where each archive was built:
+  `gh attestation verify <archive> --repo setdrift/setdrift-engine`.
+
+Check it works with `setdrift version`.
 
 ## Quick start
 
@@ -267,7 +278,9 @@ workflow ([.github/workflows/release.yaml](.github/workflows/release.yaml))
 tests, then runs GoReleaser ([.goreleaser.yaml](.goreleaser.yaml)): archives
 for macOS, Linux and Windows with `checksums.txt` on the GitHub release, the
 formula in [setdrift/homebrew-tap](https://github.com/setdrift/homebrew-tap),
-and build provenance attestations. Run `make e2e-restore` before a release.
+and build provenance attestations. CI builds the same archives on every
+pull request and runs both installers on Linux, macOS and Windows, on
+Intel/AMD and ARM. Run `make e2e-restore` before a release.
 
 ## Compatibility
 

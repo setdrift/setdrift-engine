@@ -19,7 +19,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 out=THIRD_PARTY_NOTICES
-platforms="linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64"
+platforms="linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64"
 self=$(go list -m)
 
 # module|version|dir for each dependency module, across all platforms
