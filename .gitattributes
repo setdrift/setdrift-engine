@@ -1,0 +1,4 @@
+# Line endings the scripts need whatever the checkout platform: the
+# Windows post-renderer script must keep CRLF, shell scripts LF.
+*.cmd text eol=crlf
+*.sh  text eol=lf

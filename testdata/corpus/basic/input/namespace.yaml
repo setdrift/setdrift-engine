@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: shop
+  uid: 0b6f0000-0000-0000-0000-000000000001
+  resourceVersion: "101"
+  creationTimestamp: "2026-10-01T00:00:00Z"
+  labels:
+    kubernetes.io/metadata.name: shop
+  managedFields:
+  - manager: kubectl-create
+    operation: Update
+    apiVersion: v1
+spec:
+  finalizers:
+  - kubernetes
+status:
+  phase: Active

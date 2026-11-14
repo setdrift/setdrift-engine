@@ -1,0 +1,59 @@
+# Argo CD-managed Deployment, plus the ReplicaSet and Pod it owns.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: shop
+  uid: 0b6f0000-0000-0000-0000-000000000010
+  generation: 3
+  annotations:
+    argocd.argoproj.io/tracking-id: shop-web:apps/Deployment:shop/web
+    deployment.kubernetes.io/revision: "3"
+spec:
+  replicas: 3
+  selector:
+    matchLabels: {app: web}
+  template:
+    metadata:
+      labels: {app: web}
+    spec:
+      containers:
+      - name: web
+        image: ghcr.io/example/web:1.4.2
+        resources:
+          requests: {cpu: 100m, memory: 128Mi}
+status:
+  replicas: 3
+  readyReplicas: 3
+---
+apiVersion: apps/v1
+kind: ReplicaSet
+metadata:
+  name: web-7c9f8d
+  namespace: shop
+  uid: 0b6f0000-0000-0000-0000-000000000011
+  ownerReferences:
+  - apiVersion: apps/v1
+    kind: Deployment
+    name: web
+    uid: 0b6f0000-0000-0000-0000-000000000010
+    controller: true
+spec:
+  replicas: 3
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: web-7c9f8d-abcde
+  namespace: shop
+  uid: 0b6f0000-0000-0000-0000-000000000012
+  ownerReferences:
+  - apiVersion: apps/v1
+    kind: ReplicaSet
+    name: web-7c9f8d
+    uid: 0b6f0000-0000-0000-0000-000000000011
+    controller: true
+spec:
+  containers:
+  - name: web
+    image: ghcr.io/example/web:1.4.2

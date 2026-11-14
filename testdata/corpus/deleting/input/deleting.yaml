@@ -1,0 +1,94 @@
+# Objects being deleted (metadata.deletionTimestamp set) are skipped, so a
+# GitOps tool doesn't recreate what someone deleted. Normalize would otherwise
+# remove deletionTimestamp and export them as if they were live.
+
+# A Namespace stuck in Terminating behind a finalizer for 3 days: skipped,
+# and so is everything in it, with or without its own deletionTimestamp.
+# Both it and the ConfigMap stuck for 6 hours are reported as DELETION_STUCK;
+# the Deployment, deleting for 0 minutes at capture time, is not.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: old-team
+  uid: d0000000-0000-0000-0000-000000000001
+  deletionTimestamp: "2025-12-29T00:00:00Z"
+  finalizers: [example.com/cleanup]
+spec: {finalizers: [kubernetes]}
+status: {phase: Terminating}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: leftovers, namespace: old-team, uid: d0000000-0000-0000-0000-000000000002}
+data: {a: "1"}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: stuck
+  namespace: old-team
+  uid: d0000000-0000-0000-0000-000000000003
+  deletionTimestamp: "2025-12-31T18:00:00Z"
+  finalizers: [example.com/cleanup]
+data: {b: "2"}
+---
+# A live Namespace.
+apiVersion: v1
+kind: Namespace
+metadata: {name: app, uid: d0000000-0000-0000-0000-000000000010}
+spec: {finalizers: [kubernetes]}
+status: {phase: Active}
+---
+# A Deployment being deleted in the foreground: skipped. Its ReplicaSet and
+# Pod are dropped as its children.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: legacy
+  namespace: app
+  uid: d0000000-0000-0000-0000-000000000011
+  deletionTimestamp: "2026-01-01T00:00:00Z"
+  finalizers: [foregroundDeletion]
+spec:
+  selector: {matchLabels: {app: legacy}}
+  template:
+    metadata: {labels: {app: legacy}}
+    spec:
+      containers: [{name: legacy, image: ghcr.io/example/legacy:1}]
+---
+apiVersion: apps/v1
+kind: ReplicaSet
+metadata:
+  name: legacy-6c9f
+  namespace: app
+  uid: d0000000-0000-0000-0000-000000000012
+  ownerReferences:
+  - {apiVersion: apps/v1, kind: Deployment, name: legacy, uid: d0000000-0000-0000-0000-000000000011, controller: true}
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: legacy-6c9f-q2w4e
+  namespace: app
+  uid: d0000000-0000-0000-0000-000000000013
+  ownerReferences:
+  - {apiVersion: apps/v1, kind: ReplicaSet, name: legacy-6c9f, uid: d0000000-0000-0000-0000-000000000012, controller: true}
+status: {phase: Running}
+---
+# A bare Pod in graceful termination: skipped, not flagged BARE_POD.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: debug
+  namespace: app
+  uid: d0000000-0000-0000-0000-000000000014
+  deletionTimestamp: "2026-01-01T00:00:30Z"
+  deletionGracePeriodSeconds: 30
+spec:
+  containers: [{name: sh, image: busybox:1.36}]
+status: {phase: Running}
+---
+# A live object in the live Namespace: exported.
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: settings, namespace: app, uid: d0000000-0000-0000-0000-000000000015}
+data: {mode: live}

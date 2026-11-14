@@ -1,0 +1,90 @@
+# Copyright The SetDrift Authors
+# SPDX-License-Identifier: Apache-2.0
+# Cluster-scoped test objects (client-side kubectl apply).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: sd-apps
+  labels:
+    team: shop
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: sd-ssa
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: sd-imperative
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: gp3
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
+provisioner: ebs.csi.eks.amazonaws.com
+parameters:
+  type: gp3
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: sd-high
+value: 100000
+globalDefault: false
+description: SetDrift test priority
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: sd-reader
+rules:
+- apiGroups: [""]
+  resources: [pods, configmaps]
+  verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: sd-reader
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: sd-reader
+subjects:
+- kind: Group
+  name: sd-readers
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: networking.k8s.io/v1
+kind: IngressClass
+metadata:
+  name: sd-none
+spec:
+  controller: example.com/no-such-controller
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: widgets.example.com
+spec:
+  group: example.com
+  names: {kind: Widget, plural: widgets, singular: widget}
+  scope: Namespaced
+  versions:
+  - name: v1
+    served: true
+    storage: true
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          spec:
+            type: object
+            properties:
+              color: {type: string}
+              size: {type: integer, default: 3}

@@ -1,0 +1,18 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  labels:
+    team: data
+  name: backfill
+  namespace: batch
+spec:
+  backoffLimit: 2
+  template:
+    metadata:
+      labels:
+        team: data
+    spec:
+      containers:
+      - image: ghcr.io/example/backfill:3
+        name: backfill
+      restartPolicy: Never

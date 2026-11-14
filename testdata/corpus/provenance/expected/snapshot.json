@@ -1,0 +1,562 @@
+{
+  "capturedAt": "2026-01-01T00:00:00Z",
+  "cluster": {
+    "name": "golden",
+    "kubernetesVersion": "v1.35.0"
+  },
+  "findings": [
+    {
+      "severity": "SEVERITY_INFO",
+      "code": "HELM_RELEASE_RECORDS_SKIPPED",
+      "message": "3 Helm release records in namespace \"apps\" were not exported (Helm's release history; applying it would corrupt Helm's state)"
+    }
+  ],
+  "id": "golden",
+  "producer": {
+    "name": "setdrift-test",
+    "version": "test"
+  },
+  "resources": [
+    {
+      "apiVersion": "v1",
+      "kind": "ConfigMap",
+      "manifest": {
+        "apiVersion": "v1",
+        "data": {
+          "plan": "monthly"
+        },
+        "kind": "ConfigMap",
+        "metadata": {
+          "labels": {
+            "app.kubernetes.io/instance": "billing"
+          },
+          "name": "billing",
+          "namespace": "apps"
+        }
+      },
+      "name": "billing",
+      "namespace": "apps",
+      "provenance": {
+        "source": "SOURCE_ARGO_CD",
+        "manager": "argocd/billing",
+        "evidence": {
+          "app.kubernetes.io/instance": "billing",
+          "confidence": "low"
+        }
+      },
+      "sourceUid": "e0000000-0000-0000-0000-000000000022"
+    },
+    {
+      "apiVersion": "v1",
+      "findings": [
+        {
+          "severity": "SEVERITY_WARNING",
+          "code": "MANAGER_NOT_FOUND",
+          "message": "carries the markers of Helm release apps/old, which is not in the cluster; it was probably deleted without deleting this object, so nothing manages it now"
+        }
+      ],
+      "kind": "ConfigMap",
+      "manifest": {
+        "apiVersion": "v1",
+        "data": {
+          "true": "2"
+        },
+        "kind": "ConfigMap",
+        "metadata": {
+          "annotations": {
+            "helm.sh/resource-policy": "keep"
+          },
+          "name": "kept",
+          "namespace": "apps"
+        }
+      },
+      "name": "kept",
+      "namespace": "apps",
+      "provenance": {
+        "source": "SOURCE_HELM",
+        "manager": "apps/old",
+        "evidence": {
+          "app.kubernetes.io/managed-by": "Helm",
+          "meta.helm.sh/release-name": "old"
+        }
+      },
+      "sourceUid": "e0000000-0000-0000-0000-000000000054"
+    },
+    {
+      "apiVersion": "v1",
+      "findings": [
+        {
+          "severity": "SEVERITY_WARNING",
+          "code": "MANAGER_NOT_FOUND",
+          "message": "carries the markers of Argo CD Application retired, which is not in the cluster; it was probably deleted without deleting this object, so nothing manages it now"
+        }
+      ],
+      "kind": "ConfigMap",
+      "manifest": {
+        "apiVersion": "v1",
+        "data": {
+          "x": "1"
+        },
+        "kind": "ConfigMap",
+        "metadata": {
+          "name": "legacy",
+          "namespace": "apps"
+        }
+      },
+      "name": "legacy",
+      "namespace": "apps",
+      "provenance": {
+        "source": "SOURCE_ARGO_CD",
+        "manager": "retired",
+        "evidence": {
+          "argocd.argoproj.io/tracking-id": "retired:/ConfigMap:apps/legacy"
+        }
+      },
+      "sourceUid": "e0000000-0000-0000-0000-000000000024"
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "ConfigMap",
+      "manifest": {
+        "apiVersion": "v1",
+        "data": {
+          "by": "hand"
+        },
+        "kind": "ConfigMap",
+        "metadata": {
+          "name": "manual",
+          "namespace": "apps"
+        }
+      },
+      "name": "manual",
+      "namespace": "apps",
+      "provenance": {
+        "source": "SOURCE_UNMANAGED"
+      },
+      "sourceUid": "e0000000-0000-0000-0000-000000000060"
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "ConfigMap",
+      "manifest": {
+        "apiVersion": "v1",
+        "data": {
+          "scrape": "30s"
+        },
+        "kind": "ConfigMap",
+        "metadata": {
+          "name": "metrics",
+          "namespace": "apps"
+        }
+      },
+      "name": "metrics",
+      "namespace": "apps",
+      "provenance": {
+        "source": "SOURCE_HELM",
+        "manager": "apps/metrics",
+        "evidence": {
+          "app.kubernetes.io/managed-by": "Helm",
+          "meta.helm.sh/release-name": "metrics"
+        }
+      },
+      "sourceUid": "e0000000-0000-0000-0000-000000000050"
+    },
+    {
+      "apiVersion": "v1",
+      "findings": [
+        {
+          "severity": "SEVERITY_WARNING",
+          "code": "MANAGER_NOT_FOUND",
+          "message": "carries the markers of Flux Kustomization flux-system/retired, which is not in the cluster; it was probably deleted without deleting this object, so nothing manages it now"
+        }
+      ],
+      "kind": "ConfigMap",
+      "manifest": {
+        "apiVersion": "v1",
+        "data": {
+          "size": "5"
+        },
+        "kind": "ConfigMap",
+        "metadata": {
+          "name": "old-queue",
+          "namespace": "apps"
+        }
+      },
+      "name": "old-queue",
+      "namespace": "apps",
+      "provenance": {
+        "source": "SOURCE_FLUX",
+        "manager": "flux-system/retired",
+        "evidence": {
+          "kustomize.toolkit.fluxcd.io/name": "retired"
+        }
+      },
+      "sourceUid": "e0000000-0000-0000-0000-000000000042"
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "ConfigMap",
+      "manifest": {
+        "apiVersion": "v1",
+        "data": {
+          "currency": "EUR"
+        },
+        "kind": "ConfigMap",
+        "metadata": {
+          "name": "payments",
+          "namespace": "apps"
+        }
+      },
+      "name": "payments",
+      "namespace": "apps",
+      "provenance": {
+        "source": "SOURCE_ARGO_CD",
+        "manager": "argocd/payments",
+        "evidence": {
+          "argocd.argoproj.io/tracking-id": "payments:/ConfigMap:apps/payments"
+        }
+      },
+      "sourceUid": "e0000000-0000-0000-0000-000000000020"
+    },
+    {
+      "apiVersion": "v1",
+      "findings": [
+        {
+          "severity": "SEVERITY_INFO",
+          "code": "ARGOCD_TRACKING_ID_MISMATCH",
+          "message": "the argocd.argoproj.io/tracking-id annotation \"payments:/ConfigMap:apps/payments\" names another object, so Argo CD does not manage this one; it was probably copied from that object"
+        }
+      ],
+      "kind": "ConfigMap",
+      "manifest": {
+        "apiVersion": "v1",
+        "data": {
+          "currency": "EUR"
+        },
+        "kind": "ConfigMap",
+        "metadata": {
+          "name": "payments-backup",
+          "namespace": "apps"
+        }
+      },
+      "name": "payments-backup",
+      "namespace": "apps",
+      "provenance": {
+        "source": "SOURCE_UNMANAGED"
+      },
+      "sourceUid": "e0000000-0000-0000-0000-000000000021"
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "ConfigMap",
+      "manifest": {
+        "apiVersion": "v1",
+        "data": {
+          "size": "10"
+        },
+        "kind": "ConfigMap",
+        "metadata": {
+          "name": "queue",
+          "namespace": "apps"
+        }
+      },
+      "name": "queue",
+      "namespace": "apps",
+      "provenance": {
+        "source": "SOURCE_FLUX",
+        "manager": "flux-system/apps",
+        "evidence": {
+          "kustomize.toolkit.fluxcd.io/name": "apps"
+        }
+      },
+      "sourceUid": "e0000000-0000-0000-0000-000000000040"
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "ConfigMap",
+      "manifest": {
+        "apiVersion": "v1",
+        "data": {
+          "maxmemory": "256mb"
+        },
+        "kind": "ConfigMap",
+        "metadata": {
+          "name": "redis",
+          "namespace": "apps"
+        }
+      },
+      "name": "redis",
+      "namespace": "apps",
+      "provenance": {
+        "source": "SOURCE_FLUX",
+        "manager": "flux-system/redis",
+        "evidence": {
+          "helm.toolkit.fluxcd.io/name": "redis"
+        }
+      },
+      "sourceUid": "e0000000-0000-0000-0000-000000000041"
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "ConfigMap",
+      "manifest": {
+        "apiVersion": "v1",
+        "data": {
+          "z": "3"
+        },
+        "kind": "ConfigMap",
+        "metadata": {
+          "name": "static",
+          "namespace": "apps"
+        }
+      },
+      "name": "static",
+      "namespace": "apps",
+      "provenance": {
+        "source": "SOURCE_HELM",
+        "evidence": {
+          "app.kubernetes.io/managed-by": "Helm",
+          "confidence": "low"
+        }
+      },
+      "sourceUid": "e0000000-0000-0000-0000-000000000055"
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "ConfigMap",
+      "manifest": {
+        "apiVersion": "v1",
+        "data": {
+          "mode": "live"
+        },
+        "kind": "ConfigMap",
+        "metadata": {
+          "name": "settings",
+          "namespace": "team-a"
+        }
+      },
+      "name": "settings",
+      "namespace": "team-a",
+      "provenance": {
+        "source": "SOURCE_ARGO_CD",
+        "manager": "team-a/web",
+        "evidence": {
+          "argocd.argoproj.io/tracking-id": "team-a_web:/ConfigMap:team-a/settings"
+        }
+      },
+      "sourceUid": "e0000000-0000-0000-0000-000000000023"
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Namespace",
+      "manifest": {
+        "apiVersion": "v1",
+        "kind": "Namespace",
+        "metadata": {
+          "name": "apps"
+        }
+      },
+      "name": "apps",
+      "provenance": {
+        "source": "SOURCE_UNMANAGED"
+      },
+      "sourceUid": "e0000000-0000-0000-0000-000000000001"
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Namespace",
+      "manifest": {
+        "apiVersion": "v1",
+        "kind": "Namespace",
+        "metadata": {
+          "name": "argocd"
+        }
+      },
+      "name": "argocd",
+      "provenance": {
+        "source": "SOURCE_UNMANAGED"
+      },
+      "sourceUid": "e0000000-0000-0000-0000-000000000002"
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Namespace",
+      "manifest": {
+        "apiVersion": "v1",
+        "kind": "Namespace",
+        "metadata": {
+          "name": "flux-system"
+        }
+      },
+      "name": "flux-system",
+      "provenance": {
+        "source": "SOURCE_UNMANAGED"
+      },
+      "sourceUid": "e0000000-0000-0000-0000-000000000004"
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Namespace",
+      "manifest": {
+        "apiVersion": "v1",
+        "kind": "Namespace",
+        "metadata": {
+          "name": "team-a"
+        }
+      },
+      "name": "team-a",
+      "provenance": {
+        "source": "SOURCE_UNMANAGED"
+      },
+      "sourceUid": "e0000000-0000-0000-0000-000000000003"
+    },
+    {
+      "apiVersion": "argoproj.io/v1alpha1",
+      "kind": "Application",
+      "manifest": {
+        "apiVersion": "argoproj.io/v1alpha1",
+        "kind": "Application",
+        "metadata": {
+          "name": "billing",
+          "namespace": "argocd"
+        },
+        "spec": {
+          "destination": {
+            "namespace": "apps",
+            "server": "https://kubernetes.default.svc"
+          },
+          "project": "default",
+          "source": {
+            "chart": "billing",
+            "repoURL": "https://charts.example.com",
+            "targetRevision": "1.2.0"
+          }
+        }
+      },
+      "name": "billing",
+      "namespace": "argocd",
+      "provenance": {
+        "source": "SOURCE_UNMANAGED"
+      },
+      "sourceUid": "e0000000-0000-0000-0000-000000000011"
+    },
+    {
+      "apiVersion": "argoproj.io/v1alpha1",
+      "kind": "Application",
+      "manifest": {
+        "apiVersion": "argoproj.io/v1alpha1",
+        "kind": "Application",
+        "metadata": {
+          "name": "payments",
+          "namespace": "argocd"
+        },
+        "spec": {
+          "destination": {
+            "namespace": "apps",
+            "server": "https://kubernetes.default.svc"
+          },
+          "project": "default",
+          "source": {
+            "path": "payments",
+            "repoURL": "https://github.com/example/deploy",
+            "targetRevision": "main"
+          }
+        }
+      },
+      "name": "payments",
+      "namespace": "argocd",
+      "provenance": {
+        "source": "SOURCE_UNMANAGED"
+      },
+      "sourceUid": "e0000000-0000-0000-0000-000000000010"
+    },
+    {
+      "apiVersion": "argoproj.io/v1alpha1",
+      "kind": "Application",
+      "manifest": {
+        "apiVersion": "argoproj.io/v1alpha1",
+        "kind": "Application",
+        "metadata": {
+          "name": "web",
+          "namespace": "team-a"
+        },
+        "spec": {
+          "destination": {
+            "namespace": "team-a",
+            "server": "https://kubernetes.default.svc"
+          },
+          "project": "team-a",
+          "source": {
+            "path": "web",
+            "repoURL": "https://github.com/example/team-a",
+            "targetRevision": "main"
+          }
+        }
+      },
+      "name": "web",
+      "namespace": "team-a",
+      "provenance": {
+        "source": "SOURCE_UNMANAGED"
+      },
+      "sourceUid": "e0000000-0000-0000-0000-000000000012"
+    },
+    {
+      "apiVersion": "helm.toolkit.fluxcd.io/v2",
+      "kind": "HelmRelease",
+      "manifest": {
+        "apiVersion": "helm.toolkit.fluxcd.io/v2",
+        "kind": "HelmRelease",
+        "metadata": {
+          "name": "redis",
+          "namespace": "flux-system"
+        },
+        "spec": {
+          "chart": {
+            "spec": {
+              "chart": "redis",
+              "sourceRef": {
+                "kind": "HelmRepository",
+                "name": "bitnami"
+              }
+            }
+          },
+          "interval": "10m"
+        }
+      },
+      "name": "redis",
+      "namespace": "flux-system",
+      "provenance": {
+        "source": "SOURCE_UNMANAGED"
+      },
+      "sourceUid": "e0000000-0000-0000-0000-000000000031"
+    },
+    {
+      "apiVersion": "kustomize.toolkit.fluxcd.io/v1",
+      "kind": "Kustomization",
+      "manifest": {
+        "apiVersion": "kustomize.toolkit.fluxcd.io/v1",
+        "kind": "Kustomization",
+        "metadata": {
+          "name": "apps",
+          "namespace": "flux-system"
+        },
+        "spec": {
+          "interval": "10m",
+          "path": "./apps",
+          "prune": true,
+          "sourceRef": {
+            "kind": "GitRepository",
+            "name": "flux-system"
+          }
+        }
+      },
+      "name": "apps",
+      "namespace": "flux-system",
+      "provenance": {
+        "source": "SOURCE_UNMANAGED"
+      },
+      "sourceUid": "e0000000-0000-0000-0000-000000000030"
+    }
+  ],
+  "schemaVersion": "setdrift.snapshot.v1alpha1"
+}

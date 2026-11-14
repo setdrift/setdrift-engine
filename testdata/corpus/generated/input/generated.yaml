@@ -1,0 +1,238 @@
+# Objects the cluster creates itself, with no ownerReferences: skipped, with
+# a count per source. Look-alikes that are configuration are exported.
+apiVersion: v1
+kind: Namespace
+metadata: {name: shop, uid: a1000000-0000-0000-0000-000000000001, labels: {kubernetes.io/metadata.name: shop}}
+spec: {finalizers: [kubernetes]}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: kube-root-ca.crt, namespace: shop, uid: a1000000-0000-0000-0000-000000000002}
+data: {ca.crt: "-----BEGIN CERTIFICATE-----"}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: kube-root-ca.crt, namespace: default, uid: a1000000-0000-0000-0000-000000000003}
+data: {ca.crt: "-----BEGIN CERTIFICATE-----"}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: extension-apiserver-authentication, namespace: kube-system, uid: a1000000-0000-0000-0000-000000000004}
+data: {client-ca-file: "-----BEGIN CERTIFICATE-----"}
+---
+# EKS keeps IAM mappings here: configuration, exported.
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: aws-auth, namespace: kube-system, uid: a1000000-0000-0000-0000-000000000005}
+data: {mapRoles: "- rolearn: arn:aws:iam::111122223333:role/nodes\n  username: system:node:{{EC2PrivateDNSName}}\n"}
+---
+# Untouched default ServiceAccount: skipped. With an IRSA role: exported.
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: default, namespace: default, uid: a1000000-0000-0000-0000-000000000010}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: default
+  namespace: shop
+  uid: a1000000-0000-0000-0000-000000000011
+  annotations: {eks.amazonaws.com/role-arn: "arn:aws:iam::111122223333:role/shop"}
+---
+# The kubernetes Service and its Endpoints: skipped.
+apiVersion: v1
+kind: Service
+metadata: {name: kubernetes, namespace: default, uid: a1000000-0000-0000-0000-000000000020, labels: {component: apiserver, provider: kubernetes}}
+spec:
+  clusterIP: 172.20.0.1
+  ports: [{name: https, port: 443, protocol: TCP, targetPort: 443}]
+  type: ClusterIP
+---
+apiVersion: v1
+kind: Endpoints
+metadata: {name: kubernetes, namespace: default, uid: a1000000-0000-0000-0000-000000000021}
+subsets: [{addresses: [{ip: 10.0.0.10}], ports: [{name: https, port: 443}]}]
+---
+# A Service with a selector: its Endpoints are the controller's, skipped.
+apiVersion: v1
+kind: Service
+metadata: {name: web, namespace: shop, uid: a1000000-0000-0000-0000-000000000022}
+spec:
+  selector: {app: web}
+  ports: [{port: 80}]
+---
+apiVersion: v1
+kind: Endpoints
+metadata: {name: web, namespace: shop, uid: a1000000-0000-0000-0000-000000000023}
+subsets: [{addresses: [{ip: 10.0.1.5}], ports: [{port: 80}]}]
+---
+# A Service without a selector: its Endpoints are configuration, exported.
+# The EndpointSlice mirrored from them is the mirroring controller's.
+apiVersion: v1
+kind: Service
+metadata: {name: legacy-db, namespace: shop, uid: a1000000-0000-0000-0000-000000000024}
+spec:
+  ports: [{port: 5432}]
+---
+apiVersion: v1
+kind: Endpoints
+metadata: {name: legacy-db, namespace: shop, uid: a1000000-0000-0000-0000-000000000025}
+subsets: [{addresses: [{ip: 10.20.0.5}], ports: [{port: 5432}]}]
+---
+apiVersion: discovery.k8s.io/v1
+kind: EndpointSlice
+metadata:
+  name: legacy-db-abcde
+  namespace: shop
+  uid: a1000000-0000-0000-0000-000000000026
+  labels:
+    endpointslice.kubernetes.io/managed-by: endpointslicemirroring-controller.k8s.io
+    kubernetes.io/service-name: legacy-db
+addressType: IPv4
+endpoints: [{addresses: [10.20.0.5]}]
+ports: [{port: 5432}]
+---
+# Default RBAC: skipped. A cluster role someone wrote: exported.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata: {name: view, uid: a1000000-0000-0000-0000-000000000030, labels: {kubernetes.io/bootstrapping: rbac-defaults}}
+rules: [{apiGroups: [""], resources: [pods], verbs: [get, list]}]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata: {name: "system:basic-user", uid: a1000000-0000-0000-0000-000000000031, labels: {kubernetes.io/bootstrapping: rbac-defaults}}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: "system:basic-user"}
+subjects: [{apiGroup: rbac.authorization.k8s.io, kind: Group, name: "system:authenticated"}]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata: {name: shop-reader, uid: a1000000-0000-0000-0000-000000000032}
+rules: [{apiGroups: [""], resources: [configmaps], verbs: [get]}]
+---
+# Built-in APIService: skipped. metrics-server's: exported.
+apiVersion: apiregistration.k8s.io/v1
+kind: APIService
+metadata: {name: v1.apps, uid: a1000000-0000-0000-0000-000000000040, labels: {kube-aggregator.kubernetes.io/automanaged: onstart}}
+spec: {group: apps, version: v1, groupPriorityMinimum: 17800, versionPriority: 15}
+---
+apiVersion: apiregistration.k8s.io/v1
+kind: APIService
+metadata: {name: v1beta1.metrics.k8s.io, uid: a1000000-0000-0000-0000-000000000041}
+spec:
+  group: metrics.k8s.io
+  version: v1beta1
+  groupPriorityMinimum: 100
+  versionPriority: 100
+  insecureSkipTLSVerify: true
+  service: {name: metrics-server, namespace: kube-system}
+---
+# API priority and fairness: the API server keeps "true" ones up to date;
+# "false" means someone took it over.
+apiVersion: flowcontrol.apiserver.k8s.io/v1
+kind: FlowSchema
+metadata: {name: global-default, uid: a1000000-0000-0000-0000-000000000050, annotations: {apf.kubernetes.io/autoupdate-spec: "true"}}
+spec: {matchingPrecedence: 9900, priorityLevelConfiguration: {name: global-default}}
+---
+apiVersion: flowcontrol.apiserver.k8s.io/v1
+kind: FlowSchema
+metadata: {name: workload-low, uid: a1000000-0000-0000-0000-000000000051, annotations: {apf.kubernetes.io/autoupdate-spec: "false"}}
+spec: {matchingPrecedence: 9000, priorityLevelConfiguration: {name: workload-low}}
+---
+# Dynamically provisioned volume: skipped. A static one: exported.
+apiVersion: v1
+kind: PersistentVolume
+metadata: {name: pvc-0c1d2e3f, uid: a1000000-0000-0000-0000-000000000060, annotations: {pv.kubernetes.io/provisioned-by: ebs.csi.aws.com}}
+spec:
+  accessModes: [ReadWriteOnce]
+  capacity: {storage: 20Gi}
+  csi: {driver: ebs.csi.aws.com, volumeHandle: vol-0abc}
+  persistentVolumeReclaimPolicy: Delete
+  storageClassName: gp3
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata: {name: shared-efs, uid: a1000000-0000-0000-0000-000000000061}
+spec:
+  accessModes: [ReadWriteMany]
+  capacity: {storage: 1Ti}
+  csi: {driver: efs.csi.aws.com, volumeHandle: "fs-0123::fsap-0456"}
+  persistentVolumeReclaimPolicy: Retain
+---
+# Runtime state: Nodes and Leases are not collected at all.
+apiVersion: v1
+kind: Node
+metadata: {name: ip-10-0-1-23.ec2.internal, uid: a1000000-0000-0000-0000-000000000070}
+---
+apiVersion: coordination.k8s.io/v1
+kind: Lease
+metadata: {name: ip-10-0-1-23.ec2.internal, namespace: kube-node-lease, uid: a1000000-0000-0000-0000-000000000071}
+---
+# A static Pod's mirror: a child of its Node.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: kube-proxy-ip-10-0-1-23
+  namespace: kube-system
+  uid: a1000000-0000-0000-0000-000000000072
+  annotations: {kubernetes.io/config.mirror: "8e5b7c"}
+  ownerReferences:
+  - {apiVersion: v1, kind: Node, name: ip-10-0-1-23.ec2.internal, uid: a1000000-0000-0000-0000-000000000070, controller: true}
+spec:
+  containers: [{name: kube-proxy, image: kube-proxy:v1.35.0}]
+status: {phase: Running}
+---
+# Claims a StatefulSet created from its volumeClaimTemplates (Retain policy,
+# so no ownerReference): skipped, the StatefulSet creates them again.
+# data-db-x and a claim for a template the StatefulSet doesn't have are
+# configuration.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: {name: db, namespace: shop, uid: a1000000-0000-0000-0000-000000000080}
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app: db}
+  serviceName: db
+  template:
+    metadata:
+      labels: {app: db}
+    spec:
+      containers: [{name: postgres, image: "postgres:16"}]
+  volumeClaimTemplates:
+  - metadata: {name: data}
+    spec:
+      accessModes: [ReadWriteOnce]
+      resources:
+        requests: {storage: 10Gi}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {name: data-db-0, namespace: shop, uid: a1000000-0000-0000-0000-000000000081, labels: {app: db}}
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests: {storage: 10Gi}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {name: data-db-1, namespace: shop, uid: a1000000-0000-0000-0000-000000000082, labels: {app: db}}
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests: {storage: 10Gi}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {name: data-db-x, namespace: shop, uid: a1000000-0000-0000-0000-000000000083}
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests: {storage: 1Gi}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {name: logs-db-0, namespace: shop, uid: a1000000-0000-0000-0000-000000000084}
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests: {storage: 1Gi}

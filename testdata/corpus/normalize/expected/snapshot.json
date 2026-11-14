@@ -1,0 +1,756 @@
+{
+  "capturedAt": "2026-01-01T00:00:00Z",
+  "cluster": {
+    "name": "golden",
+    "kubernetesVersion": "v1.35.0"
+  },
+  "findings": [
+    {
+      "severity": "SEVERITY_INFO",
+      "code": "JOBS_WITHOUT_TTL",
+      "message": "1 Job in namespace \"shop\" has no ttlSecondsAfterFinished and is kept after finishing until deleted by hand: migrate"
+    }
+  ],
+  "id": "golden",
+  "inventory": {
+    "volumes": [
+      {
+        "namespace": "shop",
+        "claim": "data",
+        "persistentVolume": "pvc-0c1d2e3f-4a5b-6c7d-8e9f-0a1b2c3d4e5f",
+        "storageClass": "gp3",
+        "accessModes": [
+          "ReadWriteOnce"
+        ]
+      }
+    ]
+  },
+  "producer": {
+    "name": "setdrift-test",
+    "version": "test"
+  },
+  "resources": [
+    {
+      "apiVersion": "v1",
+      "kind": "ConfigMap",
+      "manifest": {
+        "apiVersion": "v1",
+        "data": {
+          "k": "v"
+        },
+        "kind": "ConfigMap",
+        "metadata": {
+          "name": "report-x7k2p",
+          "namespace": "shop"
+        }
+      },
+      "name": "report-x7k2p",
+      "namespace": "shop",
+      "provenance": {
+        "source": "SOURCE_UNMANAGED"
+      },
+      "sourceUid": "f0000000-0000-0000-0000-000000000061"
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "PersistentVolumeClaim",
+      "manifest": {
+        "apiVersion": "v1",
+        "kind": "PersistentVolumeClaim",
+        "metadata": {
+          "name": "data",
+          "namespace": "shop"
+        },
+        "spec": {
+          "accessModes": [
+            "ReadWriteOnce"
+          ],
+          "resources": {
+            "requests": {
+              "storage": "20Gi"
+            }
+          },
+          "storageClassName": "gp3"
+        }
+      },
+      "name": "data",
+      "namespace": "shop",
+      "provenance": {
+        "source": "SOURCE_UNMANAGED"
+      },
+      "sourceUid": "f0000000-0000-0000-0000-000000000020"
+    },
+    {
+      "apiVersion": "v1",
+      "findings": [
+        {
+          "severity": "SEVERITY_INFO",
+          "code": "STORAGE_CLASS_DROPPED",
+          "message": "storage class gp3 was filled in from the cluster's default class, not set in the manifest, so it was left out and a new cluster's default class applies; set storageClassName in the manifest to keep gp3"
+        }
+      ],
+      "kind": "PersistentVolumeClaim",
+      "manifest": {
+        "apiVersion": "v1",
+        "kind": "PersistentVolumeClaim",
+        "metadata": {
+          "name": "scratch",
+          "namespace": "shop"
+        },
+        "spec": {
+          "accessModes": [
+            "ReadWriteOnce"
+          ],
+          "resources": {
+            "requests": {
+              "storage": "5Gi"
+            }
+          }
+        }
+      },
+      "name": "scratch",
+      "namespace": "shop",
+      "provenance": {
+        "source": "SOURCE_UNMANAGED"
+      },
+      "sourceUid": "f0000000-0000-0000-0000-000000000021"
+    },
+    {
+      "apiVersion": "v1",
+      "findings": [
+        {
+          "severity": "SEVERITY_WARNING",
+          "code": "BARE_POD",
+          "message": "pod has no controller and will not be recreated if deleted; consider a Deployment or Job"
+        }
+      ],
+      "kind": "Pod",
+      "manifest": {
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": {
+          "name": "toolbox",
+          "namespace": "shop"
+        },
+        "spec": {
+          "containers": [
+            {
+              "image": "ghcr.io/example/toolbox",
+              "name": "toolbox"
+            }
+          ],
+          "nodeName": "ip-10-0-1-23.ec2.internal",
+          "tolerations": [
+            {
+              "effect": "NoSchedule",
+              "key": "dedicated",
+              "operator": "Equal",
+              "value": "tools"
+            }
+          ]
+        }
+      },
+      "name": "toolbox",
+      "namespace": "shop",
+      "provenance": {
+        "source": "SOURCE_UNMANAGED"
+      },
+      "sourceUid": "f0000000-0000-0000-0000-000000000040"
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Service",
+      "manifest": {
+        "apiVersion": "v1",
+        "kind": "Service",
+        "metadata": {
+          "name": "api",
+          "namespace": "shop"
+        },
+        "spec": {
+          "ports": [
+            {
+              "name": "http",
+              "port": 80,
+              "targetPort": 8080
+            },
+            {
+              "name": "metrics",
+              "port": 9090
+            }
+          ],
+          "selector": {
+            "app": "api"
+          }
+        }
+      },
+      "name": "api",
+      "namespace": "shop",
+      "provenance": {
+        "source": "SOURCE_UNMANAGED"
+      },
+      "sourceUid": "f0000000-0000-0000-0000-000000000010"
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Service",
+      "manifest": {
+        "apiVersion": "v1",
+        "kind": "Service",
+        "metadata": {
+          "name": "db",
+          "namespace": "shop"
+        },
+        "spec": {
+          "clusterIP": "None",
+          "clusterIPs": [
+            "None"
+          ],
+          "ports": [
+            {
+              "port": 5432
+            }
+          ],
+          "selector": {
+            "app": "db"
+          }
+        }
+      },
+      "name": "db",
+      "namespace": "shop",
+      "provenance": {
+        "source": "SOURCE_UNMANAGED"
+      },
+      "sourceUid": "f0000000-0000-0000-0000-000000000011"
+    },
+    {
+      "apiVersion": "v1",
+      "findings": [
+        {
+          "severity": "SEVERITY_INFO",
+          "code": "NODE_PORT_DROPPED",
+          "message": "node port 31443 was assigned by the cluster, not set in the applied manifest, so it was left out and a new cluster assigns its own; set it in the manifest if something outside the cluster depends on it"
+        }
+      ],
+      "kind": "Service",
+      "manifest": {
+        "apiVersion": "v1",
+        "kind": "Service",
+        "metadata": {
+          "name": "edge",
+          "namespace": "shop"
+        },
+        "spec": {
+          "ports": [
+            {
+              "name": "http",
+              "nodePort": 30080,
+              "port": 80,
+              "targetPort": 8080
+            },
+            {
+              "name": "https",
+              "port": 443,
+              "targetPort": 8443
+            }
+          ],
+          "selector": {
+            "app": "edge"
+          },
+          "type": "NodePort"
+        }
+      },
+      "name": "edge",
+      "namespace": "shop",
+      "provenance": {
+        "source": "SOURCE_UNMANAGED"
+      },
+      "sourceUid": "f0000000-0000-0000-0000-000000000050"
+    },
+    {
+      "apiVersion": "v1",
+      "findings": [
+        {
+          "severity": "SEVERITY_INFO",
+          "code": "NODE_PORT_DROPPED",
+          "message": "node ports 31080, 32001 (health check) were assigned by the cluster, not set in the applied manifest, so they were left out and a new cluster assigns its own; set them in the manifest if something outside the cluster depends on them"
+        }
+      ],
+      "kind": "Service",
+      "manifest": {
+        "apiVersion": "v1",
+        "kind": "Service",
+        "metadata": {
+          "name": "ingress",
+          "namespace": "shop"
+        },
+        "spec": {
+          "externalTrafficPolicy": "Local",
+          "ports": [
+            {
+              "port": 80,
+              "targetPort": 8080
+            },
+            {
+              "nodePort": 30900,
+              "port": 9000
+            }
+          ],
+          "selector": {
+            "app": "ingress"
+          },
+          "type": "LoadBalancer"
+        }
+      },
+      "name": "ingress",
+      "namespace": "shop",
+      "provenance": {
+        "source": "SOURCE_UNMANAGED"
+      },
+      "sourceUid": "f0000000-0000-0000-0000-000000000051"
+    },
+    {
+      "apiVersion": "apps/v1",
+      "kind": "DaemonSet",
+      "manifest": {
+        "apiVersion": "apps/v1",
+        "kind": "DaemonSet",
+        "metadata": {
+          "name": "log-agent",
+          "namespace": "shop"
+        },
+        "spec": {
+          "selector": {
+            "matchLabels": {
+              "app": "log-agent"
+            }
+          },
+          "template": {
+            "metadata": {
+              "labels": {
+                "app": "log-agent"
+              }
+            },
+            "spec": {
+              "containers": [
+                {
+                  "image": "fluent/fluent-bit:latest",
+                  "name": "agent",
+                  "volumeMounts": [
+                    {
+                      "mountPath": "/var/log",
+                      "name": "logs"
+                    }
+                  ]
+                }
+              ],
+              "volumes": [
+                {
+                  "hostPath": {
+                    "path": "/var/log"
+                  },
+                  "name": "logs"
+                },
+                {
+                  "configMap": {
+                    "name": "fluent-bit"
+                  },
+                  "name": "config"
+                }
+              ]
+            }
+          }
+        }
+      },
+      "name": "log-agent",
+      "namespace": "shop",
+      "provenance": {
+        "source": "SOURCE_UNMANAGED"
+      },
+      "sourceUid": "f0000000-0000-0000-0000-000000000031"
+    },
+    {
+      "apiVersion": "apps/v1",
+      "kind": "Deployment",
+      "manifest": {
+        "apiVersion": "apps/v1",
+        "kind": "Deployment",
+        "metadata": {
+          "labels": {
+            "app": "api"
+          },
+          "name": "api",
+          "namespace": "shop"
+        },
+        "spec": {
+          "selector": {
+            "matchLabels": {
+              "app": "api"
+            }
+          },
+          "template": {
+            "metadata": {
+              "labels": {
+                "app": "api"
+              }
+            },
+            "spec": {
+              "containers": [
+                {
+                  "image": "ghcr.io/example/api:2.1.0",
+                  "name": "api",
+                  "ports": [
+                    {
+                      "containerPort": 8080
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      },
+      "name": "api",
+      "namespace": "shop",
+      "provenance": {
+        "source": "SOURCE_UNMANAGED"
+      },
+      "sourceUid": "f0000000-0000-0000-0000-000000000001"
+    },
+    {
+      "apiVersion": "apps/v1",
+      "kind": "Deployment",
+      "manifest": {
+        "apiVersion": "apps/v1",
+        "kind": "Deployment",
+        "metadata": {
+          "name": "restarted",
+          "namespace": "shop"
+        },
+        "spec": {
+          "selector": {
+            "matchLabels": {
+              "app": "restarted"
+            }
+          },
+          "template": {
+            "metadata": {
+              "annotations": {
+                "prometheus.io/scrape": "true"
+              },
+              "labels": {
+                "app": "restarted"
+              }
+            },
+            "spec": {
+              "containers": [
+                {
+                  "image": "ghcr.io/example/app:1",
+                  "name": "app"
+                }
+              ]
+            }
+          }
+        }
+      },
+      "name": "restarted",
+      "namespace": "shop",
+      "provenance": {
+        "source": "SOURCE_UNMANAGED"
+      },
+      "sourceUid": "f0000000-0000-0000-0000-000000000060"
+    },
+    {
+      "apiVersion": "apps/v1",
+      "kind": "Deployment",
+      "manifest": {
+        "apiVersion": "apps/v1",
+        "kind": "Deployment",
+        "metadata": {
+          "labels": {
+            "app": "worker"
+          },
+          "name": "worker",
+          "namespace": "shop"
+        },
+        "spec": {
+          "replicas": 3,
+          "selector": {
+            "matchLabels": {
+              "app": "worker"
+            }
+          },
+          "strategy": {
+            "type": "Recreate"
+          },
+          "template": {
+            "metadata": {
+              "labels": {
+                "app": "worker"
+              }
+            },
+            "spec": {
+              "containers": [
+                {
+                  "image": "ghcr.io/example/worker:1.4.0",
+                  "imagePullPolicy": "Always",
+                  "livenessProbe": {
+                    "httpGet": {
+                      "path": "/healthz",
+                      "port": 8080
+                    },
+                    "periodSeconds": 30
+                  },
+                  "name": "worker"
+                }
+              ]
+            }
+          }
+        }
+      },
+      "name": "worker",
+      "namespace": "shop",
+      "provenance": {
+        "source": "SOURCE_ARGO_CD",
+        "manager": "shop",
+        "evidence": {
+          "argocd.argoproj.io/tracking-id": "shop:apps/Deployment:shop/worker"
+        }
+      },
+      "sourceUid": "f0000000-0000-0000-0000-000000000002"
+    },
+    {
+      "apiVersion": "apps/v1",
+      "kind": "StatefulSet",
+      "manifest": {
+        "apiVersion": "apps/v1",
+        "kind": "StatefulSet",
+        "metadata": {
+          "name": "db",
+          "namespace": "shop"
+        },
+        "spec": {
+          "selector": {
+            "matchLabels": {
+              "app": "db"
+            }
+          },
+          "serviceName": "db",
+          "template": {
+            "metadata": {
+              "labels": {
+                "app": "db"
+              }
+            },
+            "spec": {
+              "containers": [
+                {
+                  "image": "postgres:16",
+                  "name": "postgres",
+                  "volumeMounts": [
+                    {
+                      "mountPath": "/var/lib/postgresql/data",
+                      "name": "data"
+                    }
+                  ]
+                }
+              ]
+            }
+          },
+          "volumeClaimTemplates": [
+            {
+              "apiVersion": "v1",
+              "kind": "PersistentVolumeClaim",
+              "metadata": {
+                "name": "data"
+              },
+              "spec": {
+                "accessModes": [
+                  "ReadWriteOnce"
+                ],
+                "resources": {
+                  "requests": {
+                    "storage": "10Gi"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      },
+      "name": "db",
+      "namespace": "shop",
+      "provenance": {
+        "source": "SOURCE_UNMANAGED"
+      },
+      "sourceUid": "f0000000-0000-0000-0000-000000000030"
+    },
+    {
+      "apiVersion": "batch/v1",
+      "kind": "CronJob",
+      "manifest": {
+        "apiVersion": "batch/v1",
+        "kind": "CronJob",
+        "metadata": {
+          "name": "report",
+          "namespace": "shop"
+        },
+        "spec": {
+          "jobTemplate": {
+            "spec": {
+              "template": {
+                "spec": {
+                  "containers": [
+                    {
+                      "image": "ghcr.io/example/report:3",
+                      "name": "report"
+                    }
+                  ],
+                  "restartPolicy": "OnFailure"
+                }
+              }
+            }
+          },
+          "schedule": "0 3 * * *"
+        }
+      },
+      "name": "report",
+      "namespace": "shop",
+      "provenance": {
+        "source": "SOURCE_UNMANAGED"
+      },
+      "sourceUid": "f0000000-0000-0000-0000-000000000032"
+    },
+    {
+      "apiVersion": "batch/v1",
+      "findings": [
+        {
+          "severity": "SEVERITY_WARNING",
+          "code": "RUN_ONCE_EXPORTED",
+          "message": "Job runs once; committed to Git, a GitOps tool recreates it whenever it is deleted, and it runs again; consider a CronJob, or a sync hook (argocd.argoproj.io/hook or helm.sh/hook) so it runs on deploy"
+        }
+      ],
+      "kind": "Job",
+      "manifest": {
+        "apiVersion": "batch/v1",
+        "kind": "Job",
+        "metadata": {
+          "name": "migrate",
+          "namespace": "shop"
+        },
+        "spec": {
+          "completions": 1,
+          "parallelism": 5,
+          "template": {
+            "spec": {
+              "containers": [
+                {
+                  "image": "ghcr.io/example/migrate:2",
+                  "name": "migrate"
+                }
+              ],
+              "restartPolicy": "Never"
+            }
+          }
+        }
+      },
+      "name": "migrate",
+      "namespace": "shop",
+      "provenance": {
+        "source": "SOURCE_UNMANAGED"
+      },
+      "sourceUid": "f0000000-0000-0000-0000-000000000033"
+    },
+    {
+      "apiVersion": "networking.k8s.io/v1",
+      "kind": "NetworkPolicy",
+      "manifest": {
+        "apiVersion": "networking.k8s.io/v1",
+        "kind": "NetworkPolicy",
+        "metadata": {
+          "name": "allow-web",
+          "namespace": "shop"
+        },
+        "spec": {
+          "egress": [
+            {
+              "ports": [
+                {
+                  "port": 53,
+                  "protocol": "UDP"
+                }
+              ]
+            }
+          ],
+          "ingress": [
+            {
+              "ports": [
+                {
+                  "port": 8080
+                }
+              ]
+            }
+          ],
+          "podSelector": {
+            "matchLabels": {
+              "app": "web"
+            }
+          }
+        }
+      },
+      "name": "allow-web",
+      "namespace": "shop",
+      "provenance": {
+        "source": "SOURCE_UNMANAGED"
+      },
+      "sourceUid": "f0000000-0000-0000-0000-000000000070"
+    },
+    {
+      "apiVersion": "networking.k8s.io/v1",
+      "kind": "NetworkPolicy",
+      "manifest": {
+        "apiVersion": "networking.k8s.io/v1",
+        "kind": "NetworkPolicy",
+        "metadata": {
+          "name": "deny-egress",
+          "namespace": "shop"
+        },
+        "spec": {
+          "podSelector": {},
+          "policyTypes": [
+            "Ingress",
+            "Egress"
+          ]
+        }
+      },
+      "name": "deny-egress",
+      "namespace": "shop",
+      "provenance": {
+        "source": "SOURCE_UNMANAGED"
+      },
+      "sourceUid": "f0000000-0000-0000-0000-000000000071"
+    },
+    {
+      "apiVersion": "storage.k8s.io/v1",
+      "kind": "StorageClass",
+      "manifest": {
+        "apiVersion": "storage.k8s.io/v1",
+        "kind": "StorageClass",
+        "metadata": {
+          "name": "gp3"
+        },
+        "parameters": {
+          "type": "gp3"
+        },
+        "provisioner": "ebs.csi.aws.com",
+        "volumeBindingMode": "WaitForFirstConsumer"
+      },
+      "name": "gp3",
+      "provenance": {
+        "source": "SOURCE_UNMANAGED"
+      },
+      "sourceUid": "a1000000-0000-0000-0000-000000000070"
+    }
+  ],
+  "schemaVersion": "setdrift.snapshot.v1alpha1"
+}

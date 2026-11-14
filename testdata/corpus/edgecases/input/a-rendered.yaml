@@ -1,0 +1,41 @@
+# Helm-style rendered output: comment-only documents between objects.
+---
+# Source: shop/templates/configmap.yaml
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: settings
+  namespace: shop
+data:
+  mode: first
+---
+	
+  
+---
+# Two ClusterRoles whose names map to the same file name, and two that differ
+# only by case.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: "ops:viewer"
+rules: []
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: ops_viewer
+rules: []
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: Admin
+rules: []
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: admin
+rules: []
+# trailing comment

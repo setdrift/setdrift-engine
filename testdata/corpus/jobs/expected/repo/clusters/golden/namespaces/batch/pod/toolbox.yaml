@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: toolbox
+  namespace: batch
+spec:
+  containers:
+  - image: ghcr.io/example/toolbox:1
+    name: toolbox

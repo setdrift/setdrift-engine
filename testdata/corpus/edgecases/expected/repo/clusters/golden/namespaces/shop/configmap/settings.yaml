@@ -1,0 +1,7 @@
+apiVersion: v1
+data:
+  mode: first
+kind: ConfigMap
+metadata:
+  name: settings
+  namespace: shop

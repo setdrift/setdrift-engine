@@ -1,0 +1,21 @@
+# Copyright The SetDrift Authors
+# SPDX-License-Identifier: Apache-2.0
+
+# Weekly pull requests that update dependencies
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      # k8s libraries are released together and must stay on the same minor version,
+      kubernetes:
+        patterns: ["k8s.io/*", "sigs.k8s.io/*"]
+      # The AWS SDK modules depend on each other's versions.
+      aws:
+        patterns: ["github.com/aws/*"]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

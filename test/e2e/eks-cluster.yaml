@@ -1,0 +1,321 @@
+# Copyright The SetDrift Authors
+# SPDX-License-Identifier: Apache-2.0
+
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  SetDrift end-to-end test cluster: EKS Auto Mode with its own VPC, correct
+  cluster and node roles, and access entries for each kind of credentials
+  setdrift runs with (admin, cluster-wide read-only, one-namespace read-only).
+  Also a Pod Identity role so External Secrets Operator can read the secrets
+  the export's ExternalSecrets point at. Deploy one stack per supported
+  Kubernetes version (EKS n-2).
+
+Parameters:
+  ClusterName:
+    Type: String
+    Default: setdrift-e2e
+    AllowedPattern: "[a-zA-Z][-a-zA-Z0-9]{0,99}"
+  KubernetesVersion:
+    Type: String
+    Default: "1.37"
+    AllowedValues: ["1.37", "1.36", "1.35"]
+    Description: Current EKS version and the two before it.
+  AdminPrincipalArn:
+    Type: String
+    Description: >-
+      IAM role or user that runs kubectl, setdrift export and setdrift verify
+      (verify needs patch permission for its dry-run applies). Use a role ARN,
+      not an assumed-role session ARN.
+  LimitedNamespace:
+    Type: String
+    Default: sd-apps
+    Description: Namespace the namespace-limited reader can read.
+  VpcCidr:
+    Type: String
+    Default: 10.42.0.0/16
+
+Resources:
+  # ---------------------------------------------------------------- network
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags: [{Key: Name, Value: !Ref ClusterName}]
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+  GatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties: {VpcId: !Ref Vpc, InternetGatewayId: !Ref InternetGateway}
+
+  # Public subnets hold the NAT gateway and internet-facing load balancers
+  # (found by the kubernetes.io/role/elb tag). Nodes run in private subnets.
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      CidrBlock: !Select [0, !Cidr [!Ref VpcCidr, 6, 12]]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - {Key: Name, Value: !Sub "${ClusterName}-public-a"}
+        - {Key: kubernetes.io/role/elb, Value: "1"}
+  PublicSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      CidrBlock: !Select [1, !Cidr [!Ref VpcCidr, 6, 12]]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - {Key: Name, Value: !Sub "${ClusterName}-public-b"}
+        - {Key: kubernetes.io/role/elb, Value: "1"}
+  PrivateSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      CidrBlock: !Select [2, !Cidr [!Ref VpcCidr, 6, 12]]
+      Tags:
+        - {Key: Name, Value: !Sub "${ClusterName}-private-a"}
+        - {Key: kubernetes.io/role/internal-elb, Value: "1"}
+  PrivateSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      CidrBlock: !Select [3, !Cidr [!Ref VpcCidr, 6, 12]]
+      Tags:
+        - {Key: Name, Value: !Sub "${ClusterName}-private-b"}
+        - {Key: kubernetes.io/role/internal-elb, Value: "1"}
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties: {VpcId: !Ref Vpc}
+  PublicDefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: GatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+  PublicSubnetARoutes:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: {SubnetId: !Ref PublicSubnetA, RouteTableId: !Ref PublicRouteTable}
+  PublicSubnetBRoutes:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: {SubnetId: !Ref PublicSubnetB, RouteTableId: !Ref PublicRouteTable}
+
+  # One NAT gateway keeps cost down; nodes pull images and the test installs
+  # Argo CD, Flux and External Secrets Operator from the internet.
+  NatEip:
+    Type: AWS::EC2::EIP
+    DependsOn: GatewayAttachment
+    Properties: {Domain: vpc}
+  NatGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatEip.AllocationId
+      SubnetId: !Ref PublicSubnetA
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties: {VpcId: !Ref Vpc}
+  PrivateDefaultRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway
+  PrivateSubnetARoutes:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: {SubnetId: !Ref PrivateSubnetA, RouteTableId: !Ref PrivateRouteTable}
+  PrivateSubnetBRoutes:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties: {SubnetId: !Ref PrivateSubnetB, RouteTableId: !Ref PrivateRouteTable}
+
+  # ------------------------------------------------------------------ roles
+  # Assumed by EKS to run the control plane and Auto Mode's managed
+  # compute, storage, load balancing and networking.
+  ClusterRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: {Service: eks.amazonaws.com}
+            Action: [sts:AssumeRole, sts:TagSession]
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/AmazonEKSClusterPolicy
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/AmazonEKSComputePolicy
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/AmazonEKSBlockStoragePolicyV2
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/AmazonEKSLoadBalancingPolicy
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/AmazonEKSNetworkingPolicy
+
+  # Assumed by the EC2 instances Auto Mode launches; trusts ec2, not eks.
+  # EKS creates the node access entry (type EC2) for it.
+  NodeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: {Service: ec2.amazonaws.com}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/AmazonEKSWorkerNodeMinimalPolicy
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/AmazonEC2ContainerRegistryPullOnly
+
+  # The credentials real users export with. Anyone in the account allowed to
+  # assume them can (use `aws eks update-kubeconfig --role-arn`).
+  ReaderRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: setdrift export with cluster-wide read-only access (Secrets included)
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: {AWS: !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:root"}
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: describe-cluster
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: eks:DescribeCluster
+                Resource: !GetAtt Cluster.Arn
+  NamespaceReaderRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: setdrift export with read-only access to one namespace (no Secrets)
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: {AWS: !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:root"}
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: describe-cluster
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: eks:DescribeCluster
+                Resource: !GetAtt Cluster.Arn
+
+  # External Secrets Operator reads the values the export's ExternalSecrets
+  # name ({{.Cluster}}/{{.Namespace}}/{{.Name}} by default, or /<...> in
+  # Parameter Store), via EKS Pod Identity (the agent is built into Auto Mode).
+  ExternalSecretsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: {Service: pods.eks.amazonaws.com}
+            Action: [sts:AssumeRole, sts:TagSession]
+      Policies:
+        - PolicyName: read-test-secrets
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: [secretsmanager:GetSecretValue, secretsmanager:DescribeSecret]
+                Resource: !Sub arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${ClusterName}/*
+              - Effect: Allow
+                Action: [ssm:GetParameter, ssm:GetParameters, ssm:GetParametersByPath]
+                Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ClusterName}/*
+
+  # ---------------------------------------------------------------- cluster
+  Cluster:
+    Type: AWS::EKS::Cluster
+    Properties:
+      Name: !Ref ClusterName
+      Version: !Ref KubernetesVersion
+      RoleArn: !GetAtt ClusterRole.Arn
+      BootstrapSelfManagedAddons: false
+      AccessConfig:
+        AuthenticationMode: API
+        # Admin access is the explicit entry below, so the creator may differ
+        # from the admin without a duplicate entry.
+        BootstrapClusterCreatorAdminPermissions: false
+      ComputeConfig:
+        Enabled: true
+        NodePools: [general-purpose, system]
+        NodeRoleArn: !GetAtt NodeRole.Arn
+      KubernetesNetworkConfig:
+        ElasticLoadBalancing: {Enabled: true}
+      StorageConfig:
+        BlockStorage: {Enabled: true}
+      ResourcesVpcConfig:
+        SubnetIds: [!Ref PrivateSubnetA, !Ref PrivateSubnetB]
+        EndpointPublicAccess: true
+        EndpointPrivateAccess: true
+
+  # Clusters created in the console get it by default, and HPAs need it.
+  MetricsServer:
+    Type: AWS::EKS::Addon
+    Properties:
+      ClusterName: !Ref Cluster
+      AddonName: metrics-server
+
+  AdminAccess:
+    Type: AWS::EKS::AccessEntry
+    Properties:
+      ClusterName: !Ref Cluster
+      PrincipalArn: !Ref AdminPrincipalArn
+      AccessPolicies:
+        - PolicyArn: !Sub arn:${AWS::Partition}:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy
+          AccessScope: {Type: cluster}
+
+  # Read everything, Secrets included: what export needs for a full export.
+  ReaderAccess:
+    Type: AWS::EKS::AccessEntry
+    Properties:
+      ClusterName: !Ref Cluster
+      PrincipalArn: !GetAtt ReaderRole.Arn
+      AccessPolicies:
+        - PolicyArn: !Sub arn:${AWS::Partition}:eks::aws:cluster-access-policy/AmazonEKSAdminViewPolicy
+          AccessScope: {Type: cluster}
+
+  # The view policy in one namespace: no Secrets, no cluster scope, no
+  # namespace list. Exercises the NAMESPACE_SCOPED_ACCESS fallback.
+  NamespaceReaderAccess:
+    Type: AWS::EKS::AccessEntry
+    Properties:
+      ClusterName: !Ref Cluster
+      PrincipalArn: !GetAtt NamespaceReaderRole.Arn
+      AccessPolicies:
+        - PolicyArn: !Sub arn:${AWS::Partition}:eks::aws:cluster-access-policy/AmazonEKSViewPolicy
+          AccessScope:
+            Type: namespace
+            Namespaces: [!Ref LimitedNamespace]
+
+  ExternalSecretsPodIdentity:
+    Type: AWS::EKS::PodIdentityAssociation
+    Properties:
+      ClusterName: !Ref Cluster
+      Namespace: external-secrets
+      ServiceAccount: external-secrets
+      RoleArn: !GetAtt ExternalSecretsRole.Arn
+
+Outputs:
+  ClusterName:
+    Value: !Ref Cluster
+  AdminKubeconfig:
+    Value: !Sub aws eks update-kubeconfig --region ${AWS::Region} --name ${Cluster} --alias ${Cluster}-admin
+  ReaderKubeconfig:
+    Value: !Sub aws eks update-kubeconfig --region ${AWS::Region} --name ${Cluster} --alias ${Cluster}-reader --role-arn ${ReaderRole.Arn}
+  NamespaceReaderKubeconfig:
+    Value: !Sub aws eks update-kubeconfig --region ${AWS::Region} --name ${Cluster} --alias ${Cluster}-ns-reader --role-arn ${NamespaceReaderRole.Arn}
+  ExternalSecretsRoleArn:
+    Value: !GetAtt ExternalSecretsRole.Arn
+  SecretNamePrefix:
+    Description: Create the test secrets under this prefix (matches the default --secret-key-template)
+    Value: !Sub ${ClusterName}/

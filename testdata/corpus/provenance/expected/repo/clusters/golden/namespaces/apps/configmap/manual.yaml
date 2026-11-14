@@ -1,0 +1,7 @@
+apiVersion: v1
+data:
+  by: hand
+kind: ConfigMap
+metadata:
+  name: manual
+  namespace: apps

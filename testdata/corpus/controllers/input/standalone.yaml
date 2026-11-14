@@ -1,0 +1,55 @@
+# Objects the collector must fetch in full because nothing exported owns
+# them. Each has children, so if it vanishes between the list and the fetch
+# (a Job removed by its TTL, a ReplicaSet deleted during cleanup), the
+# children must be fetched instead.
+apiVersion: apps/v1
+kind: ReplicaSet
+metadata: {name: legacy-cache, namespace: store, uid: d0000000-0000-0000-0000-000000000030}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: legacy-cache}}
+  template:
+    metadata: {labels: {app: legacy-cache}}
+    spec:
+      containers: [{name: redis, image: redis:7}]
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: legacy-cache-q2w8x
+  namespace: store
+  uid: d0000000-0000-0000-0000-000000000031
+  labels: {app: legacy-cache}
+  ownerReferences:
+  - {apiVersion: apps/v1, kind: ReplicaSet, name: legacy-cache, uid: d0000000-0000-0000-0000-000000000030, controller: true}
+spec:
+  containers: [{name: redis, image: redis:7}]
+status: {phase: Running}
+---
+apiVersion: batch/v1
+kind: Job
+metadata: {name: reprice, namespace: store, uid: d0000000-0000-0000-0000-000000000040}
+spec:
+  ttlSecondsAfterFinished: 60
+  manualSelector: true
+  selector: {matchLabels: {job: reprice}}
+  template:
+    metadata: {labels: {job: reprice}}
+    spec:
+      restartPolicy: Never
+      containers: [{name: reprice, image: store/reprice:3}]
+status: {active: 1}
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: reprice-7hd2k
+  namespace: store
+  uid: d0000000-0000-0000-0000-000000000041
+  labels: {job: reprice}
+  ownerReferences:
+  - {apiVersion: batch/v1, kind: Job, name: reprice, uid: d0000000-0000-0000-0000-000000000040, controller: true}
+spec:
+  restartPolicy: Never
+  containers: [{name: reprice, image: store/reprice:3}]
+status: {phase: Running}

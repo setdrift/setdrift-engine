@@ -1,0 +1,314 @@
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0
+
+syntax = "proto3";
+
+package setdrift.snapshot.v1alpha1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "setdrift.io/setdrift-engine/pkg/snapshot/v1alpha1;snapshotv1alpha1";
+
+// the service contract between components, pipeline passes it between
+message Snapshot {
+  // schema identifier eg setdrift.snapshot.v1alpha1
+  string schema_version = 1;
+  // uid for capture
+  string id = 2;
+  google.protobuf.Timestamp captured_at = 3;
+  // nested message defined below
+  Cluster cluster = 4;
+  //  nested message defined below
+  Producer producer = 5;
+  // nested array of messages defined below 
+  repeated Resource resources = 6;
+  // nested message defined below
+  repeated Finding findings = 7;
+  // what restoring the cluster elsewhere needs beyond the manifests
+  Inventory inventory = 8;
+}
+
+// cluster info, export.go generated
+message Cluster {
+  // shortname
+  string name = 1;
+  string kubernetes_version = 2;
+  // platform refers to kubernetes platform, e.g. eks, aks, gke not cloud provider name
+  string platform = 3;
+  // resource uid, e.g. eks arn for aws, azure resource id for aks on azure
+  string provider_id = 4;
+  // what the platform classification found, with its evidence; platform
+  // above is its distribution, kept for readers of older snapshots
+  Platform classification = 5;
+}
+
+// The platform a cluster runs on, from weighed evidence (pkg/platform).
+message Platform {
+  // eks, aks, gke, openshift, k3s, rke2, kubeadm, kind, minikube,
+  // docker-desktop; empty when unknown
+  string distribution = 1;
+  // aws, azure, gcp, local, other; empty when unknown
+  string infrastructure = 2;
+  // managed, self-managed; empty when unknown
+  string managed = 3;
+  string region = 4;
+  // high, medium, low; empty when there was no evidence. Platform-specific
+  // rules apply only at medium or high.
+  string confidence = 5;
+  string infra_confidence = 6;
+  repeated PlatformEvidence evidence = 7;
+  // strong evidence for something else than the result; any conflict sets
+  // both confidences to low
+  repeated string conflicts = 8;
+}
+
+// One piece of evidence for the platform classification.
+message PlatformEvidence {
+  // kubeconfig, server, node, object, aws
+  string source = 1;
+  // what was seen, e.g. "node provider IDs kind://"
+  string detail = 2;
+  string distribution = 3;
+  string infrastructure = 4;
+  // 10 strong, 5 medium, 2 weak
+  int32 weight = 5;
+}
+
+// component level identification for setdrift, who generated the snapshot
+message Producer {
+  // eg setdrift-cli, setdrift-agent
+  string name = 1;
+  // referring to setdrift version
+  string version = 2;
+}
+
+// top level resource, a snapshot is composed of an array of these
+message Resource {
+  string api_version = 1;
+  string kind = 2;
+  // optional to account for non namespaced resources
+  string namespace = 3;
+  string name = 4;
+  // removed from the manifest_json, server assigned so would break if left in manifest, but useful for forensic to track resources that may have been deleted and recreated
+  string source_uid = 5;
+  // post processing json, stored as string rather than struct to avoid encoding issues for numbers
+  string manifest_json = 6;
+  // nested message defined below
+  Provenance provenance = 7;
+  // nested message defined below
+  repeated Redaction redactions = 8;
+  // nested message defined below
+  repeated Finding findings = 9;
+}
+
+// who manages the resource/where it came from, different than parent/child
+message Provenance {
+  Source source = 1;
+  // managing object e.g. argocd/payments for an argo applicationor shop/web for helm release
+  string manager = 2;
+  // set of labels or annotations that led to classification
+  map<string, string> evidence = 3;
+}
+
+// enum not message
+enum Source {
+  SOURCE_UNSPECIFIED = 0;
+  // unrecognized, unknown, or manual
+  SOURCE_UNMANAGED = 1;
+  SOURCE_ARGO_CD = 2;
+  SOURCE_FLUX = 3;
+  SOURCE_HELM = 4;
+  SOURCE_OPERATOR = 5;
+  // created and kept up to date by the Kubernetes platform (e.g. EKS), which
+  // creates it again in a new cluster; in the snapshot, not in the export
+  SOURCE_PLATFORM = 6;
+}
+
+// record that a value was removed and why, not the value
+message Redaction {
+  // field path e.g. data.password
+  string path = 1;
+  // enum defined below
+  RedactionReason reason = 2;
+  // for REDACTION_REASON_GENERATED_VALUE: the field manager of the
+  // controller that wrote the value, e.g. argocd-server
+  string controller = 3;
+}
+
+//  enum not message
+enum RedactionReason {
+  REDACTION_REASON_UNSPECIFIED = 0;
+  REDACTION_REASON_SECRET_VALUE = 1;
+  REDACTION_REASON_LAST_APPLIED_CONFIGURATION = 2;
+  // a Secret key only a controller wrote (a generated password, a
+  // certificate it issues): left out of the export, since the controller in
+  // a new cluster writes it again, and restoring the old value would fight it
+  REDACTION_REASON_GENERATED_VALUE = 3;
+}
+
+// note or warning
+message Finding {
+  // enum defined below
+  Severity severity = 1;
+  // machine-readable code e.g. OWNER_NOT_EXPORTED
+  string code = 2;
+  // human readable 
+  string message = 3;
+}
+
+enum Severity {
+  SEVERITY_UNSPECIFIED = 0;
+  SEVERITY_INFO = 1;
+  SEVERITY_WARNING = 2;
+  SEVERITY_ERROR = 3;
+}
+
+// Inventory is what restoring the cluster elsewhere needs that the exported
+// manifests do not hold: where the data is, and what the cloud provider
+// holds outside Kubernetes. Recorded before objects are dropped, so it
+// covers volumes of StatefulSet claims and dynamically provisioned volumes.
+message Inventory {
+  // one per PersistentVolumeClaim bound to a PersistentVolume
+  repeated Volume volumes = 1;
+  // Services of type LoadBalancer and Ingresses with an address
+  repeated LoadBalancer load_balancers = 2;
+  // set by setdrift export --aws
+  AwsInventory aws = 3;
+  // the deployed revision of each Helm release, from its release record
+  repeated HelmRelease helm_releases = 4;
+}
+
+// HelmRelease is the chart a Helm release runs, from the release record's
+// chart metadata. Values and rendered manifests are not read.
+message HelmRelease {
+  string namespace = 1;
+  string name = 2;
+  // e.g. 3
+  int32 revision = 3;
+  string chart = 4;
+  string chart_version = 5;
+  string app_version = 6;
+  // the chart's home and sources (Chart.yaml): where the chart's source is,
+  // which is not always the repository it was installed from
+  string home = 7;
+  repeated string sources = 8;
+  // the chart repository, from the setdrift.io/source-repo annotation a
+  // post-renderer puts on the release's objects (setdrift helm-postrender).
+  // Not from export --helm-repos, which is applied when RESTORE.md is
+  // written and not kept in the snapshot.
+  string repository = 9;
+}
+
+// Volume is a PersistentVolumeClaim and the volume holding its data.
+message Volume {
+  string namespace = 1;
+  string claim = 2;
+  string persistent_volume = 3;
+  // the claim's class, as the cluster set it
+  string storage_class = 4;
+  // e.g. 10Gi
+  string capacity = 5;
+  repeated string access_modes = 6;
+  // Filesystem or Block
+  string volume_mode = 7;
+  // CSI driver, or the in-tree plugin e.g. kubernetes.io/aws-ebs
+  string driver = 8;
+  // the storage system's ID, e.g. an EBS volume ID
+  string volume_handle = 9;
+  string fs_type = 10;
+  // availability zone the volume is in, from the volume's node affinity
+  string zone = 11;
+  // Delete or Retain
+  string reclaim_policy = 12;
+  // the StatefulSet whose volume claim template created the claim, if any
+  string stateful_set = 13;
+  // created by a provisioner for the claim, rather than by hand
+  bool dynamically_provisioned = 14;
+  // set by setdrift export --aws for EBS volumes
+  AwsVolume aws = 15;
+}
+
+// AwsVolume is an EBS volume as EC2 describes it.
+message AwsVolume {
+  // e.g. gp3
+  string volume_type = 1;
+  int32 size_gib = 2;
+  int32 iops = 3;
+  // MiB/s
+  int32 throughput = 4;
+  bool encrypted = 5;
+  string kms_key_id = 6;
+  string availability_zone = 7;
+  // e.g. in-use, available
+  string state = 8;
+}
+
+// LoadBalancer is an object the cloud gave an address, which DNS or clients
+// may point at; a new cluster gets a new one.
+message LoadBalancer {
+  // Service or Ingress
+  string kind = 1;
+  string namespace = 2;
+  string name = 3;
+  repeated string hostnames = 4;
+  repeated string ips = 5;
+}
+
+// AwsInventory is the EKS configuration held in AWS rather than in the
+// cluster, read with the caller's AWS credentials.
+message AwsInventory {
+  string account_id = 1;
+  string region = 2;
+  string cluster_name = 3;
+  // the cluster's OIDC issuer URL, which IRSA role trust policies name
+  string oidc_issuer = 4;
+  string kubernetes_version = 5;
+  repeated PodIdentityAssociation pod_identity_associations = 6;
+  // roles named by IRSA annotations and Pod Identity associations
+  repeated IamRole iam_roles = 7;
+  repeated AccessEntry access_entries = 8;
+  repeated Addon addons = 9;
+  // what could not be read, e.g. for lack of a permission
+  repeated string errors = 10;
+}
+
+message PodIdentityAssociation {
+  string namespace = 1;
+  string service_account = 2;
+  string role_arn = 3;
+}
+
+message IamRole {
+  string arn = 1;
+  // OIDC providers the trust policy trusts (IRSA), as issuer host and path
+  repeated string oidc_providers = 2;
+  // the role trusts pods.eks.amazonaws.com (Pod Identity)
+  bool trusts_pod_identity = 3;
+}
+
+message AccessEntry {
+  string principal_arn = 1;
+  // e.g. STANDARD, EC2
+  string type = 2;
+  repeated string kubernetes_groups = 3;
+  repeated AccessPolicy policies = 4;
+}
+
+message AccessPolicy {
+  string policy_arn = 1;
+  // cluster or namespace
+  string scope = 2;
+  repeated string namespaces = 3;
+}
+
+message Addon {
+  string name = 1;
+  string version = 2;
+  string service_account_role_arn = 3;
+  // the add-on's configuration values (JSON or YAML), if set, with secret
+  // values replaced by SETDRIFT_REDACTED; the whole string is
+  // SETDRIFT_REDACTED when it did not parse
+  string configuration_values = 4;
+  // the paths in configuration_values that were replaced, e.g. agent.apiKey
+  repeated string configuration_redactions = 5;
+}

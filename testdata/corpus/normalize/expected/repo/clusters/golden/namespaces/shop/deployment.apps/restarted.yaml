@@ -1,0 +1,19 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: restarted
+  namespace: shop
+spec:
+  selector:
+    matchLabels:
+      app: restarted
+  template:
+    metadata:
+      annotations:
+        prometheus.io/scrape: "true"
+      labels:
+        app: restarted
+    spec:
+      containers:
+      - image: ghcr.io/example/app:1
+        name: app

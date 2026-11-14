@@ -1,0 +1,20 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: reprice
+  namespace: store
+spec:
+  manualSelector: true
+  selector:
+    matchLabels:
+      job: reprice
+  template:
+    metadata:
+      labels:
+        job: reprice
+    spec:
+      containers:
+      - image: store/reprice:3
+        name: reprice
+      restartPolicy: Never
+  ttlSecondsAfterFinished: 60

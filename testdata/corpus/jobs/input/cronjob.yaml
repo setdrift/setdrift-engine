@@ -1,0 +1,34 @@
+# CronJob history: the Job and its Pod are children and must be dropped.
+apiVersion: batch/v1
+kind: CronJob
+metadata: {name: nightly, namespace: batch, uid: c0000000-0000-0000-0000-000000000001}
+spec:
+  schedule: "0 2 * * *"
+  successfulJobsHistoryLimit: 10
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers: [{name: report, image: ghcr.io/example/report:2.0.0}]
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: nightly-29340000
+  namespace: batch
+  uid: c0000000-0000-0000-0000-000000000002
+  ownerReferences:
+  - {apiVersion: batch/v1, kind: CronJob, name: nightly, uid: c0000000-0000-0000-0000-000000000001, controller: true}
+status:
+  conditions: [{type: Complete, status: "True"}]
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nightly-29340000-x9k2z
+  namespace: batch
+  uid: c0000000-0000-0000-0000-000000000003
+  ownerReferences:
+  - {apiVersion: batch/v1, kind: Job, name: nightly-29340000, uid: c0000000-0000-0000-0000-000000000002, controller: true}
+status: {phase: Succeeded}

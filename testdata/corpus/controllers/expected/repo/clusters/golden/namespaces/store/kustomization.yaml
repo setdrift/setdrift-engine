@@ -1,0 +1,8 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+- endpointslice.discovery.k8s.io/legacy-db.yaml
+- job.batch/reprice.yaml
+- replicaset.apps/legacy-cache.yaml
+- service/db.yaml
+- statefulset.apps/db.yaml

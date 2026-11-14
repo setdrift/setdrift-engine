@@ -1,0 +1,107 @@
+# Copyright The SetDrift Authors
+# SPDX-License-Identifier: Apache-2.0
+
+# Release build: a tag v* starts .github/workflows/release.yaml, which runs
+# GoReleaser with this file. It builds the CLI for each platform, publishes
+# the archives and checksums.txt as a GitHub release, and updates the
+# Homebrew formula in setdrift/homebrew-tap, so that
+#
+#   brew install setdrift/tap/setdrift
+#
+# installs the release. Try it locally without publishing:
+# make release-snapshot (archives in dist/).
+version: 2
+
+project_name: setdrift
+
+before:
+  hooks:
+    - go mod verify
+
+builds:
+  - id: setdrift
+    main: ./cmd/setdrift
+    binary: setdrift
+    env:
+      - CGO_ENABLED=0
+    # Keep in step with ci.yaml's cross-compile list and
+    # scripts/third-party-notices.sh.
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    ignore:
+      - goos: windows
+        goarch: arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X setdrift.io/setdrift-engine/internal/version.Version=v{{ .Version }}
+      - -X setdrift.io/setdrift-engine/internal/version.Commit={{ .ShortCommit }}
+    # Reproducible: the same commit builds the same binary.
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: setdrift
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    # setdrift_0.1.0_darwin_arm64.tar.gz; scripts/install.sh relies on it.
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - NOTICE
+      - THIRD_PARTY_NOTICES
+      - README.md
+
+checksum:
+  name_template: checksums.txt
+
+# A formula, not a cask: brew quarantines what casks download, and macOS
+# then refuses to run an unsigned binary; a formula's download is not
+# quarantined.
+brews:
+  - name: setdrift
+    repository:
+      owner: setdrift
+      name: homebrew-tap
+      branch: main
+      # A deploy key with write access to the tap only, stored as the
+      # HOMEBREW_TAP_DEPLOY_KEY secret of this repository: the workflow's own
+      # token cannot push to another repository.
+      git:
+        url: git@github.com:setdrift/homebrew-tap.git
+        private_key: "{{ .Env.HOMEBREW_TAP_DEPLOY_KEY }}"
+    directory: Formula
+    commit_author:
+      name: setdrift-release
+      email: release@setdrift.io
+    commit_msg_template: "setdrift {{ .Tag }}"
+    homepage: https://setdrift.io
+    description: Export a Kubernetes cluster as a Git-ready Kustomize repository
+    license: Apache-2.0
+    install: |
+      bin.install "setdrift"
+      generate_completions_from_executable(bin/"setdrift", "completion")
+    test: |
+      assert_match "v#{version}", shell_output("#{bin}/setdrift version")
+
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+
+release:
+  github:
+    owner: setdrift
+    name: setdrift-engine
+  # v0.1.0-rc.1 and the like are marked pre-release.
+  prerelease: auto
+  footer: |
+    Install: `brew install setdrift/tap/setdrift`, or
+    `curl -fsSL https://raw.githubusercontent.com/setdrift/setdrift-engine/main/scripts/install.sh | sh`.
+    Each archive's SHA-256 is in checksums.txt, and GitHub attests where each was built:
+    `gh attestation verify <archive> --repo setdrift/setdrift-engine`.

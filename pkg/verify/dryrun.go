@@ -1,0 +1,405 @@
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0
+
+package verify
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"reflect"
+	"sort"
+	"strings"
+	"time"
+
+	"golang.org/x/sync/errgroup"
+
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
+	utilnet "k8s.io/apimachinery/pkg/util/net"
+	"k8s.io/client-go/dynamic"
+	"sigs.k8s.io/kustomize/api/krusty"
+	"sigs.k8s.io/kustomize/kyaml/filesys"
+
+	"setdrift.io/setdrift-engine/pkg/emit/kustomize"
+)
+
+// FieldManager is the field manager of the dry-run applies.
+const FieldManager = "setdrift-verify"
+
+// maxPaths caps the differing fields a Diff lists.
+const maxPaths = 5
+
+// Cluster is what DryRunVerifier needs from a cluster.
+type Cluster interface {
+	// Get returns the live object.
+	Get(ctx context.Context, gvr schema.GroupVersionResource, namespace, name string) (*unstructured.Unstructured, error)
+	// DryRunApply server-side applies obj with dryRun=All and returns the
+	// result.
+	DryRunApply(ctx context.Context, gvr schema.GroupVersionResource, obj *unstructured.Unstructured) (*unstructured.Unstructured, error)
+}
+
+// DynamicCluster implements Cluster with a dynamic client.
+type DynamicCluster struct{ Client dynamic.Interface }
+
+// Get implements Cluster.
+func (c DynamicCluster) Get(ctx context.Context, gvr schema.GroupVersionResource, ns, name string) (*unstructured.Unstructured, error) {
+	return retry(ctx, func() (*unstructured.Unstructured, error) {
+		return c.Client.Resource(gvr).Namespace(ns).Get(ctx, name, metav1.GetOptions{})
+	})
+}
+
+// retry runs call again, twice at most, when the connection to the API server broke (reset, or closed mid-response):
+// both calls only read, so they are safe to repeat, and one broken connection should not end a run over hundreds
+// of resources.
+func retry(ctx context.Context, call func() (*unstructured.Unstructured, error)) (*unstructured.Unstructured, error) {
+	for attempt := 1; ; attempt++ {
+		u, err := call()
+		if err == nil || attempt == 3 || !(utilnet.IsConnectionReset(err) || utilnet.IsProbableEOF(err)) {
+			return u, err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(time.Duration(attempt) * time.Second):
+		}
+	}
+}
+
+// DryRunApply implements Cluster.
+func (c DynamicCluster) DryRunApply(ctx context.Context, gvr schema.GroupVersionResource, obj *unstructured.Unstructured) (*unstructured.Unstructured, error) {
+	data, err := obj.MarshalJSON()
+	if err != nil {
+		return nil, err
+	}
+	force := true
+	return retry(ctx, func() (*unstructured.Unstructured, error) {
+		return c.Client.Resource(gvr).Namespace(obj.GetNamespace()).Patch(ctx, obj.GetName(), types.ApplyPatchType, data,
+			metav1.PatchOptions{DryRun: []string{metav1.DryRunAll}, FieldManager: FieldManager, Force: &force})
+	})
+}
+
+// DryRunVerifier runs `kubectl apply --server-side --dry-run=server` for
+// every exported resource and compares the result with the live object. A
+// clean resource means applying the export would change nothing.
+//
+// Force is set: the question is what the export would do, not whether
+// another field manager owns a field. Only what the cluster's root
+// kustomization.yaml builds is checked, as kubectl kustomize would build it:
+// resources written for reference only (redacted/) are counted in
+// Report.Skipped, and external-secrets/, which is not applied, is left out.
+//
+// A server-side apply only changes the fields it sends, so a field missing
+// from the export does not show up as a difference. Lost fields are caught
+// only when a resource lost all of its spec or data (see lostFields).
+type DryRunVerifier struct {
+	Cluster Cluster
+	Mapper  meta.RESTMapper
+	// Concurrency is how many resources are checked at once; zero means 8.
+	Concurrency int
+	// Set is the directory under the cluster's directory to build and check,
+	// e.g. platform/aws/eks for the platform set; empty for the generic set.
+	Set string
+}
+
+// Verify implements Verifier. repoDir is a cluster's directory
+// (clusters/<cluster>, with a kustomization.yaml) or an export holding one
+// cluster.
+func (v DryRunVerifier) Verify(ctx context.Context, repoDir string) (*Report, error) {
+	root, err := ClusterRoot(repoDir)
+	if err != nil {
+		return nil, err
+	}
+	objs, err := build(filepath.Join(root, filepath.FromSlash(v.Set)))
+	if err != nil {
+		return nil, err
+	}
+	report := &Report{Total: len(objs), Skipped: map[string]int{}}
+	if n, err := countRedacted(root); err != nil {
+		return nil, err
+	} else if n > 0 {
+		report.Skipped["redacted (Secret values were replaced; not applied on purpose)"] = n
+	}
+
+	missing, err := v.missingCRDs(ctx, objs)
+	if err != nil {
+		return nil, err
+	}
+	for _, crd := range missing {
+		report.MissingCRDs = append(report.MissingCRDs, crd)
+	}
+	sort.Strings(report.MissingCRDs)
+
+	n := v.Concurrency
+	if n <= 0 {
+		n = 8
+	}
+	diffs := make([]*Diff, len(objs))
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(n)
+	for i, o := range objs {
+		g.Go(func() error {
+			var err error
+			diffs[i], err = v.check(gctx, o, missing)
+			return err
+		})
+	}
+	// The first error that is not about one resource (credentials,
+	// cancellation) stops the rest; only it is returned.
+	if err := g.Wait(); err != nil {
+		return nil, err
+	}
+	for _, d := range diffs {
+		if d == nil {
+			report.Clean++
+		} else {
+			report.Diffs = append(report.Diffs, *d)
+		}
+	}
+	sort.Slice(report.Diffs, func(i, j int) bool { return report.Diffs[i].Ref < report.Diffs[j].Ref })
+	return report, nil
+}
+
+// ClusterRoot returns the directory to verify: dir itself if it has a
+// kustomization.yaml, else the one cluster under dir/clusters/.
+func ClusterRoot(dir string) (string, error) {
+	if _, err := os.Stat(filepath.Join(dir, "kustomization.yaml")); err == nil {
+		return dir, nil
+	}
+	matches, err := filepath.Glob(filepath.Join(dir, "clusters", "*", "kustomization.yaml"))
+	if err != nil {
+		return "", err
+	}
+	switch len(matches) {
+	case 0:
+		return "", fmt.Errorf("%s has no kustomization.yaml and no clusters/<cluster>/kustomization.yaml: not an export", dir)
+	case 1:
+		return filepath.Dir(matches[0]), nil
+	}
+	var dirs []string
+	for _, m := range matches {
+		dirs = append(dirs, filepath.Dir(m))
+	}
+	return "", fmt.Errorf("%s holds %d clusters; verify one of them:\n  %s", dir, len(dirs), strings.Join(dirs, "\n  "))
+}
+
+// build returns the objects the kustomization in root builds, as kubectl
+// kustomize does: what applying root would apply.
+func build(root string) ([]*unstructured.Unstructured, error) {
+	resMap, err := krusty.MakeKustomizer(krusty.MakeDefaultOptions()).Run(filesys.MakeFsOnDisk(), root)
+	if err != nil {
+		return nil, fmt.Errorf("building %s: %w", root, err)
+	}
+	var out []*unstructured.Unstructured
+	for _, r := range resMap.Resources() {
+		m, err := r.Map()
+		if err != nil {
+			return nil, fmt.Errorf("building %s: %w", root, err)
+		}
+		out = append(out, &unstructured.Unstructured{Object: m})
+	}
+	return out, nil
+}
+
+// Ref names an object as the snapshot does: [group/]Kind [namespace/]name.
+func Ref(obj *unstructured.Unstructured) string {
+	gvk := obj.GroupVersionKind()
+	gk := gvk.Kind
+	if gvk.Group != "" {
+		gk = gvk.Group + "/" + gvk.Kind
+	}
+	if ns := obj.GetNamespace(); ns != "" {
+		return gk + " " + ns + "/" + obj.GetName()
+	}
+	return gk + " " + obj.GetName()
+}
+
+// check returns nil if applying obj changes nothing. Errors that concern
+// only this resource become a Diff; others (cancellation, credentials) are
+// returned.
+func (v DryRunVerifier) check(ctx context.Context, obj *unstructured.Unstructured, missingCRDs map[schema.GroupKind]string) (*Diff, error) {
+	gvk := obj.GroupVersionKind()
+	ref := Ref(obj)
+	diff := func(explanation string, paths ...string) (*Diff, error) {
+		return &Diff{Ref: ref, Paths: paths, Explanation: explanation}, nil
+	}
+
+	mapping, err := v.Mapper.RESTMapping(gvk.GroupKind(), gvk.Version)
+	if err != nil {
+		if crd, ok := missingCRDs[gvk.GroupKind()]; ok {
+			return diff("", "type not served by the cluster: its CustomResourceDefinition "+crd+" is in crds/ but not in the cluster yet")
+		}
+		return diff("", "type not served by the cluster: "+err.Error())
+	}
+	live, err := v.Cluster.Get(ctx, mapping.Resource, obj.GetNamespace(), obj.GetName())
+	switch {
+	case apierrors.IsNotFound(err):
+		return diff("", "not in the cluster: applying would create it")
+	case err != nil && resourceError(err):
+		return diff("", err.Error())
+	case err != nil:
+		return nil, fmt.Errorf("%s: %w", ref, err)
+	}
+	if lost := lostFields(obj, live); len(lost) > 0 {
+		return diff("", lost...)
+	}
+	result, err := v.Cluster.DryRunApply(ctx, mapping.Resource, obj)
+	switch {
+	case err != nil && resourceError(err):
+		return diff(explainApplyError(gvk, err), err.Error())
+	case err != nil:
+		return nil, fmt.Errorf("%s: %w", ref, err)
+	}
+	paths := differences(comparable(live.Object), comparable(result.Object), "")
+	if len(paths) == 0 {
+		return nil, nil
+	}
+	if len(paths) > maxPaths {
+		paths = append(paths[:maxPaths], fmt.Sprintf("and %d more", len(paths)-maxPaths))
+	}
+	return diff("", paths...)
+}
+
+var crdGVK = schema.GroupVersionKind{Group: "apiextensions.k8s.io", Version: "v1", Kind: "CustomResourceDefinition"}
+
+// missingCRDs returns the export's CustomResourceDefinitions that the cluster lacks, by the group and kind they
+// define. Errors about one CRD are ignored (its own check reports them); others are returned.
+func (v DryRunVerifier) missingCRDs(ctx context.Context, objs []*unstructured.Unstructured) (map[schema.GroupKind]string, error) {
+	missing := map[schema.GroupKind]string{}
+	mapping, err := v.Mapper.RESTMapping(crdGVK.GroupKind(), crdGVK.Version)
+	if err != nil {
+		return missing, nil // no CRDs served at all; every CRD's own check says so
+	}
+	for _, o := range objs {
+		if o.GroupVersionKind().GroupKind() != crdGVK.GroupKind() {
+			continue
+		}
+		_, err := v.Cluster.Get(ctx, mapping.Resource, "", o.GetName())
+		switch {
+		case apierrors.IsNotFound(err):
+			group, _, _ := unstructured.NestedString(o.Object, "spec", "group")
+			kind, _, _ := unstructured.NestedString(o.Object, "spec", "names", "kind")
+			missing[schema.GroupKind{Group: group, Kind: kind}] = o.GetName()
+		case err != nil && !resourceError(err):
+			return nil, fmt.Errorf("%s: %w", Ref(o), err)
+		}
+	}
+	return missing, nil
+}
+
+// lostFields reports spec or data that the live object has and the export
+// lost entirely: the apply would not notice, but a new cluster would get an
+// object without them. Namespaces (whose only spec is the default
+// finalizer) and service account token Secrets (whose data the token
+// controller writes) lose them on purpose.
+func lostFields(exported, live *unstructured.Unstructured) []string {
+	gk := live.GroupVersionKind().GroupKind()
+	if gk.Group == "" && gk.Kind == "Namespace" {
+		return nil
+	}
+	var out []string
+	for _, f := range []string{"spec", "data"} {
+		if f == "data" && gk.Group == "" && gk.Kind == "Secret" {
+			if t, _, _ := unstructured.NestedString(live.Object, "type"); t == "kubernetes.io/service-account-token" {
+				continue
+			}
+		}
+		if !emptyField(live.Object[f]) && emptyField(exported.Object[f]) {
+			out = append(out, "."+f+": in the cluster but missing from the export, so a new cluster would get the object without it")
+		}
+	}
+	return out
+}
+
+func emptyField(v any) bool {
+	switch n := v.(type) {
+	case nil:
+		return true
+	case map[string]any:
+		return len(n) == 0
+	case []any:
+		return len(n) == 0
+	}
+	return false
+}
+
+// resourceError reports whether err is the API server's answer about one
+// resource, as opposed to cancellation or a credential problem.
+func resourceError(err error) bool {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || apierrors.IsUnauthorized(err) {
+		return false
+	}
+	var status apierrors.APIStatus
+	return errors.As(err, &status)
+}
+
+// explainApplyError names known reasons an apply of an unchanged export is
+// rejected.
+func explainApplyError(gvk schema.GroupVersionKind, err error) string {
+	if gvk.Group == "" && gvk.Kind == "Pod" && apierrors.IsInvalid(err) && strings.Contains(err.Error(), "pod updates may not change") {
+		return "Pods can't be updated in place; a bare Pod in Git is recreated, not applied"
+	}
+	return ""
+}
+
+// comparable drops what an apply always changes: field ownership and the
+// resource version. generation is kept; it only moves when the spec does.
+func comparable(obj map[string]any) map[string]any {
+	c := (&unstructured.Unstructured{Object: obj}).DeepCopy().Object
+	unstructured.RemoveNestedField(c, "metadata", "managedFields")
+	unstructured.RemoveNestedField(c, "metadata", "resourceVersion")
+	// An apply never changes status, which controllers keep changing (a Pod starting) between the read and the
+	// dry-run.
+	delete(c, "status")
+	return c
+}
+
+// differences lists the paths where a and b differ.
+func differences(a, b any, path string) []string {
+	am, aok := a.(map[string]any)
+	bm, bok := b.(map[string]any)
+	if !aok || !bok {
+		if reflect.DeepEqual(a, b) {
+			return nil
+		}
+		if path == "" {
+			path = "."
+		}
+		return []string{path}
+	}
+	keys := map[string]bool{}
+	for k := range am {
+		keys[k] = true
+	}
+	for k := range bm {
+		keys[k] = true
+	}
+	sorted := make([]string, 0, len(keys))
+	for k := range keys {
+		sorted = append(sorted, k)
+	}
+	sort.Strings(sorted)
+	var out []string
+	for _, k := range sorted {
+		out = append(out, differences(am[k], bm[k], path+"."+k)...)
+	}
+	return out
+}
+
+func countRedacted(dir string) (int, error) {
+	n := 0
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() && strings.HasSuffix(path, kustomize.RedactedExt) {
+			n++
+		}
+		return err
+	})
+	return n, err
+}

@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: migrate-x7k2p
+  namespace: shop
+spec:
+  containers:
+  - image: ghcr.io/example/migrate:1.0.0
+    name: migrate
+  restartPolicy: Never

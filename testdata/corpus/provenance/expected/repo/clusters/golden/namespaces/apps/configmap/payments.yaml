@@ -1,0 +1,7 @@
+apiVersion: v1
+data:
+  currency: EUR
+kind: ConfigMap
+metadata:
+  name: payments
+  namespace: apps

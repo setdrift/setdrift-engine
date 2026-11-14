@@ -1,0 +1,223 @@
+# Provenance: which tool manages each object, and whether that manager still
+# exists in the cluster.
+apiVersion: v1
+kind: Namespace
+metadata: {name: apps, uid: e0000000-0000-0000-0000-000000000001}
+---
+apiVersion: v1
+kind: Namespace
+metadata: {name: argocd, uid: e0000000-0000-0000-0000-000000000002}
+---
+apiVersion: v1
+kind: Namespace
+metadata: {name: team-a, uid: e0000000-0000-0000-0000-000000000003}
+---
+apiVersion: v1
+kind: Namespace
+metadata: {name: flux-system, uid: e0000000-0000-0000-0000-000000000004}
+---
+# --- Argo CD ---------------------------------------------------------------
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata: {name: payments, namespace: argocd, uid: e0000000-0000-0000-0000-000000000010}
+spec:
+  project: default
+  source: {repoURL: "https://github.com/example/deploy", path: payments, targetRevision: main}
+  destination: {server: "https://kubernetes.default.svc", namespace: apps}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata: {name: billing, namespace: argocd, uid: e0000000-0000-0000-0000-000000000011}
+spec:
+  project: default
+  source: {repoURL: "https://charts.example.com", chart: billing, targetRevision: 1.2.0}
+  destination: {server: "https://kubernetes.default.svc", namespace: apps}
+---
+# Applications in any namespace: Argo CD writes <namespace>_<app>.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata: {name: web, namespace: team-a, uid: e0000000-0000-0000-0000-000000000012}
+spec:
+  project: team-a
+  source: {repoURL: "https://github.com/example/team-a", path: web, targetRevision: main}
+  destination: {server: "https://kubernetes.default.svc", namespace: team-a}
+---
+# Annotation tracking: Argo CD, manager argocd/payments.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: payments
+  namespace: apps
+  uid: e0000000-0000-0000-0000-000000000020
+  annotations: {argocd.argoproj.io/tracking-id: "payments:/ConfigMap:apps/payments"}
+data: {currency: EUR}
+---
+# A copy of the ConfigMap above under another name: the tracking id names the
+# original, so Argo CD does not manage this one. Unmanaged, with a finding.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: payments-backup
+  namespace: apps
+  uid: e0000000-0000-0000-0000-000000000021
+  annotations: {argocd.argoproj.io/tracking-id: "payments:/ConfigMap:apps/payments"}
+data: {currency: EUR}
+---
+# Label tracking of a chart Argo CD rendered with `helm template`: the chart
+# sets managed-by: Helm, but there are no meta.helm.sh annotations. Argo CD
+# (low confidence), manager argocd/billing; not Helm.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: billing
+  namespace: apps
+  uid: e0000000-0000-0000-0000-000000000022
+  labels: {app.kubernetes.io/instance: billing, app.kubernetes.io/managed-by: Helm}
+data: {plan: monthly}
+---
+# Argo CD, manager team-a/web.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: settings
+  namespace: team-a
+  uid: e0000000-0000-0000-0000-000000000023
+  annotations: {argocd.argoproj.io/tracking-id: "team-a_web:/ConfigMap:team-a/settings"}
+data: {mode: live}
+---
+# Its Application was deleted without cascading: MANAGER_NOT_FOUND.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: legacy
+  namespace: apps
+  uid: e0000000-0000-0000-0000-000000000024
+  annotations: {argocd.argoproj.io/tracking-id: "retired:/ConfigMap:apps/legacy"}
+data: {x: "1"}
+---
+# --- Flux ------------------------------------------------------------------
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata: {name: apps, namespace: flux-system, uid: e0000000-0000-0000-0000-000000000030}
+spec:
+  interval: 10m
+  path: ./apps
+  prune: true
+  sourceRef: {kind: GitRepository, name: flux-system}
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata: {name: redis, namespace: flux-system, uid: e0000000-0000-0000-0000-000000000031}
+spec:
+  interval: 10m
+  chart:
+    spec:
+      chart: redis
+      sourceRef: {kind: HelmRepository, name: bitnami}
+---
+# Flux Kustomization: manager flux-system/apps.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: queue
+  namespace: apps
+  uid: e0000000-0000-0000-0000-000000000040
+  labels: {kustomize.toolkit.fluxcd.io/name: apps, kustomize.toolkit.fluxcd.io/namespace: flux-system}
+data: {size: "10"}
+---
+# Flux HelmRelease: helm-controller uses the Helm SDK, so the meta.helm.sh
+# annotations are present too. Flux wins, manager flux-system/redis.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: redis
+  namespace: apps
+  uid: e0000000-0000-0000-0000-000000000041
+  labels:
+    helm.toolkit.fluxcd.io/name: redis
+    helm.toolkit.fluxcd.io/namespace: flux-system
+    app.kubernetes.io/managed-by: Helm
+  annotations: {meta.helm.sh/release-name: apps-redis, meta.helm.sh/release-namespace: apps}
+data: {maxmemory: 256mb}
+---
+# Its Kustomization was deleted: MANAGER_NOT_FOUND.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: old-queue
+  namespace: apps
+  uid: e0000000-0000-0000-0000-000000000042
+  labels: {kustomize.toolkit.fluxcd.io/name: retired, kustomize.toolkit.fluxcd.io/namespace: flux-system}
+data: {size: "5"}
+---
+# --- Helm ------------------------------------------------------------------
+# Installed with `helm install metrics`: Helm, manager apps/metrics.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: metrics
+  namespace: apps
+  uid: e0000000-0000-0000-0000-000000000050
+  labels: {app.kubernetes.io/managed-by: Helm}
+  annotations: {meta.helm.sh/release-name: metrics, meta.helm.sh/release-namespace: apps}
+data: {scrape: 30s}
+---
+# Helm's records of the metrics release (two revisions) and of apps-redis:
+# skipped as Helm state.
+apiVersion: v1
+kind: Secret
+type: helm.sh/release.v1
+metadata:
+  name: sh.helm.release.v1.metrics.v1
+  namespace: apps
+  uid: e0000000-0000-0000-0000-000000000051
+  labels: {owner: helm, name: metrics, status: superseded, version: "1"}
+data: {release: SDRzSUFBQUFBQUFBLzZ1V0tz}
+---
+apiVersion: v1
+kind: Secret
+type: helm.sh/release.v1
+metadata:
+  name: sh.helm.release.v1.metrics.v2
+  namespace: apps
+  uid: e0000000-0000-0000-0000-000000000052
+  labels: {owner: helm, name: metrics, status: deployed, version: "2"}
+data: {release: SDRzSUFBQUFBQUFBLzZ1V0tz}
+---
+apiVersion: v1
+kind: Secret
+type: helm.sh/release.v1
+metadata:
+  name: sh.helm.release.v1.apps-redis.v1
+  namespace: apps
+  uid: e0000000-0000-0000-0000-000000000053
+  labels: {owner: helm, name: apps-redis, status: deployed, version: "1"}
+data: {release: SDRzSUFBQUFBQUFBLzZ1V0tz}
+---
+# Its release was uninstalled with --keep-history off but the object was
+# kept (helm.sh/resource-policy: keep): MANAGER_NOT_FOUND.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kept
+  namespace: apps
+  uid: e0000000-0000-0000-0000-000000000054
+  labels: {app.kubernetes.io/managed-by: Helm}
+  annotations: {meta.helm.sh/release-name: old, meta.helm.sh/release-namespace: apps, helm.sh/resource-policy: keep}
+data: {y: "2"}
+---
+# Only the managed-by: Helm label: Helm, low confidence, no manager.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: static
+  namespace: apps
+  uid: e0000000-0000-0000-0000-000000000055
+  labels: {app.kubernetes.io/managed-by: Helm}
+data: {z: "3"}
+---
+# No markers: unmanaged.
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: manual, namespace: apps, uid: e0000000-0000-0000-0000-000000000060}
+data: {by: hand}

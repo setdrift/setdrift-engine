@@ -1,0 +1,249 @@
+{
+  "capturedAt": "2026-01-01T00:00:00Z",
+  "cluster": {
+    "name": "golden",
+    "kubernetesVersion": "v1.35.0"
+  },
+  "findings": [
+    {
+      "severity": "SEVERITY_INFO",
+      "code": "HELM_RELEASE_RECORDS_SKIPPED",
+      "message": "1 Helm release record in namespace \"shop\" was not exported (Helm's release history; applying it would corrupt Helm's state)"
+    }
+  ],
+  "id": "golden",
+  "producer": {
+    "name": "setdrift-test",
+    "version": "test"
+  },
+  "resources": [
+    {
+      "apiVersion": "v1",
+      "kind": "ConfigMap",
+      "manifest": {
+        "apiVersion": "v1",
+        "data": {
+          "LOG_LEVEL": "info"
+        },
+        "kind": "ConfigMap",
+        "metadata": {
+          "name": "settings",
+          "namespace": "shop"
+        }
+      },
+      "name": "settings",
+      "namespace": "shop",
+      "provenance": {
+        "source": "SOURCE_HELM",
+        "manager": "shop/web-config",
+        "evidence": {
+          "app.kubernetes.io/managed-by": "Helm",
+          "meta.helm.sh/release-name": "web-config"
+        }
+      },
+      "sourceUid": "0b6f0000-0000-0000-0000-000000000030"
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Namespace",
+      "manifest": {
+        "apiVersion": "v1",
+        "kind": "Namespace",
+        "metadata": {
+          "name": "shop"
+        }
+      },
+      "name": "shop",
+      "provenance": {
+        "source": "SOURCE_UNMANAGED"
+      },
+      "sourceUid": "0b6f0000-0000-0000-0000-000000000001"
+    },
+    {
+      "apiVersion": "v1",
+      "findings": [
+        {
+          "severity": "SEVERITY_WARNING",
+          "code": "OWNER_NOT_EXPORTED",
+          "message": "controller owner Job migrate is not in the export; kept as a top-level object"
+        }
+      ],
+      "kind": "Pod",
+      "manifest": {
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": {
+          "name": "migrate-x7k2p",
+          "namespace": "shop"
+        },
+        "spec": {
+          "containers": [
+            {
+              "image": "ghcr.io/example/migrate:1.0.0",
+              "name": "migrate"
+            }
+          ],
+          "restartPolicy": "Never"
+        }
+      },
+      "name": "migrate-x7k2p",
+      "namespace": "shop",
+      "provenance": {
+        "source": "SOURCE_UNMANAGED"
+      },
+      "sourceUid": "0b6f0000-0000-0000-0000-000000000060"
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Secret",
+      "manifest": {
+        "apiVersion": "v1",
+        "data": {
+          "password": "U0VURFJJRlRfUkVEQUNURUQ=",
+          "username": "U0VURFJJRlRfUkVEQUNURUQ="
+        },
+        "kind": "Secret",
+        "metadata": {
+          "name": "db-creds",
+          "namespace": "shop"
+        },
+        "type": "Opaque"
+      },
+      "name": "db-creds",
+      "namespace": "shop",
+      "provenance": {
+        "source": "SOURCE_UNMANAGED"
+      },
+      "redactions": [
+        {
+          "path": "metadata.annotations.kubectl.kubernetes.io/last-applied-configuration",
+          "reason": "REDACTION_REASON_LAST_APPLIED_CONFIGURATION"
+        },
+        {
+          "path": "data.password",
+          "reason": "REDACTION_REASON_SECRET_VALUE"
+        },
+        {
+          "path": "data.username",
+          "reason": "REDACTION_REASON_SECRET_VALUE"
+        }
+      ],
+      "sourceUid": "0b6f0000-0000-0000-0000-000000000020"
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Service",
+      "manifest": {
+        "apiVersion": "v1",
+        "kind": "Service",
+        "metadata": {
+          "name": "web",
+          "namespace": "shop"
+        },
+        "spec": {
+          "ports": [
+            {
+              "port": 80,
+              "targetPort": 8080
+            }
+          ],
+          "selector": {
+            "app": "web"
+          }
+        }
+      },
+      "name": "web",
+      "namespace": "shop",
+      "provenance": {
+        "source": "SOURCE_FLUX",
+        "manager": "flux-system/shop",
+        "evidence": {
+          "kustomize.toolkit.fluxcd.io/name": "shop"
+        }
+      },
+      "sourceUid": "0b6f0000-0000-0000-0000-000000000040"
+    },
+    {
+      "apiVersion": "apps/v1",
+      "kind": "Deployment",
+      "manifest": {
+        "apiVersion": "apps/v1",
+        "kind": "Deployment",
+        "metadata": {
+          "name": "web",
+          "namespace": "shop"
+        },
+        "spec": {
+          "replicas": 3,
+          "selector": {
+            "matchLabels": {
+              "app": "web"
+            }
+          },
+          "template": {
+            "metadata": {
+              "labels": {
+                "app": "web"
+              }
+            },
+            "spec": {
+              "containers": [
+                {
+                  "image": "ghcr.io/example/web:1.4.2",
+                  "name": "web",
+                  "resources": {
+                    "requests": {
+                      "cpu": "100m",
+                      "memory": "128Mi"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      },
+      "name": "web",
+      "namespace": "shop",
+      "provenance": {
+        "source": "SOURCE_ARGO_CD",
+        "manager": "shop-web",
+        "evidence": {
+          "argocd.argoproj.io/tracking-id": "shop-web:apps/Deployment:shop/web"
+        }
+      },
+      "sourceUid": "0b6f0000-0000-0000-0000-000000000010"
+    },
+    {
+      "apiVersion": "rbac.authorization.k8s.io/v1",
+      "kind": "ClusterRole",
+      "manifest": {
+        "apiVersion": "rbac.authorization.k8s.io/v1",
+        "kind": "ClusterRole",
+        "metadata": {
+          "name": "system:aggregate-to-shop"
+        },
+        "rules": [
+          {
+            "apiGroups": [
+              ""
+            ],
+            "resources": [
+              "configmaps"
+            ],
+            "verbs": [
+              "get",
+              "list"
+            ]
+          }
+        ]
+      },
+      "name": "system:aggregate-to-shop",
+      "provenance": {
+        "source": "SOURCE_UNMANAGED"
+      },
+      "sourceUid": "0b6f0000-0000-0000-0000-000000000050"
+    }
+  ],
+  "schemaVersion": "setdrift.snapshot.v1alpha1"
+}

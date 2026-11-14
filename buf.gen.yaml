@@ -1,0 +1,12 @@
+# Copyright The SetDrift Authors
+# SPDX-License-Identifier: Apache-2.0
+
+# code generation for snapshot schema in proto/
+# make generate runs buf generate with this file, must match exactly otherwise it fails
+version: v2
+plugins:
+# pinned by make generate, local so no network required and ensures output is machine agnostic 
+  - local: protoc-gen-go
+    out: .
+    opt:
+      - module=setdrift.io/setdrift-engine

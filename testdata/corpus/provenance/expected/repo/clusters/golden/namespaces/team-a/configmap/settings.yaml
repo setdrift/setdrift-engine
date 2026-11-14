@@ -1,0 +1,7 @@
+apiVersion: v1
+data:
+  mode: live
+kind: ConfigMap
+metadata:
+  name: settings
+  namespace: team-a

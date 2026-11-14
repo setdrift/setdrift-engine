@@ -1,0 +1,15 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: report
+  namespace: shop
+spec:
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+          - image: ghcr.io/example/report:3
+            name: report
+          restartPolicy: OnFailure
+  schedule: 0 3 * * *

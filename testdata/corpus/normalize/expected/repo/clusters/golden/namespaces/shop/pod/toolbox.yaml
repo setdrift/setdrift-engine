@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: toolbox
+  namespace: shop
+spec:
+  containers:
+  - image: ghcr.io/example/toolbox
+    name: toolbox
+  nodeName: ip-10-0-1-23.ec2.internal
+  tolerations:
+  - effect: NoSchedule
+    key: dedicated
+    operator: Equal
+    value: tools

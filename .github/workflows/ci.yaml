@@ -1,0 +1,73 @@
+# Copyright The SetDrift Authors
+# SPDX-License-Identifier: Apache-2.0
+
+# CI for every pull request and every push to main: lint, check that
+# generated files are current, test, and build for each release platform.
+# Each step runs a make target, so a failure can be reproduced locally.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Read-only token: CI only reads the repo. A public repo runs workflows from
+# forked pull requests, so the token gets no more than it needs.
+permissions:
+  contents: read
+
+# A new push to a pull request cancels the run still going for its previous
+# push. Each push to main gets its own group, so every commit on main is tested.
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      # Actions are pinned to a commit, not a tag: a tag can be moved to other
+      # code, a commit can't. Dependabot keeps the pins current.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          # The Go version in go.mod, so CI and local builds match.
+          go-version-file: go.mod
+      - run: make lint
+      # The public repo must never depend on the private one. Fails on any
+      # reference to the private module path (setdrift.io/setdrift).
+      - name: No references to the private module
+        run: |
+          if git grep -n 'setdrift\.io/setdrift\([/"]\|$\)'; then
+            echo "error: the public repo references the private module" >&2
+            exit 1
+          fi
+      # Generated code and THIRD_PARTY_NOTICES are committed. Regenerate both
+      # and fail if anything changed or a new file appeared (git status sees
+      # new files; git diff would not).
+      - name: Generated files are up to date
+        run: |
+          make generate notices
+          if [ -n "$(git status --porcelain)" ]; then
+            git status --porcelain
+            git diff
+            echo "error: run make generate notices and commit the result" >&2
+            exit 1
+          fi
+      # -race also catches data races in the concurrent code (collect, verify).
+      - name: Test
+        run: go test -race ./...
+      # Cross-compile for every release platform, so an OS-specific build
+      # break shows up here rather than at release time. Keep the list in step
+      # with scripts/third-party-notices.sh.
+      - name: Build
+        run: |
+          make build
+          for p in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64; do
+            GOOS=${p%/*} GOARCH=${p#*/} CGO_ENABLED=0 go build -o /dev/null ./cmd/setdrift
+          done
+
+  # Not here yet: end-to-end export, restore and verify against EKS for the
+  # three Kubernetes versions EKS supports (n-2). The harness is in test/e2e;
+  # running it from CI needs AWS credentials through OIDC (no stored keys) and
+  # a way to keep forked pull requests from starting billed clusters.

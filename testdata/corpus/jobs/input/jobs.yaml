@@ -1,0 +1,102 @@
+# Standalone Job that finished long ago: skipped by default. Its Pod is dropped as a child.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: migrate-v12
+  namespace: batch
+  uid: c0000000-0000-0000-0000-000000000010
+  labels:
+    batch.kubernetes.io/controller-uid: c0000000-0000-0000-0000-000000000010
+    batch.kubernetes.io/job-name: migrate-v12
+spec:
+  selector:
+    matchLabels: {batch.kubernetes.io/controller-uid: c0000000-0000-0000-0000-000000000010}
+  template:
+    metadata:
+      labels:
+        batch.kubernetes.io/controller-uid: c0000000-0000-0000-0000-000000000010
+        batch.kubernetes.io/job-name: migrate-v12
+    spec:
+      restartPolicy: Never
+      containers: [{name: migrate, image: ghcr.io/example/migrate:12}]
+status:
+  succeeded: 1
+  conditions: [{type: SuccessCriteriaMet, status: "True"}, {type: Complete, status: "True"}]
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: migrate-v12-4bq7d
+  namespace: batch
+  uid: c0000000-0000-0000-0000-000000000011
+  ownerReferences:
+  - {apiVersion: batch/v1, kind: Job, name: migrate-v12, uid: c0000000-0000-0000-0000-000000000010, controller: true}
+status: {phase: Succeeded}
+---
+# Running standalone Job: exported, with the generated selector and labels removed.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: backfill
+  namespace: batch
+  uid: c0000000-0000-0000-0000-000000000020
+  labels:
+    team: data
+    controller-uid: c0000000-0000-0000-0000-000000000020
+    job-name: backfill
+    batch.kubernetes.io/controller-uid: c0000000-0000-0000-0000-000000000020
+    batch.kubernetes.io/job-name: backfill
+spec:
+  backoffLimit: 2
+  selector:
+    matchLabels: {batch.kubernetes.io/controller-uid: c0000000-0000-0000-0000-000000000020}
+  template:
+    metadata:
+      labels:
+        team: data
+        controller-uid: c0000000-0000-0000-0000-000000000020
+        job-name: backfill
+        batch.kubernetes.io/controller-uid: c0000000-0000-0000-0000-000000000020
+        batch.kubernetes.io/job-name: backfill
+    spec:
+      restartPolicy: Never
+      containers: [{name: backfill, image: ghcr.io/example/backfill:3}]
+status: {active: 1}
+---
+# Running Job with a manual selector: the selector is the user's and is kept.
+# It sets ttlSecondsAfterFinished, so it is not reported as JOBS_WITHOUT_TTL.
+apiVersion: batch/v1
+kind: Job
+metadata: {name: reindex, namespace: batch, uid: c0000000-0000-0000-0000-000000000030}
+spec:
+  manualSelector: true
+  ttlSecondsAfterFinished: 3600
+  selector:
+    matchLabels: {app: reindex}
+  template:
+    metadata:
+      labels: {app: reindex}
+    spec:
+      restartPolicy: Never
+      containers: [{name: reindex, image: ghcr.io/example/reindex:1}]
+status: {active: 1}
+---
+# Hook Jobs are temporary by design: always skipped.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: db-init
+  namespace: batch
+  uid: c0000000-0000-0000-0000-000000000040
+  annotations: {helm.sh/hook: pre-install}
+status:
+  conditions: [{type: Complete, status: "True"}]
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: smoke-test
+  namespace: batch
+  uid: c0000000-0000-0000-0000-000000000050
+  annotations: {argocd.argoproj.io/hook: PostSync}
+status: {active: 1}

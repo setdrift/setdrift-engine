@@ -1,0 +1,6 @@
+# Written by setdrift export and read by setdrift verify: the cluster this
+# export came from. Not a Kubernetes manifest.
+cluster: golden
+exportedAt: "2026-01-01T00:00:00Z"
+kubernetesVersion: v1.35.0
+setdriftVersion: test

@@ -1,0 +1,56 @@
+apiVersion: v1
+kind: List
+items:
+- apiVersion: v1
+  kind: ConfigMap
+  metadata:
+    name: settings
+    namespace: shop
+    uid: 0b6f0000-0000-0000-0000-000000000030
+    labels:
+      app.kubernetes.io/managed-by: Helm
+    annotations:
+      meta.helm.sh/release-name: web-config
+      meta.helm.sh/release-namespace: shop
+  data:
+    LOG_LEVEL: info
+- apiVersion: v1
+  kind: Service
+  metadata:
+    name: web
+    namespace: shop
+    uid: 0b6f0000-0000-0000-0000-000000000040
+    labels:
+      kustomize.toolkit.fluxcd.io/name: shop
+      kustomize.toolkit.fluxcd.io/namespace: flux-system
+  spec:
+    selector: {app: web}
+    ports:
+    - port: 80
+      targetPort: 8080
+- apiVersion: rbac.authorization.k8s.io/v1
+  kind: ClusterRole
+  metadata:
+    name: system:aggregate-to-shop
+    uid: 0b6f0000-0000-0000-0000-000000000050
+  rules:
+  - apiGroups: [""]
+    resources: [configmaps]
+    verbs: [get, list]
+- apiVersion: v1
+  kind: Pod
+  metadata:
+    name: migrate-x7k2p
+    namespace: shop
+    uid: 0b6f0000-0000-0000-0000-000000000060
+    ownerReferences:
+    - apiVersion: batch/v1
+      kind: Job
+      name: migrate
+      uid: 0b6f0000-0000-0000-0000-000000000099
+      controller: true
+  spec:
+    restartPolicy: Never
+    containers:
+    - name: migrate
+      image: ghcr.io/example/migrate:1.0.0

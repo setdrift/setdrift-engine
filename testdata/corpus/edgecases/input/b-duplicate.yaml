@@ -1,0 +1,9 @@
+# The same ConfigMap again, as in a dump that was concatenated twice. The
+# first copy (from a-rendered.yaml) is kept.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: settings
+  namespace: shop
+data:
+  mode: second

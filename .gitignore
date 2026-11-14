@@ -1,0 +1,39 @@
+# Files git never tracks in setdrift-engine. This is the public repo, so the
+# rules keep out three things: build output, anything holding data from a real
+# cluster, and personal machine or editor state.
+
+# Build output, all rebuilt by `make`.
+# bin/: the setdrift and kubectl-setdrift binaries, plus the pinned buf and
+# protoc-gen-go tools the Makefile installs there (machine-specific, ~220 MB).
+/bin/
+# dist/: GoReleaser's output (make release-snapshot, and the release workflow).
+/dist/
+# A binary built with `go build ./cmd/setdrift` at the root.
+/setdrift
+/setdrift.exe
+
+# Cluster data. Exports are redacted, but still name clusters, accounts, ARNs
+# and hosts, so they stay out of the public repo.
+# out/: the export directory the README examples use (-o ./out).
+/out/
+# Protobuf snapshots (setdrift export --snapshot FILE), wherever they land.
+*.pb
+
+# Planning notes kept local for now: the engineering backlog is not public.
+/docs/BACKLOG.md
+
+# Go workspace files. The go.work that links this repo to the private one
+# lives in the parent folder; this guards against one created here.
+go.work
+go.work.sum
+
+# Test output: binaries from `go test -c` and coverage profiles.
+*.test
+coverage.out
+
+# Personal state, never committed.
+# macOS folder metadata, at every level.
+.DS_Store
+# Editors.
+.idea/
+.vscode/

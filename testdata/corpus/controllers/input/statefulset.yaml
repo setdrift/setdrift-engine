@@ -1,0 +1,69 @@
+# A StatefulSet with its revision history and Pod: all children are dropped.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: {name: db, namespace: store, uid: d0000000-0000-0000-0000-000000000010}
+spec:
+  serviceName: db
+  replicas: 1
+  selector: {matchLabels: {app: db}}
+  template:
+    metadata: {labels: {app: db}}
+    spec:
+      containers: [{name: postgres, image: postgres:17}]
+---
+apiVersion: apps/v1
+kind: ControllerRevision
+metadata:
+  name: db-6f7d9c
+  namespace: store
+  uid: d0000000-0000-0000-0000-000000000011
+  ownerReferences:
+  - {apiVersion: apps/v1, kind: StatefulSet, name: db, uid: d0000000-0000-0000-0000-000000000010, controller: true}
+revision: 1
+data: {}
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: db-0
+  namespace: store
+  uid: d0000000-0000-0000-0000-000000000012
+  ownerReferences:
+  - {apiVersion: apps/v1, kind: StatefulSet, name: db, uid: d0000000-0000-0000-0000-000000000010, controller: true}
+spec:
+  containers: [{name: postgres, image: postgres:17}]
+status: {phase: Running}
+---
+# The Service's controller-managed EndpointSlice is dropped; a hand-made
+# EndpointSlice with no owner is kept.
+apiVersion: v1
+kind: Service
+metadata: {name: db, namespace: store, uid: d0000000-0000-0000-0000-000000000020}
+spec:
+  clusterIP: None
+  selector: {app: db}
+  ports: [{name: pg, port: 5432}]
+---
+apiVersion: discovery.k8s.io/v1
+kind: EndpointSlice
+metadata:
+  name: db-x8k2m
+  namespace: store
+  uid: d0000000-0000-0000-0000-000000000021
+  labels: {kubernetes.io/service-name: db, endpointslice.kubernetes.io/managed-by: endpointslice-controller.k8s.io}
+  ownerReferences:
+  - {apiVersion: v1, kind: Service, name: db, uid: d0000000-0000-0000-0000-000000000020, controller: true}
+addressType: IPv4
+endpoints: [{addresses: [10.0.1.15]}]
+ports: [{name: pg, port: 5432}]
+---
+apiVersion: discovery.k8s.io/v1
+kind: EndpointSlice
+metadata:
+  name: legacy-db
+  namespace: store
+  uid: d0000000-0000-0000-0000-000000000022
+  labels: {kubernetes.io/service-name: legacy-db}
+addressType: IPv4
+endpoints: [{addresses: [10.20.0.5]}]
+ports: [{name: pg, port: 5432}]

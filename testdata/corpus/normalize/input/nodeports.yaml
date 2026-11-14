@@ -1,0 +1,91 @@
+# Node ports: kept only with proof someone set them.
+
+# Applied with client-side kubectl: last-applied shows 30080 was chosen for
+# port 80; 31443 for port 443 was assigned, and is dropped.
+apiVersion: v1
+kind: Service
+metadata:
+  name: edge
+  namespace: shop
+  uid: f0000000-0000-0000-0000-000000000050
+  annotations:
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"v1","kind":"Service","metadata":{"name":"edge","namespace":"shop"},"spec":{"type":"NodePort","selector":{"app":"edge"},"ports":[{"name":"http","port":80,"targetPort":8080,"nodePort":30080},{"name":"https","port":443,"targetPort":8443}]}}
+  managedFields:
+  - apiVersion: v1
+    fieldsType: FieldsV1
+    fieldsV1:
+      f:metadata:
+        f:annotations:
+          .: {}
+          f:kubectl.kubernetes.io/last-applied-configuration: {}
+      f:spec:
+        f:externalTrafficPolicy: {}
+        f:ports:
+          .: {}
+          k:{"port":80,"protocol":"TCP"}:
+            .: {}
+            f:name: {}
+            f:nodePort: {}
+            f:port: {}
+            f:protocol: {}
+            f:targetPort: {}
+          k:{"port":443,"protocol":"TCP"}:
+            .: {}
+            f:name: {}
+            f:nodePort: {}
+            f:port: {}
+            f:protocol: {}
+            f:targetPort: {}
+        f:selector: {}
+        f:type: {}
+    manager: kubectl-client-side-apply
+    operation: Update
+spec:
+  clusterIP: 172.20.40.1
+  clusterIPs: [172.20.40.1]
+  externalTrafficPolicy: Cluster
+  ports:
+  - {name: http, nodePort: 30080, port: 80, protocol: TCP, targetPort: 8080}
+  - {name: https, nodePort: 31443, port: 443, protocol: TCP, targetPort: 8443}
+  selector: {app: edge}
+  type: NodePort
+---
+# Applied with server-side apply (Argo CD ServerSideApply=true): the port
+# 9000 nodePort was sent, so it is owned and kept; the load balancer's other
+# node port and the health check node port were assigned.
+apiVersion: v1
+kind: Service
+metadata:
+  name: ingress
+  namespace: shop
+  uid: f0000000-0000-0000-0000-000000000051
+  managedFields:
+  - apiVersion: v1
+    fieldsType: FieldsV1
+    fieldsV1:
+      f:spec:
+        f:externalTrafficPolicy: {}
+        f:ports:
+          k:{"port":80,"protocol":"TCP"}:
+            .: {}
+            f:port: {}
+            f:targetPort: {}
+          k:{"port":9000,"protocol":"TCP"}:
+            .: {}
+            f:nodePort: {}
+            f:port: {}
+        f:selector: {}
+        f:type: {}
+    manager: argocd-controller
+    operation: Apply
+spec:
+  allocateLoadBalancerNodePorts: true
+  clusterIP: 172.20.40.2
+  externalTrafficPolicy: Local
+  healthCheckNodePort: 32001
+  ports:
+  - {nodePort: 31080, port: 80, protocol: TCP, targetPort: 8080}
+  - {nodePort: 30900, port: 9000, protocol: TCP, targetPort: 9000}
+  selector: {app: ingress}
+  type: LoadBalancer

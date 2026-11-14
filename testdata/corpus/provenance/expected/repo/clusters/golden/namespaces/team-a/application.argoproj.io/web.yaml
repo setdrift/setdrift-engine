@@ -1,0 +1,14 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: web
+  namespace: team-a
+spec:
+  destination:
+    namespace: team-a
+    server: https://kubernetes.default.svc
+  project: team-a
+  source:
+    path: web
+    repoURL: https://github.com/example/team-a
+    targetRevision: main

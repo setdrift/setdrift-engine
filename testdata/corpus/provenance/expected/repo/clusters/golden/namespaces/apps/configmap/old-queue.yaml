@@ -1,0 +1,7 @@
+apiVersion: v1
+data:
+  size: "5"
+kind: ConfigMap
+metadata:
+  name: old-queue
+  namespace: apps

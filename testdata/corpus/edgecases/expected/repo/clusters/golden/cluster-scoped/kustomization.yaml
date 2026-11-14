@@ -1,0 +1,7 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+- clusterrole.rbac.authorization.k8s.io/Admin.yaml
+- clusterrole.rbac.authorization.k8s.io/admin-8c6976e5.yaml
+- clusterrole.rbac.authorization.k8s.io/ops_viewer-fdc00487.yaml
+- clusterrole.rbac.authorization.k8s.io/ops_viewer.yaml

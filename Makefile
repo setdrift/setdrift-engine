@@ -1,0 +1,81 @@
+# Copyright The SetDrift Authors
+# SPDX-License-Identifier: Apache-2.0
+
+BIN := $(CURDIR)/bin
+## override set version e.g. make build VERSION=v0.1.0
+## empty before the first tag: the binary then uses the version Go records
+VERSION ?= $(shell git describe --tags --dirty 2>/dev/null)
+COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null)
+## flags passed to go linker
+LDFLAGS := -s -w \
+	-X setdrift.io/setdrift-engine/internal/version.Version=$(VERSION) \
+	-X setdrift.io/setdrift-engine/internal/version.Commit=$(COMMIT)
+
+BUF_VERSION           := v1.75.0
+PROTOC_GEN_GO_VERSION := v1.36.12
+
+## indicates target are command names not files
+.PHONY: build plugin helm-plugin test golden generate notices lint tools clean release-snapshot e2e-setup e2e-up e2e-ready e2e-populate e2e-restore e2e-status e2e-down
+
+build: ## Build bin/setdrift
+	go build -ldflags "$(LDFLAGS)" -o $(BIN)/setdrift ./cmd/setdrift
+
+plugin: build ## Build bin/kubectl-setdrift (runs as `kubectl setdrift`)
+	cp $(BIN)/setdrift $(BIN)/kubectl-setdrift
+
+helm-plugin: ## Package the Helm post-renderer plugin as bin/setdrift-source-repo.tgz (helm plugin install <file or URL>)
+	mkdir -p $(BIN)
+	COPYFILE_DISABLE=1 tar -C contrib/helm -czf $(BIN)/setdrift-source-repo.tgz setdrift-source-repo
+
+test: ## Run all tests
+	go test ./...
+
+golden: ## Regenerate golden files after an intended output change; review the diff
+	go test ./pkg/pipeline -run TestGolden -update
+
+generate: tools ## Regenerate Go code from proto/
+	PATH="$(BIN):$$PATH" $(BIN)/buf generate
+
+notices: ## Regenerate THIRD_PARTY_NOTICES after a dependency change
+	scripts/third-party-notices.sh
+
+lint: tools ## Lint Go and proto, and check license headers
+	test -z "$$(gofmt -l .)" || (gofmt -l . && exit 1)
+	go vet ./...
+	$(BIN)/buf lint
+	bash scripts/check-license-headers.sh
+
+tools: $(BIN)/buf $(BIN)/protoc-gen-go
+
+$(BIN)/buf:
+	GOBIN=$(BIN) go install github.com/bufbuild/buf/cmd/buf@$(BUF_VERSION)
+
+$(BIN)/protoc-gen-go:
+	GOBIN=$(BIN) go install google.golang.org/protobuf/cmd/protoc-gen-go@$(PROTOC_GEN_GO_VERSION)
+
+e2e-setup: ## Deploy the e2e reaper (once per account and region)
+	test/e2e/cluster.sh setup
+
+e2e-up: ## Start creating the e2e cluster in the background
+	test/e2e/cluster.sh up
+
+e2e-ready: ## Create the e2e cluster if needed and wait until it is ready
+	test/e2e/cluster.sh ensure
+
+e2e-populate: e2e-ready ## Install Argo CD, Flux, ESO and the fixtures
+	test/e2e/populate.sh
+
+e2e-restore: ## Follow RESTORE.md into a second e2e cluster and check the result (~30 min)
+	test/e2e/restore.sh
+
+e2e-status: ## Show the e2e cluster's state and time until teardown
+	test/e2e/cluster.sh status
+
+e2e-down: ## Tear the e2e cluster down now
+	test/e2e/cluster.sh down
+
+release-snapshot: ## Build the release archives and Homebrew formula into dist/ without publishing (needs goreleaser)
+	goreleaser release --snapshot --clean
+
+clean:
+	rm -rf $(BIN)

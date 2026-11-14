@@ -1,0 +1,166 @@
+{
+  "capturedAt": "2026-01-01T00:00:00Z",
+  "cluster": {
+    "name": "golden",
+    "kubernetesVersion": "v1.35.0"
+  },
+  "findings": [
+    {
+      "severity": "SEVERITY_WARNING",
+      "code": "DUPLICATE_RESOURCE",
+      "message": "ConfigMap shop/settings appears more than once in the input; kept the first copy"
+    }
+  ],
+  "id": "golden",
+  "producer": {
+    "name": "setdrift-test",
+    "version": "test"
+  },
+  "resources": [
+    {
+      "apiVersion": "v1",
+      "kind": "ConfigMap",
+      "manifest": {
+        "apiVersion": "v1",
+        "data": {
+          "mode": "first"
+        },
+        "kind": "ConfigMap",
+        "metadata": {
+          "name": "settings",
+          "namespace": "shop"
+        }
+      },
+      "name": "settings",
+      "namespace": "shop",
+      "provenance": {
+        "source": "SOURCE_UNMANAGED"
+      }
+    },
+    {
+      "apiVersion": "apiextensions.k8s.io/v1",
+      "kind": "CustomResourceDefinition",
+      "manifest": {
+        "apiVersion": "apiextensions.k8s.io/v1",
+        "kind": "CustomResourceDefinition",
+        "metadata": {
+          "name": "widgets.example.com"
+        },
+        "spec": {
+          "group": "example.com",
+          "names": {
+            "kind": "Widget",
+            "listKind": "WidgetList",
+            "plural": "widgets",
+            "singular": "widget"
+          },
+          "scope": "Namespaced",
+          "versions": [
+            {
+              "name": "v1",
+              "schema": {
+                "openAPIV3Schema": {
+                  "type": "object",
+                  "x-kubernetes-preserve-unknown-fields": true
+                }
+              },
+              "served": true,
+              "storage": true
+            }
+          ]
+        }
+      },
+      "name": "widgets.example.com",
+      "provenance": {
+        "source": "SOURCE_UNMANAGED"
+      },
+      "sourceUid": "e0000000-0000-0000-0000-000000000090"
+    },
+    {
+      "apiVersion": "example.com/v1",
+      "kind": "Widget",
+      "manifest": {
+        "apiVersion": "example.com/v1",
+        "kind": "Widget",
+        "metadata": {
+          "name": "blue",
+          "namespace": "shop"
+        },
+        "spec": {
+          "color": "blue"
+        }
+      },
+      "name": "blue",
+      "namespace": "shop",
+      "provenance": {
+        "source": "SOURCE_UNMANAGED"
+      },
+      "sourceUid": "e0000000-0000-0000-0000-000000000091"
+    },
+    {
+      "apiVersion": "rbac.authorization.k8s.io/v1",
+      "kind": "ClusterRole",
+      "manifest": {
+        "apiVersion": "rbac.authorization.k8s.io/v1",
+        "kind": "ClusterRole",
+        "metadata": {
+          "name": "Admin"
+        },
+        "rules": []
+      },
+      "name": "Admin",
+      "provenance": {
+        "source": "SOURCE_UNMANAGED"
+      }
+    },
+    {
+      "apiVersion": "rbac.authorization.k8s.io/v1",
+      "kind": "ClusterRole",
+      "manifest": {
+        "apiVersion": "rbac.authorization.k8s.io/v1",
+        "kind": "ClusterRole",
+        "metadata": {
+          "name": "admin"
+        },
+        "rules": []
+      },
+      "name": "admin",
+      "provenance": {
+        "source": "SOURCE_UNMANAGED"
+      }
+    },
+    {
+      "apiVersion": "rbac.authorization.k8s.io/v1",
+      "kind": "ClusterRole",
+      "manifest": {
+        "apiVersion": "rbac.authorization.k8s.io/v1",
+        "kind": "ClusterRole",
+        "metadata": {
+          "name": "ops:viewer"
+        },
+        "rules": []
+      },
+      "name": "ops:viewer",
+      "provenance": {
+        "source": "SOURCE_UNMANAGED"
+      }
+    },
+    {
+      "apiVersion": "rbac.authorization.k8s.io/v1",
+      "kind": "ClusterRole",
+      "manifest": {
+        "apiVersion": "rbac.authorization.k8s.io/v1",
+        "kind": "ClusterRole",
+        "metadata": {
+          "name": "ops_viewer"
+        },
+        "rules": []
+      },
+      "name": "ops_viewer",
+      "provenance": {
+        "source": "SOURCE_UNMANAGED"
+      }
+    }
+  ],
+  "schemaVersion": "setdrift.snapshot.v1alpha1"
+}

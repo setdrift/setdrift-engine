@@ -1,0 +1,252 @@
+# Copyright The SetDrift Authors
+# SPDX-License-Identifier: Apache-2.0
+
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  SetDrift e2e reaper: deletes e2e cluster stacks (eks-cluster.yaml) that have
+  been idle longer than IdleMinutes, and cleans up what the cluster's
+  controllers created outside CloudFormation (load balancers, security groups,
+  network interfaces, EBS volumes, test secrets). Deploy once per account and
+  region; it costs next to nothing while no cluster runs. test/e2e/cluster.sh
+  records use in an SSM parameter per cluster.
+
+Parameters:
+  StackPrefix:
+    Type: String
+    Default: setdrift-e2e
+    Description: Cluster stacks whose names start with this are managed.
+  IdleMinutes:
+    Type: Number
+    Default: 120
+    MinValue: 15
+
+Resources:
+  # The role CloudFormation uses to create and delete cluster stacks, so a
+  # deletion started by the reaper has the permissions to finish.
+  ClusterStackRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: {Service: cloudformation.amazonaws.com}
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: e2e-cluster-stack
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: [ec2:*, eks:*]
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - iam:CreateRole
+                  - iam:DeleteRole
+                  - iam:GetRole
+                  - iam:PassRole
+                  - iam:TagRole
+                  - iam:UntagRole
+                  - iam:UpdateAssumeRolePolicy
+                  - iam:AttachRolePolicy
+                  - iam:DetachRolePolicy
+                  - iam:PutRolePolicy
+                  - iam:GetRolePolicy
+                  - iam:DeleteRolePolicy
+                  - iam:ListRolePolicies
+                  - iam:ListAttachedRolePolicies
+                  - iam:ListInstanceProfilesForRole
+                Resource: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${StackPrefix}-*
+              - Effect: Allow
+                Action: iam:CreateServiceLinkedRole
+                Resource: "*"
+                Condition:
+                  StringLike:
+                    iam:AWSServiceName: [eks.amazonaws.com, eks-nodegroup.amazonaws.com, elasticloadbalancing.amazonaws.com]
+
+  ReaperRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: {Service: lambda.amazonaws.com}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: reap
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: [cloudformation:ListStacks, ec2:DescribeVolumes, ec2:DescribeSecurityGroups, ec2:DescribeNetworkInterfaces, elasticloadbalancing:DescribeLoadBalancers, elasticloadbalancing:DescribeTargetGroups, elasticloadbalancing:DescribeTags, secretsmanager:ListSecrets]
+                Resource: "*"
+              - Effect: Allow
+                Action: [cloudformation:DescribeStacks, cloudformation:DescribeStackResource, cloudformation:DeleteStack]
+                Resource: !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${StackPrefix}-*
+              - Effect: Allow
+                Action: iam:PassRole
+                Resource: !GetAtt ClusterStackRole.Arn
+              - Effect: Allow
+                Action: [ssm:GetParameter, ssm:DeleteParameter]
+                Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${StackPrefix}/*
+              # Deletes only what the code finds in an e2e stack's VPC or
+              # tagged with an e2e cluster's name.
+              - Effect: Allow
+                Action: [ec2:DeleteVolume, ec2:DeleteSecurityGroup, ec2:RevokeSecurityGroupIngress, ec2:RevokeSecurityGroupEgress, ec2:DeleteNetworkInterface, elasticloadbalancing:DeleteLoadBalancer, elasticloadbalancing:DeleteTargetGroup]
+                Resource: "*"
+              - Effect: Allow
+                Action: secretsmanager:DeleteSecret
+                Resource: !Sub arn:${AWS::Partition}:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${StackPrefix}-*
+
+  Reaper:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: Deletes idle SetDrift e2e cluster stacks
+      Runtime: python3.13
+      Handler: index.handler
+      Timeout: 300
+      Role: !GetAtt ReaperRole.Arn
+      Environment:
+        Variables:
+          STACK_PREFIX: !Ref StackPrefix
+          IDLE_MINUTES: !Ref IdleMinutes
+          STACK_ROLE_ARN: !GetAtt ClusterStackRole.Arn
+      Code:
+        ZipFile: |
+          # Run every 15 minutes, and by `cluster.sh down` with {"force": "<stack>"}.
+          # Each run moves every managed stack one step on, so a deletion that
+          # fails (on resources a controller left in the VPC) is retried.
+          import datetime, logging, os
+          import boto3
+          from botocore.exceptions import ClientError
+
+          log = logging.getLogger()
+          log.setLevel(logging.INFO)
+          PREFIX = os.environ["STACK_PREFIX"]
+          IDLE = datetime.timedelta(minutes=int(os.environ["IDLE_MINUTES"]))
+          ROLE = os.environ["STACK_ROLE_ARN"]
+          cfn, ssm, ec2 = boto3.client("cloudformation"), boto3.client("ssm"), boto3.client("ec2")
+          elb, sm = boto3.client("elbv2"), boto3.client("secretsmanager")
+          IDLE_STATES = {"CREATE_COMPLETE", "UPDATE_COMPLETE", "UPDATE_ROLLBACK_COMPLETE", "ROLLBACK_COMPLETE", "CREATE_FAILED"}
+
+          def handler(event, _ctx):
+              now = datetime.datetime.now(datetime.timezone.utc)
+              force = (event or {}).get("force")
+              live = set()
+              for page in cfn.get_paginator("list_stacks").paginate():
+                  for s in page["StackSummaries"]:
+                      name, status = s["StackName"], s["StackStatus"]
+                      if not name.startswith(PREFIX + "-") or status == "DELETE_COMPLETE":
+                          continue
+                      live.add(name)
+                      if status == "DELETE_FAILED":
+                          log.info("%s: deletion failed; cleaning up and retrying", name)
+                          clean_vpc(name, everything=True)
+                          delete(name)
+                      elif status in IDLE_STATES:
+                          last = last_used(name, s)
+                          if name == force or now - last > IDLE:
+                              log.info("%s: idle since %s; deleting", name, last.isoformat())
+                              clean_vpc(name, everything=False)
+                              delete(name)
+                          else:
+                              log.info("%s: in use (last %s)", name, last.isoformat())
+              # Leftovers of clusters whose stacks are gone.
+              clean_volumes(live)
+              clean_secrets(live)
+              return {"managed": sorted(live)}
+
+          def last_used(name, summary):
+              try:
+                  v = ssm.get_parameter(Name=f"/{PREFIX}/{name}/last-used")["Parameter"]["Value"]
+                  return datetime.datetime.fromisoformat(v)
+              except (ClientError, ValueError):
+                  return summary.get("LastUpdatedTime") or summary["CreationTime"]
+
+          def delete(name):
+              cfn.delete_stack(StackName=name, RoleARN=ROLE)
+
+          def vpc_of(name):
+              try:
+                  return cfn.describe_stack_resource(StackName=name, LogicalResourceId="Vpc")["StackResourceDetail"]["PhysicalResourceId"]
+              except ClientError:
+                  return None
+
+          def quietly(f, **kw):
+              try:
+                  f(**kw)
+              except ClientError as e:
+                  log.info("%s %s: %s", f.__name__, kw, e.response["Error"]["Code"])
+
+          def clean_vpc(name, everything):
+              # Load balancers block the subnets; delete them before the stack.
+              # Security groups and network interfaces are only left once the
+              # cluster is gone, i.e. after a failed deletion.
+              vpc = vpc_of(name)
+              if not vpc:
+                  return
+              for page in elb.get_paginator("describe_load_balancers").paginate():
+                  for lb in page["LoadBalancers"]:
+                      if lb["VpcId"] == vpc:
+                          quietly(elb.delete_load_balancer, LoadBalancerArn=lb["LoadBalancerArn"])
+              for page in elb.get_paginator("describe_target_groups").paginate():
+                  for tg in page["TargetGroups"]:
+                      if tg.get("VpcId") == vpc:
+                          quietly(elb.delete_target_group, TargetGroupArn=tg["TargetGroupArn"])
+              if not everything:
+                  return
+              f = [{"Name": "vpc-id", "Values": [vpc]}]
+              for eni in ec2.describe_network_interfaces(Filters=f + [{"Name": "status", "Values": ["available"]}])["NetworkInterfaces"]:
+                  quietly(ec2.delete_network_interface, NetworkInterfaceId=eni["NetworkInterfaceId"])
+              groups = [g for g in ec2.describe_security_groups(Filters=f)["SecurityGroups"] if g["GroupName"] != "default"]
+              for g in groups:  # groups that reference each other block deletion
+                  if g["IpPermissions"]:
+                      quietly(ec2.revoke_security_group_ingress, GroupId=g["GroupId"], IpPermissions=g["IpPermissions"])
+                  if g["IpPermissionsEgress"]:
+                      quietly(ec2.revoke_security_group_egress, GroupId=g["GroupId"], IpPermissions=g["IpPermissionsEgress"])
+              for g in groups:
+                  quietly(ec2.delete_security_group, GroupId=g["GroupId"])
+
+          def clean_volumes(live):
+              # Dynamically provisioned EBS volumes outlive the cluster.
+              for page in ec2.get_paginator("describe_volumes").paginate(Filters=[
+                      {"Name": "status", "Values": ["available"]},
+                      {"Name": "tag-key", "Values": ["eks:eks-cluster-name", "KubernetesCluster"]}]):
+                  for v in page["Volumes"]:
+                      tags = {t["Key"]: t["Value"] for t in v.get("Tags", [])}
+                      cluster = tags.get("eks:eks-cluster-name") or tags.get("KubernetesCluster", "")
+                      if cluster.startswith(PREFIX + "-") and cluster not in live:
+                          quietly(ec2.delete_volume, VolumeId=v["VolumeId"])
+
+          def clean_secrets(live):
+              # Test values the e2e run stores for External Secrets Operator.
+              for page in sm.get_paginator("list_secrets").paginate(Filters=[{"Key": "name", "Values": [PREFIX + "-"]}]):
+                  for s in page["SecretList"]:
+                      cluster = s["Name"].split("/", 1)[0]
+                      if cluster not in live:
+                          quietly(sm.delete_secret, SecretId=s["ARN"], ForceDeleteWithoutRecovery=True)
+
+  Schedule:
+    Type: AWS::Events::Rule
+    Properties:
+      ScheduleExpression: rate(15 minutes)
+      Targets:
+        - Id: reaper
+          Arn: !GetAtt Reaper.Arn
+  SchedulePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref Reaper
+      Action: lambda:InvokeFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt Schedule.Arn
+
+Outputs:
+  ClusterStackRoleArn:
+    Value: !GetAtt ClusterStackRole.Arn
+  ReaperFunction:
+    Value: !Ref Reaper

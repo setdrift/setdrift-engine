@@ -1,0 +1,8 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+- cronjob.batch/nightly.yaml
+- deployment.apps/api.yaml
+- job.batch/backfill.yaml
+- job.batch/reindex.yaml
+- pod/toolbox.yaml

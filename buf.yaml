@@ -1,0 +1,14 @@
+# Copyright The SetDrift Authors
+# SPDX-License-Identifier: Apache-2.0
+
+# buf config for snapshot schema, .proto file location and rules they are checked against
+version: v2
+modules:
+  # proto/ is the import root
+  - path: proto
+lint:
+  use:
+    - STANDARD
+breaking:
+  use:
+    - FILE

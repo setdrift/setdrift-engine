@@ -1,0 +1,16 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-web
+  namespace: shop
+spec:
+  egress:
+  - ports:
+    - port: 53
+      protocol: UDP
+  ingress:
+  - ports:
+    - port: 8080
+  podSelector:
+    matchLabels:
+      app: web

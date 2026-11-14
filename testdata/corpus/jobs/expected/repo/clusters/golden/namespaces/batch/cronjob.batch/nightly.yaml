@@ -1,0 +1,16 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: nightly
+  namespace: batch
+spec:
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+          - image: ghcr.io/example/report:2.0.0
+            name: report
+          restartPolicy: OnFailure
+  schedule: 0 2 * * *
+  successfulJobsHistoryLimit: 10

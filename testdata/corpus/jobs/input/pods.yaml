@@ -1,0 +1,55 @@
+# Bare completed pod (kubectl run --restart=Never): skipped.
+apiVersion: v1
+kind: Pod
+metadata: {name: debug-shell, namespace: batch, uid: c0000000-0000-0000-0000-000000000060}
+spec:
+  restartPolicy: Never
+  containers: [{name: sh, image: busybox:1.36}]
+status: {phase: Succeeded}
+---
+# Pod orphaned by `kubectl delete job --cascade=orphan`, failed: skipped.
+apiVersion: v1
+kind: Pod
+metadata: {name: old-migrate-abcde, namespace: batch, uid: c0000000-0000-0000-0000-000000000061}
+spec:
+  restartPolicy: Never
+  containers: [{name: migrate, image: ghcr.io/example/migrate:11}]
+status: {phase: Failed}
+---
+# Bare running pod: exported, flagged BARE_POD.
+apiVersion: v1
+kind: Pod
+metadata: {name: toolbox, namespace: batch, uid: c0000000-0000-0000-0000-000000000062}
+spec:
+  containers: [{name: toolbox, image: ghcr.io/example/toolbox:1}]
+status: {phase: Running}
+---
+# Evicted pod of a live Deployment: dropped as a child by ownership.
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: api, namespace: batch, uid: c0000000-0000-0000-0000-000000000070}
+spec:
+  selector: {matchLabels: {app: api}}
+  template:
+    metadata: {labels: {app: api}}
+    spec:
+      containers: [{name: api, image: ghcr.io/example/api:5}]
+---
+apiVersion: apps/v1
+kind: ReplicaSet
+metadata:
+  name: api-5d8f
+  namespace: batch
+  uid: c0000000-0000-0000-0000-000000000071
+  ownerReferences:
+  - {apiVersion: apps/v1, kind: Deployment, name: api, uid: c0000000-0000-0000-0000-000000000070, controller: true}
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: api-5d8f-evict
+  namespace: batch
+  uid: c0000000-0000-0000-0000-000000000072
+  ownerReferences:
+  - {apiVersion: apps/v1, kind: ReplicaSet, name: api-5d8f, uid: c0000000-0000-0000-0000-000000000071, controller: true}
+status: {phase: Failed, reason: Evicted}

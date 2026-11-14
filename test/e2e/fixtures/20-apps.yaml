@@ -1,0 +1,356 @@
+# Copyright The SetDrift Authors
+# SPDX-License-Identifier: Apache-2.0
+# Namespace sd-apps: a typical app, applied client-side, with defaults written
+# out explicitly in places (as many real manifests do).
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: web-config, namespace: sd-apps}
+data:
+  LOG_LEVEL: info
+  app.properties: |
+    db.host=db.sd-apps.svc
+    db.password=hunter2-not-redacted?
+---
+apiVersion: v1
+kind: Secret
+metadata: {name: web-db, namespace: sd-apps, labels: {app: web}}
+type: Opaque
+stringData: {username: web, password: s3cr3t-value}
+---
+apiVersion: v1
+kind: Secret
+metadata: {name: regcred, namespace: sd-apps}
+type: kubernetes.io/dockerconfigjson
+stringData:
+  .dockerconfigjson: '{"auths":{"registry.example.com":{"username":"u","password":"p","auth":"dTpw"}}}'
+---
+apiVersion: v1
+kind: Secret
+metadata: {name: web-tls, namespace: sd-apps}
+type: kubernetes.io/tls
+stringData: {tls.crt: "-----BEGIN CERTIFICATE-----\nZmFrZQ==\n-----END CERTIFICATE-----\n", tls.key: "-----BEGIN PRIVATE KEY-----\nZmFrZQ==\n-----END PRIVATE KEY-----\n"}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: web, namespace: sd-apps}
+imagePullSecrets: [{name: regcred}]
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: web-token
+  namespace: sd-apps
+  annotations: {kubernetes.io/service-account.name: web}
+type: kubernetes.io/service-account-token
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: web, namespace: sd-apps}
+rules:
+- apiGroups: [""]
+  resources: [configmaps]
+  verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: web, namespace: sd-apps}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: web}
+subjects: [{kind: ServiceAccount, name: web, namespace: sd-apps}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: web, namespace: sd-apps, labels: {app: web}}
+spec:
+  replicas: 2
+  revisionHistoryLimit: 10
+  progressDeadlineSeconds: 600
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: {maxSurge: 25%, maxUnavailable: 25%}
+  selector: {matchLabels: {app: web}}
+  template:
+    metadata: {labels: {app: web}}
+    spec:
+      serviceAccountName: web
+      priorityClassName: sd-high
+      terminationGracePeriodSeconds: 30
+      dnsPolicy: ClusterFirst
+      restartPolicy: Always
+      containers:
+      - name: web
+        image: public.ecr.aws/nginx/nginx:1.27
+        imagePullPolicy: IfNotPresent
+        ports: [{containerPort: 80, protocol: TCP, name: http}]
+        env:
+        - {name: DB_PASSWORD, valueFrom: {secretKeyRef: {name: web-db, key: password}}}
+        - {name: API_TOKEN, value: "not-a-real-token-but-named-like-one"}
+        envFrom: [{configMapRef: {name: web-config}}]
+        resources:
+          requests: {cpu: 50m, memory: 64Mi}
+          limits: {memory: 128Mi}
+        readinessProbe:
+          httpGet: {path: /, port: 80}
+        volumeMounts: [{name: cfg, mountPath: /etc/web}]
+      volumes:
+      - name: cfg
+        configMap: {name: web-config}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: web, namespace: sd-apps}
+spec:
+  selector: {app: web}
+  ports: [{name: http, port: 80, targetPort: http}]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: web-nodeport, namespace: sd-apps}
+spec:
+  type: NodePort
+  selector: {app: web}
+  ports: [{port: 80, targetPort: 80}]
+---
+apiVersion: v1
+kind: Service
+metadata: {name: external-db, namespace: sd-apps}
+spec:
+  type: ExternalName
+  externalName: db.example.com
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata: {name: web, namespace: sd-apps}
+spec:
+  ingressClassName: sd-none
+  tls: [{hosts: [web.example.com], secretName: web-tls}]
+  rules:
+  - host: web.example.com
+    http:
+      paths:
+      - {path: /, pathType: Prefix, backend: {service: {name: web, port: {name: http}}}}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata: {name: web, namespace: sd-apps}
+spec:
+  minAvailable: 1
+  selector: {matchLabels: {app: web}}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: api, namespace: sd-apps}
+spec:
+  selector: {matchLabels: {app: api}}
+  template:
+    metadata: {labels: {app: api}}
+    spec:
+      containers:
+      - name: api
+        image: public.ecr.aws/docker/library/busybox:1.36
+        command: [sh, -c, "sleep infinity"]
+        resources: {requests: {cpu: 20m, memory: 16Mi}}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata: {name: api, namespace: sd-apps}
+spec:
+  scaleTargetRef: {apiVersion: apps/v1, kind: Deployment, name: api}
+  minReplicas: 2
+  maxReplicas: 4
+  metrics:
+  - type: Resource
+    resource: {name: cpu, target: {type: Utilization, averageUtilization: 80}}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: web-ingress, namespace: sd-apps}
+spec:
+  podSelector: {matchLabels: {app: web}}
+  ingress:
+  - from: [{podSelector: {}}]
+    ports: [{port: 80}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: deny-egress, namespace: sd-apps}
+spec:
+  podSelector: {matchLabels: {app: api}}
+  policyTypes: [Egress]
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata: {name: quota, namespace: sd-apps}
+spec:
+  hard: {pods: "50", requests.cpu: "8"}
+---
+apiVersion: v1
+kind: LimitRange
+metadata: {name: limits, namespace: sd-apps}
+spec:
+  limits:
+  - type: Container
+    defaultRequest: {cpu: 10m, memory: 16Mi}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: db, namespace: sd-apps}
+spec:
+  clusterIP: None
+  selector: {app: db}
+  ports: [{port: 5432}]
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: {name: db, namespace: sd-apps}
+spec:
+  serviceName: db
+  replicas: 1
+  selector: {matchLabels: {app: db}}
+  template:
+    metadata: {labels: {app: db}}
+    spec:
+      containers:
+      - name: db
+        image: public.ecr.aws/docker/library/busybox:1.36
+        command: [sh, -c, "sleep infinity"]
+        resources: {requests: {cpu: 10m, memory: 16Mi}}
+        volumeMounts: [{name: data, mountPath: /data}]
+  volumeClaimTemplates:
+  - metadata: {name: data}
+    spec:
+      accessModes: [ReadWriteOnce]
+      resources: {requests: {storage: 1Gi}}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {name: scratch, namespace: sd-apps}
+spec:
+  accessModes: [ReadWriteOnce]
+  resources: {requests: {storage: 1Gi}}
+---
+apiVersion: v1
+kind: Pod
+metadata: {name: scratch-user, namespace: sd-apps}
+spec:
+  containers:
+  - name: c
+    image: public.ecr.aws/docker/library/busybox:1.36
+    command: [sh, -c, "sleep infinity"]
+    resources: {requests: {cpu: 10m, memory: 16Mi}}
+    volumeMounts: [{name: s, mountPath: /s}]
+  volumes: [{name: s, persistentVolumeClaim: {claimName: scratch}}]
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata: {name: node-agent, namespace: sd-apps}
+spec:
+  selector: {matchLabels: {app: node-agent}}
+  template:
+    metadata: {labels: {app: node-agent}}
+    spec:
+      tolerations: [{operator: Exists}]
+      containers:
+      - name: agent
+        image: public.ecr.aws/docker/library/busybox:1.36
+        command: [sh, -c, "sleep infinity"]
+        resources: {requests: {cpu: 5m, memory: 8Mi}}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata: {name: report, namespace: sd-apps}
+spec:
+  schedule: "*/2 * * * *"
+  successfulJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+          - name: r
+            image: public.ecr.aws/docker/library/busybox:1.36
+            command: [sh, -c, "echo report"]
+            resources: {requests: {cpu: 5m, memory: 8Mi}}
+---
+apiVersion: batch/v1
+kind: Job
+metadata: {name: migrate-done, namespace: sd-apps}
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: m
+        image: public.ecr.aws/docker/library/busybox:1.36
+        command: [sh, -c, "echo migrated"]
+        resources: {requests: {cpu: 5m, memory: 8Mi}}
+---
+apiVersion: batch/v1
+kind: Job
+metadata: {name: worker-running, namespace: sd-apps}
+spec:
+  parallelism: 2
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: w
+        image: public.ecr.aws/docker/library/busybox:1.36
+        command: [sh, -c, "sleep infinity"]
+        resources: {requests: {cpu: 5m, memory: 8Mi}}
+---
+apiVersion: v1
+kind: Pod
+metadata: {name: debug-shell, namespace: sd-apps}
+spec:
+  containers:
+  - name: s
+    image: public.ecr.aws/docker/library/busybox:1.36
+    command: [sh, -c, "sleep infinity"]
+    resources: {requests: {cpu: 5m, memory: 8Mi}}
+---
+apiVersion: v1
+kind: Pod
+metadata: {name: one-shot, namespace: sd-apps}
+spec:
+  restartPolicy: Never
+  containers:
+  - name: s
+    image: public.ecr.aws/docker/library/busybox:1.36
+    command: [sh, -c, "echo done"]
+    resources: {requests: {cpu: 5m, memory: 8Mi}}
+---
+apiVersion: example.com/v1
+kind: Widget
+metadata: {name: blue, namespace: sd-apps}
+spec: {color: blue}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: stuck
+  namespace: sd-apps
+  finalizers: [example.com/block]
+data: {a: b}
+---
+# IRSA: the playbook must say the role's trust policy needs the new
+# cluster's OIDC provider. The role need not exist.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: reports
+  namespace: sd-apps
+  annotations: {eks.amazonaws.com/role-arn: "arn:aws:iam::111122223333:role/setdrift-e2e-reports"}
+---
+# An internal NLB (EKS Auto Mode), whose address changes in a new cluster.
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-lb
+  namespace: sd-apps
+  annotations: {service.beta.kubernetes.io/aws-load-balancer-scheme: internal}
+spec:
+  type: LoadBalancer
+  loadBalancerClass: eks.amazonaws.com/nlb
+  selector: {app: web}
+  ports: [{port: 80, targetPort: 80}]

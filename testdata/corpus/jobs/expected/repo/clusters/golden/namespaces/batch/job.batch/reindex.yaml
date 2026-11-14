@@ -1,0 +1,20 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: reindex
+  namespace: batch
+spec:
+  manualSelector: true
+  selector:
+    matchLabels:
+      app: reindex
+  template:
+    metadata:
+      labels:
+        app: reindex
+    spec:
+      containers:
+      - image: ghcr.io/example/reindex:1
+        name: reindex
+      restartPolicy: Never
+  ttlSecondsAfterFinished: 3600

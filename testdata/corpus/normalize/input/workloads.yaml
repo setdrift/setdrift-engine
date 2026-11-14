@@ -1,0 +1,554 @@
+# Objects as the API server returns them (kubectl get -o yaml), with
+# managedFields and defaults. Normalize must reduce each to what was applied.
+
+# Applied with kubectl (client-side), autoscaled by an HPA: the HPA's replica
+# count belongs to kube-controller-manager only and is removed; the
+# revision annotation and every default are removed too.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: shop
+  uid: f0000000-0000-0000-0000-000000000001
+  resourceVersion: "48213"
+  generation: 7
+  creationTimestamp: "2026-10-01T10:00:00Z"
+  labels: {app: api}
+  annotations:
+    deployment.kubernetes.io/revision: "4"
+    kubectl.kubernetes.io/last-applied-configuration: |
+      {"apiVersion":"apps/v1","kind":"Deployment","metadata":{"labels":{"app":"api"},"name":"api","namespace":"shop"},"spec":{"selector":{"matchLabels":{"app":"api"}},"template":{"metadata":{"labels":{"app":"api"}},"spec":{"containers":[{"image":"ghcr.io/example/api:2.1.0","name":"api","ports":[{"containerPort":8080}]}]}}}}
+  managedFields:
+  - apiVersion: apps/v1
+    fieldsType: FieldsV1
+    fieldsV1:
+      f:metadata:
+        f:annotations:
+          .: {}
+          f:kubectl.kubernetes.io/last-applied-configuration: {}
+        f:labels:
+          .: {}
+          f:app: {}
+      f:spec:
+        f:progressDeadlineSeconds: {}
+        f:revisionHistoryLimit: {}
+        f:selector: {}
+        f:strategy:
+          f:rollingUpdate:
+            .: {}
+            f:maxSurge: {}
+            f:maxUnavailable: {}
+          f:type: {}
+        f:template:
+          f:metadata:
+            f:labels:
+              .: {}
+              f:app: {}
+          f:spec:
+            f:containers:
+              k:{"name":"api"}:
+                .: {}
+                f:image: {}
+                f:imagePullPolicy: {}
+                f:name: {}
+                f:ports:
+                  .: {}
+                  k:{"containerPort":8080,"protocol":"TCP"}:
+                    .: {}
+                    f:containerPort: {}
+                    f:protocol: {}
+                f:resources: {}
+                f:terminationMessagePath: {}
+                f:terminationMessagePolicy: {}
+            f:dnsPolicy: {}
+            f:restartPolicy: {}
+            f:schedulerName: {}
+            f:securityContext: {}
+            f:terminationGracePeriodSeconds: {}
+    manager: kubectl-client-side-apply
+    operation: Update
+    time: "2026-10-01T10:00:00Z"
+  - apiVersion: apps/v1
+    fieldsType: FieldsV1
+    fieldsV1:
+      f:spec:
+        f:replicas: {}
+    manager: kube-controller-manager
+    operation: Update
+    subresource: scale
+    time: "2026-11-01T08:00:00Z"
+  - apiVersion: apps/v1
+    fieldsType: FieldsV1
+    fieldsV1:
+      f:metadata:
+        f:annotations:
+          f:deployment.kubernetes.io/revision: {}
+      f:status:
+        f:availableReplicas: {}
+    manager: kube-controller-manager
+    operation: Update
+    subresource: status
+    time: "2026-11-01T08:00:00Z"
+spec:
+  progressDeadlineSeconds: 600
+  replicas: 7
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels: {app: api}
+  strategy:
+    rollingUpdate: {maxSurge: 25%, maxUnavailable: 25%}
+    type: RollingUpdate
+  template:
+    metadata:
+      creationTimestamp: null
+      labels: {app: api}
+    spec:
+      containers:
+      - image: ghcr.io/example/api:2.1.0
+        imagePullPolicy: IfNotPresent
+        name: api
+        ports:
+        - containerPort: 8080
+          protocol: TCP
+        resources: {}
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+      dnsPolicy: ClusterFirst
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      terminationGracePeriodSeconds: 30
+status:
+  availableReplicas: 7
+---
+# Applied with server-side apply by Argo CD. Non-default values are kept:
+# replicas (owned by argocd-controller), a custom strategy, a probe with a
+# non-default period, imagePullPolicy Always on a pinned tag.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  namespace: shop
+  uid: f0000000-0000-0000-0000-000000000002
+  labels: {app: worker}
+  annotations:
+    argocd.argoproj.io/tracking-id: "shop:apps/Deployment:shop/worker"
+    deployment.kubernetes.io/revision: "1"
+  managedFields:
+  - apiVersion: apps/v1
+    fieldsType: FieldsV1
+    fieldsV1:
+      f:metadata:
+        f:annotations:
+          f:argocd.argoproj.io/tracking-id: {}
+        f:labels:
+          f:app: {}
+      f:spec:
+        f:replicas: {}
+        f:selector: {}
+        f:strategy:
+          f:type: {}
+        f:template:
+          f:metadata:
+            f:labels:
+              f:app: {}
+          f:spec:
+            f:containers:
+              k:{"name":"worker"}:
+                .: {}
+                f:image: {}
+                f:imagePullPolicy: {}
+                f:livenessProbe:
+                  f:httpGet:
+                    f:path: {}
+                    f:port: {}
+                  f:periodSeconds: {}
+                f:name: {}
+    manager: argocd-controller
+    operation: Apply
+  - apiVersion: apps/v1
+    fieldsType: FieldsV1
+    fieldsV1:
+      f:metadata:
+        f:annotations:
+          .: {}
+          f:deployment.kubernetes.io/revision: {}
+    manager: kube-controller-manager
+    operation: Update
+    subresource: status
+spec:
+  progressDeadlineSeconds: 600
+  replicas: 3
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels: {app: worker}
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels: {app: worker}
+    spec:
+      containers:
+      - image: ghcr.io/example/worker:1.4.0
+        imagePullPolicy: Always
+        livenessProbe:
+          failureThreshold: 3
+          httpGet: {path: /healthz, port: 8080, scheme: HTTP}
+          periodSeconds: 30
+          successThreshold: 1
+          timeoutSeconds: 1
+        name: worker
+        resources: {}
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+      dnsPolicy: ClusterFirst
+      enableServiceLinks: true
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      terminationGracePeriodSeconds: 30
+---
+# Every Service default and the allocated cluster IP are removed. The
+# headless Service keeps clusterIP: None, which is a choice.
+apiVersion: v1
+kind: Service
+metadata: {name: api, namespace: shop, uid: f0000000-0000-0000-0000-000000000010}
+spec:
+  clusterIP: 172.20.14.9
+  clusterIPs: [172.20.14.9]
+  internalTrafficPolicy: Cluster
+  ipFamilies: [IPv4]
+  ipFamilyPolicy: SingleStack
+  ports:
+  - {name: http, port: 80, protocol: TCP, targetPort: 8080}
+  - {name: metrics, port: 9090, protocol: TCP, targetPort: 9090}
+  selector: {app: api}
+  sessionAffinity: None
+  type: ClusterIP
+---
+apiVersion: v1
+kind: Service
+metadata: {name: db, namespace: shop, uid: f0000000-0000-0000-0000-000000000011}
+spec:
+  clusterIP: None
+  clusterIPs: [None]
+  ipFamilies: [IPv4]
+  ipFamilyPolicy: SingleStack
+  ports:
+  - {port: 5432, protocol: TCP, targetPort: 5432}
+  selector: {app: db}
+  sessionAffinity: None
+  type: ClusterIP
+---
+# Dynamically provisioned claim: the bound volume name and the binder's
+# annotations are removed, so a new cluster provisions a new volume.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: data
+  namespace: shop
+  uid: f0000000-0000-0000-0000-000000000020
+  annotations:
+    pv.kubernetes.io/bind-completed: "yes"
+    pv.kubernetes.io/bound-by-controller: "yes"
+    volume.beta.kubernetes.io/storage-provisioner: ebs.csi.aws.com
+    volume.kubernetes.io/storage-provisioner: ebs.csi.aws.com
+    volume.kubernetes.io/selected-node: ip-10-0-1-23.ec2.internal
+  finalizers: [kubernetes.io/pvc-protection]
+  managedFields:
+  - apiVersion: v1
+    fieldsType: FieldsV1
+    fieldsV1:
+      f:spec:
+        f:accessModes: {}
+        f:resources:
+          f:requests:
+            .: {}
+            f:storage: {}
+        f:storageClassName: {}
+        f:volumeMode: {}
+    manager: kubectl-create
+    operation: Update
+  - apiVersion: v1
+    fieldsType: FieldsV1
+    fieldsV1:
+      f:metadata:
+        f:annotations:
+          .: {}
+          f:pv.kubernetes.io/bind-completed: {}
+          f:pv.kubernetes.io/bound-by-controller: {}
+          f:volume.beta.kubernetes.io/storage-provisioner: {}
+          f:volume.kubernetes.io/storage-provisioner: {}
+        f:finalizers:
+          .: {}
+          v:"kubernetes.io/pvc-protection": {}
+      f:spec:
+        f:volumeName: {}
+    manager: kube-controller-manager
+    operation: Update
+  - apiVersion: v1
+    fieldsType: FieldsV1
+    fieldsV1:
+      f:metadata:
+        f:annotations:
+          f:volume.kubernetes.io/selected-node: {}
+    manager: kube-scheduler
+    operation: Update
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests: {storage: 20Gi}
+  storageClassName: gp3
+  volumeMode: Filesystem
+  volumeName: pvc-0c1d2e3f-4a5b-6c7d-8e9f-0a1b2c3d4e5f
+status:
+  phase: Bound
+---
+# StatefulSet, DaemonSet and CronJob defaults.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: {name: db, namespace: shop, uid: f0000000-0000-0000-0000-000000000030}
+spec:
+  persistentVolumeClaimRetentionPolicy: {whenDeleted: Retain, whenScaled: Retain}
+  podManagementPolicy: OrderedReady
+  replicas: 1
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels: {app: db}
+  serviceName: db
+  template:
+    metadata:
+      labels: {app: db}
+    spec:
+      containers:
+      - image: postgres:16
+        imagePullPolicy: IfNotPresent
+        name: postgres
+        resources: {}
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts: [{mountPath: /var/lib/postgresql/data, name: data}]
+      dnsPolicy: ClusterFirst
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      terminationGracePeriodSeconds: 30
+  updateStrategy:
+    rollingUpdate: {partition: 0}
+    type: RollingUpdate
+  volumeClaimTemplates:
+  - apiVersion: v1
+    kind: PersistentVolumeClaim
+    metadata: {name: data}
+    spec:
+      accessModes: [ReadWriteOnce]
+      resources:
+        requests: {storage: 10Gi}
+      volumeMode: Filesystem
+    status: {phase: Pending}
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: log-agent
+  namespace: shop
+  uid: f0000000-0000-0000-0000-000000000031
+  annotations: {deprecated.daemonset.template.generation: "2"}
+spec:
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels: {app: log-agent}
+  template:
+    metadata:
+      labels: {app: log-agent}
+    spec:
+      containers:
+      - image: fluent/fluent-bit:latest
+        imagePullPolicy: Always
+        name: agent
+        resources: {}
+        terminationMessagePath: /dev/termination-log
+        terminationMessagePolicy: File
+        volumeMounts: [{mountPath: /var/log, name: logs}]
+      dnsPolicy: ClusterFirst
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      securityContext: {}
+      terminationGracePeriodSeconds: 30
+      volumes:
+      - name: logs
+        hostPath: {path: /var/log, type: ""}
+      - name: config
+        configMap: {name: fluent-bit, defaultMode: 420}
+  updateStrategy:
+    rollingUpdate: {maxSurge: 0, maxUnavailable: 1}
+    type: RollingUpdate
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata: {name: report, namespace: shop, uid: f0000000-0000-0000-0000-000000000032}
+spec:
+  concurrencyPolicy: Allow
+  failedJobsHistoryLimit: 1
+  schedule: "0 3 * * *"
+  successfulJobsHistoryLimit: 3
+  suspend: false
+  jobTemplate:
+    spec:
+      backoffLimit: 6
+      completionMode: NonIndexed
+      completions: 1
+      manualSelector: false
+      parallelism: 1
+      podReplacementPolicy: TerminatingOrFailed
+      suspend: false
+      template:
+        spec:
+          containers:
+          - image: ghcr.io/example/report:3
+            imagePullPolicy: IfNotPresent
+            name: report
+            resources: {}
+            terminationMessagePath: /dev/termination-log
+            terminationMessagePolicy: File
+          dnsPolicy: ClusterFirst
+          restartPolicy: OnFailure
+          schedulerName: default-scheduler
+          securityContext: {}
+          terminationGracePeriodSeconds: 30
+---
+# A running bare Pod: the injected service account token volume and mount,
+# the default tolerations, the admission-set priority and the deprecated
+# serviceAccount copy are removed. The scheduler's nodeName stays (it may
+# have been set by hand).
+apiVersion: v1
+kind: Pod
+metadata: {name: toolbox, namespace: shop, uid: f0000000-0000-0000-0000-000000000040}
+spec:
+  containers:
+  - image: ghcr.io/example/toolbox
+    imagePullPolicy: Always
+    name: toolbox
+    resources: {}
+    terminationMessagePath: /dev/termination-log
+    terminationMessagePolicy: File
+    volumeMounts:
+    - {mountPath: /var/run/secrets/kubernetes.io/serviceaccount, name: kube-api-access-7xk2p, readOnly: true}
+  dnsPolicy: ClusterFirst
+  enableServiceLinks: true
+  nodeName: ip-10-0-1-23.ec2.internal
+  preemptionPolicy: PreemptLowerPriority
+  priority: 0
+  restartPolicy: Always
+  schedulerName: default-scheduler
+  securityContext: {}
+  serviceAccount: default
+  serviceAccountName: default
+  terminationGracePeriodSeconds: 30
+  tolerations:
+  - {effect: NoExecute, key: node.kubernetes.io/not-ready, operator: Exists, tolerationSeconds: 300}
+  - {effect: NoExecute, key: node.kubernetes.io/unreachable, operator: Exists, tolerationSeconds: 300}
+  - {effect: NoSchedule, key: dedicated, operator: Equal, value: tools}
+  volumes:
+  - name: kube-api-access-7xk2p
+    projected:
+      defaultMode: 420
+      sources:
+      - serviceAccountToken: {expirationSeconds: 3607, path: token}
+status: {phase: Running}
+---
+# Restarted with kubectl rollout restart: the restartedAt annotation is
+# removed from the Pod template; the team's own template annotation stays.
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: restarted, namespace: shop, uid: f0000000-0000-0000-0000-000000000060}
+spec:
+  selector:
+    matchLabels: {app: restarted}
+  template:
+    metadata:
+      labels: {app: restarted}
+      annotations:
+        kubectl.kubernetes.io/restartedAt: "2026-11-02T09:15:00Z"
+        prometheus.io/scrape: "true"
+    spec:
+      containers: [{name: app, image: "ghcr.io/example/app:1"}]
+---
+# Created with generateName: the leftover generateName is removed.
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: report-x7k2p, generateName: report-, namespace: shop, uid: f0000000-0000-0000-0000-000000000061}
+data: {k: v}
+---
+# A claim that named no class: the DefaultStorageClass admission plugin set
+# gp3 after managedFields were recorded, so no manager owns it and it is
+# removed. The new cluster's default class applies.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: scratch
+  namespace: shop
+  uid: f0000000-0000-0000-0000-000000000021
+  managedFields:
+  - apiVersion: v1
+    fieldsType: FieldsV1
+    fieldsV1:
+      f:spec:
+        f:accessModes: {}
+        f:resources:
+          f:requests:
+            .: {}
+            f:storage: {}
+        f:volumeMode: {}
+    manager: kubectl-client-side-apply
+    operation: Update
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests: {storage: 5Gi}
+  storageClassName: gp3
+  volumeMode: Filesystem
+---
+# parallelism 5 with completions 1 is not the default pair: completions
+# stays (without it the Job would be a work queue). parallelism 1 alone
+# is removed in the CronJob above.
+apiVersion: batch/v1
+kind: Job
+metadata: {name: migrate, namespace: shop, uid: f0000000-0000-0000-0000-000000000033}
+spec:
+  backoffLimit: 6
+  completions: 1
+  parallelism: 5
+  template:
+    spec:
+      containers: [{name: migrate, image: "ghcr.io/example/migrate:2"}]
+      restartPolicy: Never
+---
+# Default policyTypes are removed: Ingress alone, or with Egress when there
+# are egress rules. Egress with no egress rules (deny all egress) stays.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: allow-web, namespace: shop, uid: f0000000-0000-0000-0000-000000000070}
+spec:
+  podSelector:
+    matchLabels: {app: web}
+  ingress:
+  - ports: [{port: 8080, protocol: TCP}]
+  egress:
+  - ports: [{port: 53, protocol: UDP}]
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: deny-egress, namespace: shop, uid: f0000000-0000-0000-0000-000000000071}
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata: {name: gp3, uid: a1000000-0000-0000-0000-000000000070}
+provisioner: ebs.csi.aws.com
+parameters: {type: gp3}
+reclaimPolicy: Delete
+volumeBindingMode: WaitForFirstConsumer

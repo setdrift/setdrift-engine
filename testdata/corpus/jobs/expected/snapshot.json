@@ -1,0 +1,256 @@
+{
+  "capturedAt": "2026-01-01T00:00:00Z",
+  "cluster": {
+    "name": "golden",
+    "kubernetesVersion": "v1.35.0"
+  },
+  "findings": [
+    {
+      "severity": "SEVERITY_INFO",
+      "code": "TERMINATED_PODS_TO_CLEANUP",
+      "message": "5 terminated Pods in namespace \"batch\" (3 Succeeded, 2 Failed) are kept in the cluster: 1 from ReplicaSets, StatefulSets or DaemonSets (evicted or shut down), which the Pod garbage collector only removes once the cluster has 12,500 terminated Pods; delete them by hand; 1 kept by CronJob history limits (see CRONJOB_HISTORY_LIMIT); 1 kept by finished Jobs with no ttlSecondsAfterFinished (see JOBS_WITHOUT_TTL); 2 with no owner, which only deleting them removes"
+    },
+    {
+      "severity": "SEVERITY_INFO",
+      "code": "JOBS_WITHOUT_TTL",
+      "message": "2 Jobs in namespace \"batch\" have no ttlSecondsAfterFinished and are kept after finishing until deleted by hand: backfill, migrate-v12"
+    },
+    {
+      "severity": "SEVERITY_INFO",
+      "code": "TERMINATED_PODS_SKIPPED",
+      "message": "2 terminated Pods (Succeeded or Failed) in namespace \"batch\" were not exported"
+    },
+    {
+      "severity": "SEVERITY_INFO",
+      "code": "FINISHED_JOBS_SKIPPED",
+      "message": "1 finished Job in namespace \"batch\" was not exported; use --include-finished-jobs to export them"
+    },
+    {
+      "severity": "SEVERITY_INFO",
+      "code": "HOOKS_SKIPPED",
+      "message": "2 Helm or Argo CD hooks (Pods, Jobs and Workflows) in namespace \"batch\" were not exported"
+    }
+  ],
+  "id": "golden",
+  "producer": {
+    "name": "setdrift-test",
+    "version": "test"
+  },
+  "resources": [
+    {
+      "apiVersion": "v1",
+      "findings": [
+        {
+          "severity": "SEVERITY_WARNING",
+          "code": "BARE_POD",
+          "message": "pod has no controller and will not be recreated if deleted; consider a Deployment or Job"
+        }
+      ],
+      "kind": "Pod",
+      "manifest": {
+        "apiVersion": "v1",
+        "kind": "Pod",
+        "metadata": {
+          "name": "toolbox",
+          "namespace": "batch"
+        },
+        "spec": {
+          "containers": [
+            {
+              "image": "ghcr.io/example/toolbox:1",
+              "name": "toolbox"
+            }
+          ]
+        }
+      },
+      "name": "toolbox",
+      "namespace": "batch",
+      "provenance": {
+        "source": "SOURCE_UNMANAGED"
+      },
+      "sourceUid": "c0000000-0000-0000-0000-000000000062"
+    },
+    {
+      "apiVersion": "apps/v1",
+      "kind": "Deployment",
+      "manifest": {
+        "apiVersion": "apps/v1",
+        "kind": "Deployment",
+        "metadata": {
+          "name": "api",
+          "namespace": "batch"
+        },
+        "spec": {
+          "selector": {
+            "matchLabels": {
+              "app": "api"
+            }
+          },
+          "template": {
+            "metadata": {
+              "labels": {
+                "app": "api"
+              }
+            },
+            "spec": {
+              "containers": [
+                {
+                  "image": "ghcr.io/example/api:5",
+                  "name": "api"
+                }
+              ]
+            }
+          }
+        }
+      },
+      "name": "api",
+      "namespace": "batch",
+      "provenance": {
+        "source": "SOURCE_UNMANAGED"
+      },
+      "sourceUid": "c0000000-0000-0000-0000-000000000070"
+    },
+    {
+      "apiVersion": "batch/v1",
+      "findings": [
+        {
+          "severity": "SEVERITY_INFO",
+          "code": "CRONJOB_HISTORY_LIMIT",
+          "message": "keeps 10 successful and 1 failed Jobs, and their Pods (defaults are 3 and 1)"
+        }
+      ],
+      "kind": "CronJob",
+      "manifest": {
+        "apiVersion": "batch/v1",
+        "kind": "CronJob",
+        "metadata": {
+          "name": "nightly",
+          "namespace": "batch"
+        },
+        "spec": {
+          "jobTemplate": {
+            "spec": {
+              "template": {
+                "spec": {
+                  "containers": [
+                    {
+                      "image": "ghcr.io/example/report:2.0.0",
+                      "name": "report"
+                    }
+                  ],
+                  "restartPolicy": "OnFailure"
+                }
+              }
+            }
+          },
+          "schedule": "0 2 * * *",
+          "successfulJobsHistoryLimit": 10
+        }
+      },
+      "name": "nightly",
+      "namespace": "batch",
+      "provenance": {
+        "source": "SOURCE_UNMANAGED"
+      },
+      "sourceUid": "c0000000-0000-0000-0000-000000000001"
+    },
+    {
+      "apiVersion": "batch/v1",
+      "findings": [
+        {
+          "severity": "SEVERITY_WARNING",
+          "code": "RUN_ONCE_EXPORTED",
+          "message": "Job runs once; committed to Git, a GitOps tool recreates it whenever it is deleted, and it runs again; consider a CronJob, or a sync hook (argocd.argoproj.io/hook or helm.sh/hook) so it runs on deploy"
+        }
+      ],
+      "kind": "Job",
+      "manifest": {
+        "apiVersion": "batch/v1",
+        "kind": "Job",
+        "metadata": {
+          "labels": {
+            "team": "data"
+          },
+          "name": "backfill",
+          "namespace": "batch"
+        },
+        "spec": {
+          "backoffLimit": 2,
+          "template": {
+            "metadata": {
+              "labels": {
+                "team": "data"
+              }
+            },
+            "spec": {
+              "containers": [
+                {
+                  "image": "ghcr.io/example/backfill:3",
+                  "name": "backfill"
+                }
+              ],
+              "restartPolicy": "Never"
+            }
+          }
+        }
+      },
+      "name": "backfill",
+      "namespace": "batch",
+      "provenance": {
+        "source": "SOURCE_UNMANAGED"
+      },
+      "sourceUid": "c0000000-0000-0000-0000-000000000020"
+    },
+    {
+      "apiVersion": "batch/v1",
+      "findings": [
+        {
+          "severity": "SEVERITY_WARNING",
+          "code": "RUN_ONCE_EXPORTED",
+          "message": "Job is deleted 3600s after it finishes; committed to Git, a GitOps tool then recreates it and it runs again, repeatedly; consider a CronJob, or a sync hook (argocd.argoproj.io/hook or helm.sh/hook) so it runs on deploy"
+        }
+      ],
+      "kind": "Job",
+      "manifest": {
+        "apiVersion": "batch/v1",
+        "kind": "Job",
+        "metadata": {
+          "name": "reindex",
+          "namespace": "batch"
+        },
+        "spec": {
+          "manualSelector": true,
+          "selector": {
+            "matchLabels": {
+              "app": "reindex"
+            }
+          },
+          "template": {
+            "metadata": {
+              "labels": {
+                "app": "reindex"
+              }
+            },
+            "spec": {
+              "containers": [
+                {
+                  "image": "ghcr.io/example/reindex:1",
+                  "name": "reindex"
+                }
+              ],
+              "restartPolicy": "Never"
+            }
+          },
+          "ttlSecondsAfterFinished": 3600
+        }
+      },
+      "name": "reindex",
+      "namespace": "batch",
+      "provenance": {
+        "source": "SOURCE_UNMANAGED"
+      },
+      "sourceUid": "c0000000-0000-0000-0000-000000000030"
+    }
+  ],
+  "schemaVersion": "setdrift.snapshot.v1alpha1"
+}

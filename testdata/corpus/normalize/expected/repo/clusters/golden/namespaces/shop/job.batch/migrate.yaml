@@ -1,0 +1,14 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: migrate
+  namespace: shop
+spec:
+  completions: 1
+  parallelism: 5
+  template:
+    spec:
+      containers:
+      - image: ghcr.io/example/migrate:2
+        name: migrate
+      restartPolicy: Never

@@ -1,0 +1,7 @@
+apiVersion: v1
+data:
+  k: v
+kind: ConfigMap
+metadata:
+  name: report-x7k2p
+  namespace: shop

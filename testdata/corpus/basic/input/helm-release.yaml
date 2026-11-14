@@ -1,0 +1,12 @@
+# Helm's record of the web-config release (one Secret per revision). It is
+# Helm's state, not configuration: skipped, but it shows the release exists.
+apiVersion: v1
+kind: Secret
+type: helm.sh/release.v1
+metadata:
+  name: sh.helm.release.v1.web-config.v1
+  namespace: shop
+  uid: 0b6f0000-0000-0000-0000-000000000080
+  labels: {owner: helm, name: web-config, status: deployed, version: "1"}
+data:
+  release: SDRzSUFBQUFBQUFBLzZ1V0tz
