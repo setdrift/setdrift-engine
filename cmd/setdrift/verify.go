@@ -77,6 +77,9 @@ func (o *verifyOptions) run(cmd *cobra.Command, dir string) error {
 	if err != nil {
 		return err
 	}
+	if err := checkReachable(cmd.Context(), kc); err != nil {
+		return err
+	}
 	cfg := kc.config
 	dc, err := discovery.NewDiscoveryClientForConfig(cfg)
 	if err != nil {

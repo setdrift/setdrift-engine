@@ -186,6 +186,10 @@ func (o *exportOptions) run(cmd *cobra.Command) error {
 				return err
 			}
 		}
+		// a quick first request, so an unreachable cluster or expired credentials fail now and plainly
+		if err := checkReachable(cmd.Context(), kc); err != nil {
+			return err
+		}
 		plat.Initial = platform.FromKubeconfig(kc.platform)
 		probed, notes := platform.Probe(cmd.Context(), c.Discovery, c.Dynamic)
 		plat.Initial, plat.Notes = append(plat.Initial, probed...), notes
@@ -393,19 +397,19 @@ func loadConfig(kubeconfig, context string) (*kubeContext, error) {
 		rules.ExplicitPath = kubeconfig
 	}
 	cc := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(rules, &clientcmd.ConfigOverrides{CurrentContext: context})
+	raw, err := cc.RawConfig()
+	if err != nil {
+		// unparseable YAML, or a file that can't be read
+		return nil, explainKubeconfig(err, rules, raw, context)
+	}
 	cfg, err := cc.ClientConfig()
 	if err != nil {
-		return nil, fmt.Errorf("loading kubeconfig: %w", err)
+		return nil, explainKubeconfig(err, rules, raw, context)
 	}
 	cfg.QPS, cfg.Burst = 50, 100
 	cfg.UserAgent = "setdrift/" + version.Version
 	// API deprecation warnings (e.g. v1 Endpoints, listed by discovery) are not the user's to act on
 	cfg.WarningHandler = rest.NoWarnings{}
-
-	raw, err := cc.RawConfig()
-	if err != nil {
-		return nil, err
-	}
 	contextName := context
 	if contextName == "" {
 		contextName = raw.CurrentContext

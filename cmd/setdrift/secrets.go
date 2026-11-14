@@ -124,6 +124,9 @@ func (o *secretsExportOptions) run(cmd *cobra.Command, dir string) error {
 	if err != nil {
 		return err
 	}
+	if err := checkReachable(cmd.Context(), kc); err != nil {
+		return err
+	}
 	dyn, err := dynamic.NewForConfig(kc.config)
 	if err != nil {
 		return err
