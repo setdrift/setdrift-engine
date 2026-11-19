@@ -18,9 +18,9 @@ message Snapshot {
   google.protobuf.Timestamp captured_at = 3;
   // nested message defined below
   Cluster cluster = 4;
-  //  nested message defined below
+  // nested message defined below
   Producer producer = 5;
-  // nested array of messages defined below 
+  // nested array of messages defined below
   repeated Resource resources = 6;
   // nested message defined below
   repeated Finding findings = 7;
@@ -152,7 +152,7 @@ message Finding {
   Severity severity = 1;
   // machine-readable code e.g. OWNER_NOT_EXPORTED
   string code = 2;
-  // human readable 
+  // human readable
   string message = 3;
 }
 

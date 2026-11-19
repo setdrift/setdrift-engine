@@ -12,6 +12,12 @@
 # adds that directory to your user PATH. Works in Windows PowerShell 5.1 and
 # PowerShell 7 on Windows, macOS and Linux.
 
+# `irm | iex` runs a script in the caller's session: the script block keeps
+# its variables and preferences out of it. Only PATH changes outlive it.
+# Errors are caught and printed, not thrown: a throw out of iex can crash
+# a non-interactive PowerShell instead of showing the message.
+& {
+try {
 $ErrorActionPreference = 'Stop'
 # Windows PowerShell 5.1 defaults to TLS 1.0, which GitHub refuses.
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
@@ -61,11 +67,18 @@ $tmp = Join-Path ([IO.Path]::GetTempPath()) ("setdrift-" + [Guid]::NewGuid())
 New-Item -ItemType Directory -Path $tmp | Out-Null
 try {
   Write-Host "Downloading setdrift $version for $os/$arch"
+  # WebClient, not Invoke-WebRequest -OutFile: a failed -OutFile download can
+  # crash PowerShell 7.4 from a background thread, past any catch.
+  $web = New-Object Net.WebClient
   try {
-    Invoke-WebRequest -UseBasicParsing -Uri "$base/$archive" -OutFile (Join-Path $tmp $archive)
-    Invoke-WebRequest -UseBasicParsing -Uri "$base/checksums.txt" -OutFile (Join-Path $tmp 'checksums.txt')
+    $web.DownloadFile("$base/$archive", (Join-Path $tmp $archive))
+    $web.DownloadFile("$base/checksums.txt", (Join-Path $tmp 'checksums.txt'))
   } catch {
-    Fail "download failed from ${base}: $($_.Exception.Message)"
+    $e = $_.Exception
+    while ($e.InnerException) { $e = $e.InnerException }
+    Fail "download failed from ${base}: $($e.Message)"
+  } finally {
+    $web.Dispose()
   }
 
   $want = $null
@@ -114,4 +127,12 @@ try {
   Write-Host 'Next: setdrift export   (reads your current kubeconfig context; changes nothing)'
 } finally {
   Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
+}
+} catch {
+  $msg = $_.Exception.Message
+  if (-not $msg.StartsWith('setdrift install:')) { $msg = "setdrift install: $msg" }
+  Write-Host $msg -ForegroundColor Red
+  # For scripts that check: `irm … | iex; if ($LASTEXITCODE) { … }`.
+  $global:LASTEXITCODE = 1
+}
 }

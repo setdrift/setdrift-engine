@@ -110,7 +110,8 @@ jobs:
       - name: install.sh
         run: |
           (cd dist && python3 -m http.server 8765 >/dev/null 2>&1 &)
-          sleep 2
+          # Wait for the server: a slow runner takes more than a few seconds.
+          for i in $(seq 60); do curl -fsI http://127.0.0.1:8765/checksums.txt >/dev/null 2>&1 && break; sleep 1; done
           version=$(ls dist/*_linux_amd64.tar.gz | sed 's#.*/setdrift_##; s#_linux_amd64.tar.gz##')
           SETDRIFT_VERSION=$version SETDRIFT_DOWNLOAD_URL=http://127.0.0.1:8765 sh scripts/install.sh
           bin=$(command -v setdrift || echo "$HOME/.local/bin/setdrift")
@@ -138,7 +139,10 @@ jobs:
       - name: install.ps1
         run: |
           Start-Process python -ArgumentList '-m', 'http.server', '8765' -WorkingDirectory dist -WindowStyle Hidden
-          Start-Sleep -Seconds 3
+          # Wait for the server: a slow runner takes more than a few seconds.
+          foreach ($i in 1..60) {
+            try { Invoke-WebRequest -UseBasicParsing -Method Head http://127.0.0.1:8765/checksums.txt | Out-Null; break } catch { Start-Sleep -Seconds 1 }
+          }
           $version = (Get-ChildItem dist/*_windows_amd64.zip).Name -replace '^setdrift_(.*)_windows_amd64\.zip$', '$1'
           $env:SETDRIFT_VERSION = $version
           $env:SETDRIFT_DOWNLOAD_URL = 'http://127.0.0.1:8765'
