@@ -81,6 +81,9 @@ type Field struct {
 	Path string `json:"path"`
 	A    any    `json:"a,omitempty"`
 	B    any    `json:"b,omitempty"`
+	// Keys are Path's steps as managedFields names them: "f:spec" for a
+	// map key, "n:web" for the item named web of a list, "i:0" for an index.
+	Keys []string `json:"-"`
 }
 
 // Change is a resource in both snapshots whose manifests differ.
@@ -543,8 +546,15 @@ func reasons(a, b entry, la, lb string) []string {
 	return out
 }
 
+// Fields lists the fields that differ between two decoded JSON documents,
+// in path order, pairing the items of named lists (containers, env, ports,
+// volumes) by name.
+func Fields(a, b any) []Field { return compareKeys("", nil, a, b, nil) }
+
 // compare lists the fields that differ between a and b, in path order.
-func compare(path string, a, b any, out []Field) []Field {
+func compare(path string, a, b any, out []Field) []Field { return compareKeys(path, nil, a, b, out) }
+
+func compareKeys(path string, steps []string, a, b any, out []Field) []Field {
 	if reflect.DeepEqual(a, b) {
 		return out
 	}
@@ -562,7 +572,7 @@ func compare(path string, a, b any, out []Field) []Field {
 			keys[k] = true
 		}
 		for _, k := range sortedStrings(keys) {
-			out = compare(join(path, k), av[k], bv[k], out)
+			out = compareKeys(join(path, k), step(steps, "f:"+k), av[k], bv[k], out)
 		}
 		return out
 	case []any:
@@ -580,7 +590,7 @@ func compare(path string, a, b any, out []Field) []Field {
 				names[k] = true
 			}
 			for _, n := range sortedStrings(names) {
-				out = compare(path+"["+n+"]", na[n], nb[n], out)
+				out = compareKeys(path+"["+n+"]", step(steps, "n:"+n), na[n], nb[n], out)
 			}
 			return out
 		}
@@ -592,11 +602,16 @@ func compare(path string, a, b any, out []Field) []Field {
 			if i < len(bv) {
 				y = bv[i]
 			}
-			out = compare(path+"["+strconv.Itoa(i)+"]", x, y, out)
+			out = compareKeys(path+"["+strconv.Itoa(i)+"]", step(steps, "i:"+strconv.Itoa(i)), x, y, out)
 		}
 		return out
 	}
-	return append(out, Field{Path: path, A: a, B: b})
+	return append(out, Field{Path: path, A: a, B: b, Keys: steps})
+}
+
+// step returns keys with k appended, without sharing keys' backing array.
+func step(keys []string, k string) []string {
+	return append(keys[:len(keys):len(keys)], k)
 }
 
 // byName indexes a list whose items all have a distinct string name, or returns nil.

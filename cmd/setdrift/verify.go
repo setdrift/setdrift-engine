@@ -9,8 +9,8 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
-	"sort"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -22,6 +22,7 @@ import (
 
 	"setdrift.io/setdrift-engine/pkg/emit/kustomize"
 	"setdrift.io/setdrift-engine/pkg/platform"
+	snapshotv1alpha1 "setdrift.io/setdrift-engine/pkg/snapshot/v1alpha1"
 	"setdrift.io/setdrift-engine/pkg/verify"
 )
 
@@ -31,6 +32,11 @@ type verifyOptions struct {
 	context    string
 	// set: auto, generic or platform
 	set string
+	// reports: the directory the report is written to (default DIR/verify), or none
+	output   string
+	noReport bool
+	// percent of resources that must not change
+	threshold int
 }
 
 // server side apply with dryRun=All comparing DIR to live object
@@ -48,13 +54,22 @@ cluster. What its kustomization.yaml builds is checked, as kubectl kustomize
 builds it. Secrets under redacted/ are skipped: they hold placeholders and are
 never applied. external-secrets/ is not applied, so not checked.
 
-It passes when at least 95% of resources would not change and every
-remaining difference has a known explanation.
+It passes when at least 95% of resources (--threshold) would not change
+and every remaining difference has a known explanation. The differences are
+grouped by cause, with the cluster's and the export's values, who changed
+the resource after the export was taken, and the likely cause overall.
+
+Each run writes a report, in Markdown and JSON, to DIR/verify/ (-o for
+another directory, --no-report for none), named for when it ran and the
+cluster: verify/2026-11-20T191402Z-prod-report.md.
 
 A server-side apply only changes the fields it sends, so verify can't see a
 field the export left out: the cluster keeps it. It flags a resource that
 lost all of its spec or data; other missing fields only show when the export
 is applied to a new cluster.`,
+		Example: `  setdrift verify setdrift-export
+  setdrift verify setdrift-export --context restored-prod   # after restoring it elsewhere
+  setdrift verify setdrift-export -o ./verify-reports --threshold 100`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error { return o.run(cmd, args[0]) },
 	}
@@ -62,6 +77,9 @@ is applied to a new cluster.`,
 	cmd.Flags().StringVar(&o.context, "context", "", "kubeconfig context (default: current context)")
 	cmd.Flags().StringVar(&o.set, "set", "auto", "what to check: generic (the cluster's directory), platform (its platform set, e.g. platform/aws/eks), "+
 		"or auto: the platform set when this cluster is on the export's platform, else generic")
+	cmd.Flags().StringVarP(&o.output, "output", "o", "", "directory to write the report to (default: DIR/verify)")
+	cmd.Flags().BoolVar(&o.noReport, "no-report", false, "write no report, only print the result")
+	cmd.Flags().IntVar(&o.threshold, "threshold", verify.AcceptancePercent, "percent of resources that must not change to pass, 0 to 100")
 	return cmd
 }
 
@@ -69,7 +87,17 @@ is applied to a new cluster.`,
 func (o *verifyOptions) run(cmd *cobra.Command, dir string) error {
 	// resolve DIR to one cluster folder, fails if no kustomization or more then one cluster
 	// checked before the kubeconfig, so a wrong DIR is reported as such
+	if o.threshold < 0 || o.threshold > 100 {
+		return fmt.Errorf("--threshold %d: give a percent from 0 to 100", o.threshold)
+	}
+	if o.noReport && o.output != "" {
+		return errors.New("-o names where to write the report, so it cannot be used with --no-report")
+	}
 	root, err := verify.ClusterRoot(dir)
+	if err != nil {
+		return err
+	}
+	info, err := kustomize.ReadExportInfo(root)
 	if err != nil {
 		return err
 	}
@@ -90,9 +118,16 @@ func (o *verifyOptions) run(cmd *cobra.Command, dir string) error {
 		return err
 	}
 	v := verify.DryRunVerifier{
-		Cluster: verify.DynamicCluster{Client: dyn},
-		Mapper:  restmapper.NewDeferredDiscoveryRESTMapper(memory.NewMemCacheClient(dc)),
+		Cluster:   verify.DynamicCluster{Client: dyn},
+		Mapper:    restmapper.NewDeferredDiscoveryRESTMapper(memory.NewMemCacheClient(dc)),
+		Threshold: o.threshold,
 	}
+	if info != nil {
+		if t, err := time.Parse(time.RFC3339, info.ExportedAt); err == nil {
+			v.ExportedAt = t
+		}
+	}
+	started := time.Now().UTC()
 	set, why, err := o.chooseSet(cmd.Context(), root, kc, dc, dyn)
 	if err != nil {
 		return err
@@ -104,7 +139,8 @@ func (o *verifyOptions) run(cmd *cobra.Command, dir string) error {
 		target = filepath.Join(root, set)
 	}
 	fmt.Fprintf(w, "Verifying %s against context %s (%s)\n", target, kc.name, why)
-	if note := otherClusterNote(cmd.Context(), dyn, root); note != "" {
+	same := sameCluster(cmd.Context(), dyn, info)
+	if note := otherClusterNote(info, same); note != "" {
 		fmt.Fprintln(w, note)
 	}
 	report, err := v.Verify(cmd.Context(), root)
@@ -119,38 +155,36 @@ func (o *verifyOptions) run(cmd *cobra.Command, dir string) error {
 		}
 		return errors.New(msg)
 	}
-	fmt.Fprintf(w, "%d of %s would not change (%.1f%%; %d%% required)\n",
-		report.Clean, plural(report.Total, "resource", "resources"), report.CleanPercent(), verify.AcceptancePercent)
-	reasons := make([]string, 0, len(report.Skipped))
-	for r := range report.Skipped {
-		reasons = append(reasons, r)
+	cluster := &snapshotv1alpha1.Cluster{}
+	applyContext(cluster, kc)
+	doc := verifyDocument{
+		VerifiedAt: started.Format(time.RFC3339), Context: kc.name, Cluster: cluster.Name,
+		Directory: target, Set: why, SameCluster: same, Report: *report,
+		Passed: report.Passed(), Analysis: report.Analyze(),
 	}
-	sort.Strings(reasons)
-	for _, r := range reasons {
-		fmt.Fprintf(w, "Skipped %d: %s\n", report.Skipped[r], r)
+	if info != nil {
+		doc.ExportCluster, doc.ExportedAt = info.Cluster, info.ExportedAt
 	}
-	if n := len(report.MissingCRDs); n > 0 {
-		crds := filepath.Join(root, "crds")
-		fmt.Fprintf(w, "%s in the export %s not in this cluster: %s.\n"+
-			"Their custom resources show below as types the cluster does not serve. Create them first:\n"+
-			"    kubectl --context %s apply --server-side -k %s\n"+
-			"    kubectl --context %s wait --for condition=established --timeout=60s -k %s\n",
-			plural(n, "CustomResourceDefinition", "CustomResourceDefinitions"), map[bool]string{true: "is", false: "are"}[n == 1],
-			strings.Join(report.MissingCRDs, ", "), kc.name, crds, kc.name, crds)
+	if !doc.Passed {
+		doc.FailReason = failReason(report)
 	}
-	for _, d := range report.Diffs {
-		explanation := "UNEXPLAINED"
-		if d.Explanation != "" {
-			explanation = d.Explanation
+	doc.LikelyCause = likelyCause(doc)
+
+	printVerify(w, doc, root, kc.name)
+	if !o.noReport {
+		out := o.output
+		if out == "" {
+			out = filepath.Join(dir, "verify")
 		}
-		fmt.Fprintf(w, "  %s: %s\n", d.Ref, explanation)
-		for _, p := range d.Paths {
-			fmt.Fprintf(w, "      %s\n", p)
+		md, err := writeVerifyReport(out, doc, started)
+		if err != nil {
+			return fmt.Errorf("writing the report: %w", err)
 		}
+		fmt.Fprintf(w, "\nReport: %s (and .json)\n", md)
 	}
-	if !report.Passed() {
+	if !doc.Passed {
 		// say why on the last line, the one CI logs show first
-		return fmt.Errorf("verification failed: %s", failReason(report))
+		return fmt.Errorf("verification failed: %s", doc.FailReason)
 	}
 	fmt.Fprintln(w, "Passed.")
 	return nil
@@ -195,17 +229,25 @@ func (o *verifyOptions) chooseSet(ctx context.Context, root string, kc *kubeCont
 	return "", "the generic set: the export's platform set is " + platDir + ", and this cluster is " + cls.Summary(), nil
 }
 
-// otherClusterNote says when the cluster verified is not the one the export came from, compared by their
-// kube-system Namespace UIDs: expected after restoring the export elsewhere, a mistake otherwise (e.g. staging
-// instead of prod), where a nearly clean result means nothing. Informational, never a failure; empty when they
-// match or either UID is unknown.
-func otherClusterNote(ctx context.Context, dyn dynamic.Interface, root string) string {
-	info, err := kustomize.ReadExportInfo(root)
-	if err != nil || info == nil || info.KubeSystemUID == "" {
-		return ""
+// sameCluster reports whether the cluster verified is the one the export
+// came from, by their kube-system Namespace UIDs; nil when either is unknown.
+func sameCluster(ctx context.Context, dyn dynamic.Interface, info *kustomize.ExportInfo) *bool {
+	if info == nil || info.KubeSystemUID == "" {
+		return nil
 	}
 	ns, err := dyn.Resource(namespacesGVR).Get(ctx, "kube-system", metav1.GetOptions{})
-	if err != nil || string(ns.GetUID()) == info.KubeSystemUID {
+	if err != nil {
+		return nil
+	}
+	same := string(ns.GetUID()) == info.KubeSystemUID
+	return &same
+}
+
+// otherClusterNote says when the cluster verified is not the one the export came from: expected after restoring
+// the export elsewhere, a mistake otherwise (e.g. staging instead of prod), where a nearly clean result means
+// nothing. Informational, never a failure; empty when they match or either is unknown.
+func otherClusterNote(info *kustomize.ExportInfo, same *bool) string {
+	if same == nil || *same {
 		return ""
 	}
 	from := info.Cluster
@@ -222,16 +264,10 @@ func otherClusterNote(ctx context.Context, dyn dynamic.Interface, root string) s
 // failReason says which part of the acceptance test a run missed, the share of resources that would not change, unexplained differences, or both.
 func failReason(r *verify.Report) string {
 	var why []string
-	if r.Clean*100 < r.Total*verify.AcceptancePercent {
-		why = append(why, fmt.Sprintf("%.1f%% would not change, %d%% required", r.CleanPercent(), verify.AcceptancePercent))
+	if !r.MeetsThreshold() {
+		why = append(why, fmt.Sprintf("%.1f%% would not change, %d%% required", r.CleanPercent(), r.RequiredPercent()))
 	}
-	unexplained := 0
-	for _, d := range r.Diffs {
-		if d.Explanation == "" {
-			unexplained++
-		}
-	}
-	if unexplained > 0 {
+	if unexplained := r.Unexplained(); unexplained > 0 {
 		why = append(why, plural(unexplained, "unexplained difference", "unexplained differences"))
 	}
 	return strings.Join(why, "; ")

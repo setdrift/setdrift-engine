@@ -5,12 +5,12 @@ package verify
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
-	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -28,6 +28,7 @@ import (
 	"sigs.k8s.io/kustomize/api/krusty"
 	"sigs.k8s.io/kustomize/kyaml/filesys"
 
+	sdiff "setdrift.io/setdrift-engine/pkg/diff"
 	"setdrift.io/setdrift-engine/pkg/emit/kustomize"
 )
 
@@ -107,6 +108,13 @@ type DryRunVerifier struct {
 	// Set is the directory under the cluster's directory to build and check,
 	// e.g. platform/aws/eks for the platform set; empty for the generic set.
 	Set string
+	// ExportedAt is when the export was taken, from .setdrift-export: writes
+	// to a differing live object after it are reported as its cause. Zero
+	// when unknown.
+	ExportedAt time.Time
+	// Threshold is the share of resources, in percent, that must not change;
+	// zero means AcceptancePercent.
+	Threshold int
 }
 
 // Verify implements Verifier. repoDir is a cluster's directory
@@ -121,7 +129,7 @@ func (v DryRunVerifier) Verify(ctx context.Context, repoDir string) (*Report, er
 	if err != nil {
 		return nil, err
 	}
-	report := &Report{Total: len(objs), Skipped: map[string]int{}}
+	report := &Report{Total: len(objs), Skipped: map[string]int{}, Threshold: v.Threshold}
 	if n, err := countRedacted(root); err != nil {
 		return nil, err
 	} else if n > 0 {
@@ -227,44 +235,159 @@ func Ref(obj *unstructured.Unstructured) string {
 func (v DryRunVerifier) check(ctx context.Context, obj *unstructured.Unstructured, missingCRDs map[schema.GroupKind]string) (*Diff, error) {
 	gvk := obj.GroupVersionKind()
 	ref := Ref(obj)
-	diff := func(explanation string, paths ...string) (*Diff, error) {
-		return &Diff{Ref: ref, Paths: paths, Explanation: explanation}, nil
+	diff := func(kind, explanation string, paths ...string) (*Diff, error) {
+		return &Diff{Ref: ref, Kind: kind, Paths: paths, Explanation: explanation}, nil
 	}
 
 	mapping, err := v.Mapper.RESTMapping(gvk.GroupKind(), gvk.Version)
 	if err != nil {
 		if crd, ok := missingCRDs[gvk.GroupKind()]; ok {
-			return diff("", "type not served by the cluster: its CustomResourceDefinition "+crd+" is in crds/ but not in the cluster yet")
+			return diff(KindNotServed, "", "type not served by the cluster: its CustomResourceDefinition "+crd+" is in crds/ but not in the cluster yet")
 		}
-		return diff("", "type not served by the cluster: "+err.Error())
+		return diff(KindNotServed, "", "type not served by the cluster: "+err.Error())
 	}
 	live, err := v.Cluster.Get(ctx, mapping.Resource, obj.GetNamespace(), obj.GetName())
 	switch {
 	case apierrors.IsNotFound(err):
-		return diff("", "not in the cluster: applying would create it")
+		return diff(KindNotInCluster, "", "not in the cluster: applying would create it")
 	case err != nil && resourceError(err):
-		return diff("", err.Error())
+		return diff(KindRejected, "", err.Error())
 	case err != nil:
 		return nil, fmt.Errorf("%s: %w", ref, err)
 	}
 	if lost := lostFields(obj, live); len(lost) > 0 {
-		return diff("", lost...)
+		d, _ := diff(KindLost, "", lost...)
+		d.ChangedAfterExport = v.writesAfterExport(live)
+		return d, nil
 	}
 	result, err := v.Cluster.DryRunApply(ctx, mapping.Resource, obj)
 	switch {
 	case err != nil && resourceError(err):
-		return diff(explainApplyError(gvk, err), err.Error())
+		return diff(KindRejected, explainApplyError(gvk, err), err.Error())
 	case err != nil:
 		return nil, fmt.Errorf("%s: %w", ref, err)
 	}
-	paths := differences(comparable(live.Object), comparable(result.Object), "")
-	if len(paths) == 0 {
+	fields := sdiff.Fields(comparable(live.Object), comparable(result.Object))
+	if len(fields) == 0 {
 		return nil, nil
 	}
-	if len(paths) > maxPaths {
-		paths = append(paths[:maxPaths], fmt.Sprintf("and %d more", len(paths)-maxPaths))
+	// generation moves with any spec change: noise beside the fields that moved it
+	if len(fields) > 1 {
+		kept := fields[:0]
+		for _, f := range fields {
+			if f.Path != "metadata.generation" {
+				kept = append(kept, f)
+			}
+		}
+		fields = kept
 	}
-	return diff("", paths...)
+	owned := ownership(live)
+	d, _ := diff(KindChanged, "")
+	for i, f := range fields {
+		if i < maxPaths {
+			d.Paths = append(d.Paths, f.Path)
+		}
+		if i < maxFields {
+			d.Fields = append(d.Fields, Field{Path: f.Path, Cluster: f.A, Export: f.B, SetBy: owned.owners(f.Keys)})
+		}
+	}
+	if len(fields) > maxPaths {
+		d.Paths = append(d.Paths, fmt.Sprintf("and %d more", len(fields)-maxPaths))
+	}
+	d.ChangedAfterExport = v.writesAfterExport(live)
+	return d, nil
+}
+
+// fieldOwners is a live object's managedFields, decoded.
+type fieldOwners []struct {
+	owner  Owner
+	fields map[string]any
+}
+
+// ownership decodes a live object's managedFields; verify's own dry-runs
+// are left out.
+func ownership(live *unstructured.Unstructured) fieldOwners {
+	var out fieldOwners
+	for _, m := range live.GetManagedFields() {
+		if m.Manager == FieldManager || m.FieldsV1 == nil {
+			continue
+		}
+		var f map[string]any
+		if json.Unmarshal(m.FieldsV1.Raw, &f) != nil {
+			continue
+		}
+		out = append(out, struct {
+			owner  Owner
+			fields map[string]any
+		}{Owner{Manager: m.Manager, Operation: string(m.Operation), Subresource: m.Subresource}, f})
+	}
+	return out
+}
+
+// owners returns who owns the field at keys (see diff.Field.Keys).
+func (fo fieldOwners) owners(keys []string) []Owner {
+	var out []Owner
+	for _, o := range fo {
+		if owns(o.fields, keys) {
+			out = append(out, o.owner)
+		}
+	}
+	return out
+}
+
+// owns reports whether a manager's fieldsV1 includes the field at keys:
+// the field itself, or an atomic value holding it (a leaf before keys end).
+func owns(node map[string]any, keys []string) bool {
+	for _, k := range keys {
+		if len(node) == 0 {
+			// a leaf: the manager owns the whole value, e.g. an atomic list
+			return true
+		}
+		var next any
+		switch {
+		case strings.HasPrefix(k, "f:"):
+			next = node[k]
+		case strings.HasPrefix(k, "n:"):
+			// a list item keyed by name: k:{"name":"web"}
+			name := strings.TrimPrefix(k, "n:")
+			for key, v := range node {
+				var item map[string]any
+				if strings.HasPrefix(key, "k:") && json.Unmarshal([]byte(strings.TrimPrefix(key, "k:")), &item) == nil && item["name"] == name {
+					next = v
+					break
+				}
+			}
+		default:
+			return false
+		}
+		m, ok := next.(map[string]any)
+		if !ok {
+			return false
+		}
+		node = m
+	}
+	return true
+}
+
+// maxFields caps the fields with values a Diff keeps.
+const maxFields = 50
+
+// writesAfterExport lists who wrote the live object after the export was
+// taken, from its managedFields: writes to its status (controllers report
+// progress there) and verify's own dry-runs are left out.
+func (v DryRunVerifier) writesAfterExport(live *unstructured.Unstructured) []Write {
+	if v.ExportedAt.IsZero() {
+		return nil
+	}
+	var out []Write
+	for _, m := range live.GetManagedFields() {
+		if m.Time == nil || !m.Time.After(v.ExportedAt) || m.Subresource == "status" || m.Manager == FieldManager {
+			continue
+		}
+		out = append(out, Write{Manager: m.Manager, Operation: string(m.Operation), Time: m.Time.UTC()})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Time.Before(out[j].Time) })
+	return out
 }
 
 var crdGVK = schema.GroupVersionKind{Group: "apiextensions.k8s.io", Version: "v1", Kind: "CustomResourceDefinition"}
@@ -359,38 +482,6 @@ func comparable(obj map[string]any) map[string]any {
 	// dry-run.
 	delete(c, "status")
 	return c
-}
-
-// differences lists the paths where a and b differ.
-func differences(a, b any, path string) []string {
-	am, aok := a.(map[string]any)
-	bm, bok := b.(map[string]any)
-	if !aok || !bok {
-		if reflect.DeepEqual(a, b) {
-			return nil
-		}
-		if path == "" {
-			path = "."
-		}
-		return []string{path}
-	}
-	keys := map[string]bool{}
-	for k := range am {
-		keys[k] = true
-	}
-	for k := range bm {
-		keys[k] = true
-	}
-	sorted := make([]string, 0, len(keys))
-	for k := range keys {
-		sorted = append(sorted, k)
-	}
-	sort.Strings(sorted)
-	var out []string
-	for _, k := range sorted {
-		out = append(out, differences(am[k], bm[k], path+"."+k)...)
-	}
-	return out
 }
 
 func countRedacted(dir string) (int, error) {

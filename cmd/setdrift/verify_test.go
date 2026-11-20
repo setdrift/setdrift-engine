@@ -8,10 +8,12 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -74,9 +76,68 @@ func TestOtherClusterNote(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		got := otherClusterNote(context.Background(), dyn, root)
+		info, err := kustomize.ReadExportInfo(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := otherClusterNote(info, sameCluster(context.Background(), dyn, info))
 		if (c.want == "") != (got == "") || !strings.Contains(got, c.want) {
 			t.Errorf("%s: %q, want %q", c.name, got, c.want)
 		}
+	}
+}
+
+func TestLikelyCause(t *testing.T) {
+	no, yes := false, true
+	changed := func(n int, d verify.Diff) []verify.Diff {
+		out := make([]verify.Diff, n)
+		for i := range out {
+			out[i] = d
+		}
+		return out
+	}
+	byHand := verify.Diff{Kind: verify.KindChanged, ChangedAfterExport: []verify.Write{{Manager: "kubectl-edit"}}}
+	for _, c := range []struct {
+		name string
+		doc  verifyDocument
+		want string
+	}{
+		{"clean", verifyDocument{}, ""},
+		{"other cluster", verifyDocument{SameCluster: &no, ExportCluster: "prod", Report: verify.Report{Diffs: changed(2, byHand)}}, "a different cluster than the export came from (prod)"},
+		{"changed since", verifyDocument{SameCluster: &yes, ExportedAt: "T", Report: verify.Report{Diffs: changed(3, byHand)}}, "The cluster changed after the export (T): 3 of the 3 resources were written since, by kubectl-edit (3)"},
+		{"one field everywhere", verifyDocument{Report: verify.Report{Diffs: changed(4, verify.Diff{Kind: verify.KindChanged, Fields: []verify.Field{{Path: "metadata.labels.x"}}})}}, "One field differs on 4 of the changed resources: metadata.labels.x"},
+		{"gone", verifyDocument{Report: verify.Report{Diffs: changed(2, verify.Diff{Kind: verify.KindNotInCluster})}}, "2 of the 2 are not in the cluster"},
+	} {
+		c.doc.Analysis = c.doc.Report.Analyze()
+		got := likelyCause(c.doc)
+		if (c.want == "") != (got == "") || !strings.Contains(got, c.want) {
+			t.Errorf("%s: %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+func TestVerifyReportFiles(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "verify")
+	at := time.Date(2026, 11, 20, 19, 14, 2, 0, time.UTC)
+	doc := verifyDocument{Cluster: "arn:aws:eks:us-east-2:111122223333:cluster/prod", Report: verify.Report{Total: 2, Clean: 1, Diffs: []verify.Diff{
+		{Ref: "ConfigMap shop/a", Kind: verify.KindChanged, Fields: []verify.Field{{Path: "data.k", Cluster: "x|y", Export: "z"}}}}}}
+	md, err := writeVerifyReport(dir, doc, at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(dir, "2026-11-20T191402Z-arn-aws-eks-us-east-2-111122223333-cluster-prod-report.md"); md != want {
+		t.Errorf("report = %s, want %s", md, want)
+	}
+	raw, err := os.ReadFile(strings.TrimSuffix(md, ".md") + ".json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var back verifyDocument
+	if err := json.Unmarshal(raw, &back); err != nil || back.Report.Diffs[0].Fields[0].Cluster != "x|y" {
+		t.Errorf("json: %v %+v", err, back)
+	}
+	text, _ := os.ReadFile(md)
+	if !strings.Contains(string(text), "| `data.k` | `\"x\\|y\"` | `\"z\"` |") {
+		t.Errorf("markdown table:\n%s", text)
 	}
 }

@@ -126,7 +126,8 @@ func TestDryRunVerifier(t *testing.T) {
 	for _, d := range report.Diffs {
 		got[d.Ref] = d
 	}
-	if d := got["ConfigMap shop/drifted"]; len(d.Paths) != 1 || d.Paths[0] != ".data.k" || d.Explanation != "" {
+	if d := got["ConfigMap shop/drifted"]; len(d.Paths) != 1 || d.Paths[0] != "data.k" || d.Explanation != "" || d.Kind != KindChanged ||
+		len(d.Fields) != 1 || d.Fields[0].Cluster != "v" || d.Fields[0].Export != "changed" {
 		t.Errorf("drifted: %+v", d)
 	}
 	if d := got["ConfigMap shop/gone"]; len(d.Paths) != 1 || !strings.Contains(d.Paths[0], "not in the cluster") {
