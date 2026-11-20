@@ -163,13 +163,16 @@ func TestCIPipeline(t *testing.T) {
 	src := map[string]string{
 		SourceRepoAnnotation:     "https://github.com/acme/shop",
 		SourcePathAnnotation:     "/deploy/prod",
+		SourceBranchAnnotation:   "feature/login",
+		SourceTagAnnotation:      "v1.4.2",
 		SourceRevisionAnnotation: "3f2c1a9",
 	}
 	c := LabelClassifier{CIFieldManagers: []string{"github-actions"}}
 
 	p := c.Classify(object("v1", "ConfigMap", "shop", "a", nil, src))
 	if p.Source != snapshotv1alpha1.Source_SOURCE_CI_CD || p.Manager != "https://github.com/acme/shop//deploy/prod" ||
-		p.Evidence[SourceRevisionAnnotation] != "3f2c1a9" {
+		p.Evidence[SourceRevisionAnnotation] != "3f2c1a9" || p.Evidence[SourceBranchAnnotation] != "feature/login" ||
+		p.Evidence[SourceTagAnnotation] != "v1.4.2" {
 		t.Errorf("annotated: %+v", p)
 	}
 

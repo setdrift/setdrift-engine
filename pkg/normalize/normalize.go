@@ -74,6 +74,8 @@ var (
 		// changes with every deploy, and differs between clusters
 		"setdrift.io/source-repo",
 		"setdrift.io/source-path",
+		"setdrift.io/source-branch",
+		"setdrift.io/source-tag",
 		"setdrift.io/source-revision",
 		"setdrift.io/deployed-by",
 		// the Helm post-renderer's (helmsource.ChartRepo), read into the inventory

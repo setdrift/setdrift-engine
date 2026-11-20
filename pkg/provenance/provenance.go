@@ -129,11 +129,15 @@ func (c LabelClassifier) Classify(o *resource.Object) *snapshotv1alpha1.Provenan
 //
 //	setdrift.io/source-repo: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY
 //	setdrift.io/source-path: deploy/prod
+//	setdrift.io/source-branch: $GITHUB_REF_NAME ($GITHUB_HEAD_REF on a pull request)
+//	setdrift.io/source-tag: $GITHUB_REF_NAME, when a tag is deployed
 //	setdrift.io/source-revision: $GITHUB_SHA
 //	setdrift.io/deployed-by: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
 const (
 	SourceRepoAnnotation     = "setdrift.io/source-repo"
 	SourcePathAnnotation     = "setdrift.io/source-path"
+	SourceBranchAnnotation   = "setdrift.io/source-branch"
+	SourceTagAnnotation      = "setdrift.io/source-tag"
 	SourceRevisionAnnotation = "setdrift.io/source-revision"
 	DeployedByAnnotation     = "setdrift.io/deployed-by"
 )
@@ -182,7 +186,8 @@ func CanonicalRepo(repo string) string {
 }
 
 // SourceAnnotations are the CI/CD source annotations.
-var SourceAnnotations = []string{SourceRepoAnnotation, SourcePathAnnotation, SourceRevisionAnnotation, DeployedByAnnotation}
+var SourceAnnotations = []string{SourceRepoAnnotation, SourcePathAnnotation, SourceBranchAnnotation, SourceTagAnnotation,
+	SourceRevisionAnnotation, DeployedByAnnotation}
 
 // pipeline applies a CI/CD pipeline's evidence, after the GitOps markers:
 //   - the source annotations make an object no tool claims, or that only a
