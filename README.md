@@ -1,37 +1,43 @@
 # SetDrift
 
-SetDrift turns a running Kubernetes cluster into a Git-ready Kustomize
-repository, and shows you what in it nothing manages. One read-only command,
-no agent to install, and no secret values in the output.
+SetDrift is the open-source project used to build the platform over at SetDrift.io.
+The CLI tool here converts running clusters into a git-ready kustomize repository
+directly from the CLI, with no cluster install required, while protecting your secrets. 
 
+It currently is only being tested against EKS and local clusters like Kind, with plans 
+for other managed Kubernetes platforms in the future. 
+
+Get running right away using brew:
 ```sh
 brew install setdrift/tap/setdrift
 setdrift export
 ```
 
-In a few seconds you get:
+What you get:
 
-- **What isn't in Git.** Every object is classified by who manages it: Argo
+- **What isn't in Git** - Every object is classified by who manages it: Argo
   CD, Flux, Helm, an operator, the platform, or nobody. The summary and the
   export's README list what was applied by hand, namespace by namespace:
-  the drift to adopt into Git (`--unmanaged-only` writes just that).
-- **A repository you can apply.** CRDs first, then cluster-scoped objects,
+  the drift to adopt into Git (`--unmanaged-only`). 
+- **A repository you can apply** - CRDs first, then cluster-scoped objects,
   then each namespace, with the server's defaults, status and controller
   state stripped, so it applies cleanly to another cluster or under Argo CD
-  or Flux. What the platform creates in every cluster (EKS's or kind's own
-  objects) is left out.
-- **No secret values.** Secrets, and passwords sitting in other manifests,
+  or Flux. What the platform creates in every cluster (EKS or kind) is left out.
+- **No secret values** - Secrets, and passwords sitting in other manifests,
   are written for reference only with placeholders, outside every
   kustomization, with an ExternalSecret for each Secret so External Secrets
   Operator can restore it from your secret manager.
-- **Proof it matches.** `setdrift verify` dry-runs the export against the
+- **Proof it matches** - `setdrift verify` dry-runs the export against the
   cluster and reports how much would change: nothing, if the export is
-  right.
-- **What differs between clusters.** `setdrift diff staging prod` compares
-  two clusters (or a cluster with last week's snapshot) field by field,
-  with who manages each resource on each side, the Helm chart versions, and
-  the differences that are only each cluster's name, region or account set
-  apart.
+  right. Differences are grouped by cause, with the cluster's and the
+  export's values and who set them (`kubectl edit`, a scale, a deploy), and
+  each run writes a report to `setdrift-export/verify/`.
+- **Cluster Diff** - `setdrift diff` compares across place or across time:
+  two clusters now (`setdrift diff staging prod`: how do they differ?), or
+  one cluster with its own earlier snapshot (what changed since Monday, and
+  who changed it?). Field by field, with who manages each resource on each
+  side, the Helm chart versions, and the differences that are only each
+  cluster's name, region or account set apart.
 - **A restore playbook.** RESTORE.md is the checklist for recreating the
   cluster elsewhere, with the commands filled in: CRDs to create first, Helm
   releases to install with their chart versions, webhooks to wait for,
@@ -73,7 +79,7 @@ One command on each OS, for Intel/AMD and ARM:
 - **Checking a release:** GitHub attests where each archive was built:
   `gh attestation verify <archive> --repo setdrift/setdrift-engine`.
 
-Check it works with `setdrift version`.
+Check it works with `setdrift version`
 
 ## Quick start
 
@@ -83,20 +89,34 @@ setdrift verify setdrift-export   # dry-run the export against the cluster
 ```
 
 Then open `setdrift-export/clusters/<cluster>/README.md` for what the export
-found, and RESTORE.md for recreating the cluster.
+found, and RESTORE.md for recreating the cluster. Each export also saves a
+snapshot of everything it read to `setdrift-export/snapshots/`, kept out of
+Git, so you can see later what changed: `setdrift diff setdrift-export/snapshots/<time>-<cluster>.pb <context>`.
 
 Export reads with your kubeconfig credentials and changes nothing; it needs
-list and get on what it exports (a cluster-wide reader is enough; with access
-to some namespaces only, see below). Verify needs patch permission on the
-exported types for its dry-run, which changes nothing either.
+get and list on what it exports (the built-in `view` ClusterRole is enough;
+with access to some namespaces only, see [Permissions](#permissions)).
+Verify needs patch permission too, for its dry-run, which changes nothing
+either (the built-in `edit` role is enough).
 
 ## Usage
 
 ```sh
-# Another context, some namespaces, and keep the snapshot
-setdrift export --context prod -n payments -n checkout -o ./out --snapshot snap.pb
 
-# Only what no GitOps tool or Helm manages: the resources to adopt
+# using the default config and default context, export all namespaces into ./setdrift-export
+setdrift export
+
+# Using kubeconfig foo, use context prod, export namespaces payments and checkout only, into ./out
+setdrift export --kubeconfig ~/foo --context prod -n payments -n checkout -o ./out
+
+# Choose where the snapshot goes: a named file, or a directory 
+# default format: ./setdrift-export/snapshots/<time>-<cluster>.pb and .json --no-snapshot for none)
+setdrift export --snapshot ~/snapshots/ --snapshot-json prod.json
+
+# Only export the resources that are not identified as being managed, e.g. no helm indicators
+# Resolve false positives from CI/CD pipelines by stamping the setdrift.io/source-*
+# annotations on what each pipeline deploys: see "Source annotations" below
+# (#source-annotations), e.g. setdrift.io/source-repo: github.com/setdrift/setdrift-engine
 setdrift export -o ./out --unmanaged-only
 
 # One directory (and kustomization.yaml) per application in each namespace
@@ -118,14 +138,16 @@ setdrift export -o ./out --aws
 setdrift export --from-dir ./manifests --cluster-name test -o ./out
 
 # Check the export: its platform set on a cluster of the same platform, else
-# the generic set (--set generic|platform to choose)
+# the generic set (--set generic|platform to choose). Writes a Markdown and
+# JSON report to ./out/verify/ (-o for another directory, --no-report for none)
 setdrift verify ./out
+setdrift verify ./out -o ./verify-reports --threshold 100
 
-# Compare two clusters, or a cluster with an earlier snapshot of itself:
-# what differs, who manages it on each side, and which differences are only
-# each cluster's own values (name, region, account)
+# Compare two clusters now (place), or a cluster with an earlier snapshot of
+# itself (time): what differs, who manages it on each side, and which
+# differences are only each cluster's own values (name, region, account)
 setdrift diff staging prod
-setdrift diff prod-monday.pb prod
+setdrift diff ./out/snapshots/2026-11-16T090000Z-prod.pb prod   # what changed since Monday
 setdrift diff staging prod --map-namespace shop-staging=shop --exit-code
 setdrift diff prod prod --map-namespace shop=shop-canary   # two namespaces of one cluster
 
@@ -133,14 +155,45 @@ setdrift diff prod prod --map-namespace shop=shop-canary   # two namespaces of o
 # Manager or Parameter Store, for the ExternalSecrets (plan first, then confirm)
 setdrift secrets export ./out
 
-# Inspect a snapshot
-setdrift snapshot json snap.pb
+# Inspect a snapshot (the .json beside each .pb is the same, written by export)
+setdrift snapshot json ./out/snapshots/2026-11-16T090000Z-prod.pb
 ```
+
+**Which comparison?** A difference comes from time (a cluster changed) or
+from place (two clusters are set up differently); each comparison holds one
+fixed, so you can tell which:
+
+| Command | Answers |
+|---|---|
+| `setdrift diff <snapshot> prod` | What changed in prod since the snapshot, and who changed it (drift, incidents) |
+| `setdrift diff staging prod` | How two clusters differ right now (before a release, DR readiness, blue/green, regions) |
+| `setdrift verify <export>` | Whether applying the export would change the cluster: is the export right, did the restore work |
+
+Comparing an old export of one cluster with another cluster mixes the two:
+each difference could be either. `diff` accepts any combination of contexts,
+snapshots and directories; two contexts is the same as exporting both now
+and comparing the snapshots.
+
+Resources a CI/CD pipeline deploys look applied by hand unless the pipeline
+says where they come from: see [Source annotations](#source-annotations).
 
 `export` writes into an empty directory. To export again into a repository,
 pass `--force`: it replaces only `clusters/<cluster>/`, so resources gone
-from the cluster don't leave stale files, and keeps everything else. It asks
-first; `--yes` skips the question in scripts.
+from the cluster don't leave stale files, and keeps everything else,
+including the earlier snapshots and verify reports. It asks first; `--yes`
+skips the question in scripts.
+
+**Snapshots.** Each export writes a snapshot of everything it read, as
+protobuf (`.pb`, for `setdrift diff`) and JSON (for reading, or `jq`): every
+resource, normalized and redacted, including what the repository leaves out
+(the platform's own objects), who manages each, every finding, and the
+inventory (volumes, Helm releases, load balancers, nodes, and with `--aws`
+the AWS settings). They hold no secret values and are readable by you only.
+Exports into the same directory build a history, one pair per export. The
+export's `.gitignore` keeps `snapshots/` out of Git: they change with every
+export, and the repository holds what is applied. `--snapshot` and
+`--snapshot-json` take a file or a directory; an existing file is replaced
+only with `--force`.
 
 `setdrift` also runs as `kubectl setdrift` when installed as
 `kubectl-setdrift` on the PATH (`make plugin`).
@@ -148,6 +201,9 @@ first; `--yes` skips the question in scripts.
 ## Output
 
 ```
+.gitignore                  keeps snapshots/ out of Git
+snapshots/<time>-<cluster>.pb, .json   what each export read (not in Git)
+verify/<time>-<cluster>-report.md, .json   each setdrift verify run
 clusters/<cluster>/
   README.md                 what the export found, and how to apply it
   RESTORE.md                the restore playbook
@@ -188,7 +244,7 @@ install first.
 takes it from Argo CD or Flux installing the same chart, or from a file
 passed with `--helm-repos`, and lists the charts left to fill in; see
 [contrib/helm](contrib/helm), which also has a post-renderer that records
-the repository at install time.
+the repository at install time (`setdrift.io/chart-repo`).
 
 **Storage.** `--keep-source-defaults` keeps the storage class a claim got
 from this cluster's default class (normally left out), so claims ask for the
@@ -229,9 +285,123 @@ Secret values never reach the export, the snapshot or Git.
   plan first, skips remote secrets that exist already (`--overwrite`
   replaces them), and refuses a cluster other than the export's source.
 
-If your credentials can only read some namespaces, `export` without `-n`
-exports the kubeconfig context's namespace and says what you can read there;
-with no context namespace, it asks for `-n`.
+## Permissions
+
+`export`, `diff` and `verify` follow the same rules, and every refusal names
+who the cluster says you are (`system:serviceaccount:team:ci`, an IAM role
+on EKS) and how to fix it. `-n` limits all three to some namespaces.
+
+| Your access | Without `-n` | With `-n X` |
+|---|---|---|
+| The whole cluster | Everything is read | `X` is read |
+| Some namespaces, and you can list namespaces | The namespaces you can read are read, and the rest are named as not readable | `X` is read if you can read it |
+| Some namespaces, and you can't list namespaces | The kubeconfig context's namespace is read; with none set, you're asked for `-n` | `X` is read if you can read it |
+| None | An error naming what you need | An error naming what you need |
+
+- **`-n X` must exist and be readable,** checked before anything is read, so
+  nothing is written on a typo. A namespace that does not exist gets the
+  cluster's namespaces listed; one you can't read gets the RoleBinding that
+  would grant it.
+- **A type refused in one namespace** (a role that allows Pods but not
+  ConfigMaps) is skipped there only, and listed in the summary.
+- **`verify`** counts a resource you may not get, or may not patch for the
+  dry-run, as not checked: out of the percentage, and the run fails for it,
+  saying which permission is missing. It never reports a refusal as a
+  difference. With `-n`, a namespace that does not exist in the target is
+  not an error: its resources show as not in the cluster (before a restore).
+- **`diff`** compares only what both sides read: a side that read some
+  namespaces, or could not list a type, limits the other to the same, so
+  nothing shows as in one side only for not having been read.
+- **The kubeconfig itself:** a missing, empty, unreadable or malformed file,
+  a directory instead of a file, a context that does not exist, an expired
+  token, a missing credential plugin or an unreachable cluster each get
+  their own message, within 15 seconds, before anything is written.
+
+## Source annotations
+
+A pipeline that runs `kubectl apply` leaves no GitOps markers, so the
+resources it deploys look applied by hand: false positives in
+`--unmanaged-only` and in the summary's "Applied by hand" list, though they
+live in Git. Have each pipeline stamp where they come from:
+
+| Annotation | What it holds | GitHub Actions | GitLab CI | Required |
+|---|---|---|---|---|
+| `setdrift.io/source-repo` | The repository | `$GITHUB_SERVER_URL/$GITHUB_REPOSITORY` | `$CI_PROJECT_URL` | Yes |
+| `setdrift.io/source-path` | The directory in it that is applied, e.g. `deploy/overlays/prod` | your path | your path | No |
+| `setdrift.io/source-branch` | The branch deployed | `$GITHUB_REF_NAME` (`$GITHUB_HEAD_REF` on a pull request) | `$CI_COMMIT_BRANCH` | No |
+| `setdrift.io/source-tag` | The tag deployed, when a release deploys a tag | `$GITHUB_REF_NAME` on a tag push | `$CI_COMMIT_TAG` | No |
+| `setdrift.io/source-revision` | The commit deployed, in full | `$GITHUB_SHA` | `$CI_COMMIT_SHA` | No |
+| `setdrift.io/deployed-by` | The pipeline run | `$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID` | `$CI_JOB_URL` | No |
+
+`source-repo` alone ends the false positives. It is read in any common form:
+`https://github.com/foo/bar`, `github.com/foo/bar`, `github/foo/bar`,
+`https://github.com/foo/bar.git` and `git@github.com:foo/bar.git` are all
+`https://github.com/foo/bar` (also `gitlab/` and `bitbucket/` shorthands),
+and credentials in the URL are dropped. The others say what to compare and
+where a fix goes:
+
+- **`source-branch`** answers where a change belongs: on a cluster that
+  feature branches deploy to, which branch each resource came from, even
+  after the branch's commits are squashed or force-pushed away.
+- **`source-tag`** is for releases deployed from a tag (`v1.4.2`); set it
+  instead of, or with, the branch.
+- **`source-revision`** pins the exact commit. A cluster promoted from
+  another (pre-prod to prod) carries the same commit, so `setdrift diff
+  preprod prod` can tell a cluster that is behind from one edited by hand.
+
+For example, for `github.com/foo/bar`, where feature branches deploy to a
+dev cluster and `main` deploys to pre-prod, then to prod after UAT:
+
+| Cluster | `source-path` | `source-branch` | `source-revision` |
+|---|---|---|---|
+| dev | `deploy/overlays/dev` | `feature/login` | that branch's commit |
+| pre-prod | `deploy/overlays/preprod` | `main` | the `main` commit |
+| prod | `deploy/overlays/prod` | `main` | the same commit as pre-prod |
+
+**What SetDrift does with them.** It shows such a resource as
+`CI/CD <repo>//<path>`, leaves it out of `--unmanaged-only` and of "Applied
+by hand", and keeps the annotations in the snapshot as evidence. The
+exported manifests drop them: they change with every deploy and between
+clusters. Argo CD, Flux and Helm markers still win where present (the
+annotations are then kept as extra evidence), except Helm's label alone,
+which `helm template | kubectl apply` leaves behind.
+
+**Adding them.** With kustomize, in the pipeline step that deploys, before
+`kubectl apply -k`:
+
+```yaml
+- name: Deploy
+  env:
+    OVERLAY: deploy/overlays/${{ inputs.environment }}   # dev, preprod or prod
+  run: |
+    cd "$OVERLAY"
+    kustomize edit add annotation \
+      "setdrift.io/source-repo:$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+      "setdrift.io/source-path:$OVERLAY" \
+      "setdrift.io/source-branch:${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}" \
+      "setdrift.io/source-revision:$GITHUB_SHA" \
+      "setdrift.io/deployed-by:$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+    kubectl apply -k .
+```
+
+With plain manifests:
+
+```sh
+kubectl annotate --local -f deploy/prod -o yaml \
+  "setdrift.io/source-repo=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+  "setdrift.io/source-branch=$GITHUB_REF_NAME" \
+  "setdrift.io/source-revision=$GITHUB_SHA" | kubectl apply -f -
+```
+
+For a release from a tag, replace `source-branch` with
+`"setdrift.io/source-tag:$GITHUB_REF_NAME"` in the step that runs on tag
+pushes.
+
+**Without annotations,** a pipeline can name its kubectl field manager:
+`kubectl apply --field-manager=github-actions` in the pipeline, and
+`setdrift export --ci-field-manager github-actions` (also on `diff`). The
+resources it wrote then count as CI/CD, with low confidence and no
+repository. Helm releases need neither: Helm's own markers identify them.
 
 ## How it works
 
@@ -252,12 +422,12 @@ collect -> redact -> (inventory) -> hygiene -> ownership -> lifecycle -> platfor
 | [pkg/ownership](pkg/ownership) | Keeps top-level objects only, dropping anything controller-owned by another exported object, garbage whose owner was deleted, and objects the cluster generates itself (`kube-root-ca.crt`, default RBAC, Endpoints of Services with a selector, dynamically provisioned volumes and others). |
 | [pkg/lifecycle](pkg/lifecycle) | Drops finished or temporary objects: objects being deleted (and everything in a Namespace being deleted), terminated Pods, finished Jobs and Helm or Argo CD hooks, with a per-namespace count in the snapshot findings. Flags running Pods that have no controller, and Jobs and run-once Pods that a GitOps tool would re-run. |
 | [pkg/platform](pkg/platform) | Classifies the platform from weighed evidence (kubeconfig, API server, nodes, the cluster's objects, `--aws`) with a confidence; conflicting evidence means no classification. |
-| [pkg/provenance](pkg/provenance) | Classifies each object as Argo CD, Flux, Helm, operator, platform or unmanaged, and flags objects whose manager is gone from the cluster. Drops Helm's release records. |
+| [pkg/provenance](pkg/provenance) | Classifies each object as Argo CD, Flux, Helm, CI/CD (the `setdrift.io/source-*` annotations, or `--ci-field-manager`), operator, platform or unmanaged, and flags objects whose manager is gone from the cluster. Drops Helm's release records. |
 | [pkg/normalize](pkg/normalize) | Strips server-owned state so the export round-trips cleanly: fields only Kubernetes' controllers own (from managedFields), values equal to the API server's defaults, owner references, status and server-set metadata, `kubectl rollout restart` timestamps, and the markers Argo CD, Flux and Helm stamp on what they apply (the snapshot keeps them as provenance evidence). |
 | [pkg/snapshot](pkg/snapshot) | The versioned snapshot ([proto](proto/setdrift/snapshot/v1alpha1/snapshot.proto)), the contract between the CLI, the agent and the control plane. Protobuf is canonical; JSON is for inspection. |
 | [pkg/emit/kustomize](pkg/emit/kustomize) | Writes a snapshot as a Kustomize repository: the generic set, the platform's set, the README's overview, the ExternalSecrets and RESTORE.md. Resources with redacted values go to `redacted/`, outside every kustomization; objects the platform manages are left out. |
 | [pkg/diff](pkg/diff) | Compares two snapshots: pairs resources by group, kind, namespace and name (with namespace mapping), compares the normalized manifests field by field (lists of named items, such as containers, by name), sets aside each cluster's own values (name, region, account, mapped namespaces), and gives what the snapshots tell about why: the manager on each side, the Helm chart versions, the API versions. Platform objects are not compared. |
-| [pkg/verify](pkg/verify) | The acceptance test: a server-side dry-run apply of every exported resource, compared with the live object. Passes when at least 95% would not change and every remaining diff is explained; reports custom resources whose CRD the cluster lacks. |
+| [pkg/verify](pkg/verify) | The acceptance test: a server-side dry-run apply of every exported resource, compared with the live object. Passes when at least 95% (`--threshold`) would not change and every remaining diff is explained. Groups the differences by cause, with values, who owns each differing field (managedFields) and who wrote the object after the export, and names the likely cause: the cluster changed since, a different cluster, one field set on many resources, or deleted resources. Reports custom resources whose CRD the cluster lacks. |
 | [pkg/secretexport](pkg/secretexport) | `setdrift secrets export`: plans and writes the remote secrets the ExternalSecrets read, from the source cluster's Secrets, through a provider (AWS Secrets Manager, Parameter Store). |
 
 `pkg/` must not depend on CLI concerns; command-line code lives in `cmd/`.
