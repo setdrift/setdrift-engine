@@ -26,6 +26,37 @@ message Snapshot {
   repeated Finding findings = 7;
   // what restoring the cluster elsewhere needs beyond the manifests
   Inventory inventory = 8;
+  // what the credentials could read: the whole cluster or some namespaces
+  ReadScope scope = 9;
+}
+
+// What a capture read, and what its credentials could not: a snapshot of
+// some namespaces says nothing about the others, so a comparison with it
+// leaves them out.
+message ReadScope {
+  // cluster: everything; namespaces: those asked for (-n);
+  // context-namespace: the kubeconfig context's namespace, as the
+  // credentials can't list namespaces; readable-namespaces: the namespaces
+  // the credentials can read, as they can't read across the cluster;
+  // files: a directory of manifests
+  string mode = 1;
+  // the namespaces read; empty when mode is cluster or files
+  repeated string namespaces = 2;
+  // namespaces seen but not readable with these credentials
+  repeated string unreadable = 3;
+  // who the cluster says the credentials are, when known
+  string identity = 4;
+  // types that could not be listed (refused, or the API failed), in one
+  // namespace or, with namespace empty, in all
+  repeated Unread unread = 5;
+}
+
+// A type a capture could not list.
+message Unread {
+  // empty: in every namespace read
+  string namespace = 1;
+  string group = 2;
+  string kind = 3;
 }
 
 // cluster info, export.go generated

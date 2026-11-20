@@ -35,6 +35,8 @@ type Meta struct {
 	Findings   []*snapshotv1alpha1.Finding
 	// Inventory is copied into the snapshot as is.
 	Inventory *snapshotv1alpha1.Inventory
+	// Scope is what was read (the collector's), copied as is.
+	Scope *snapshotv1alpha1.ReadScope
 }
 
 // Build assembles a snapshot from pipeline output. Resources are sorted so the
@@ -49,6 +51,7 @@ func Build(meta Meta, objs []*resource.Object) (*snapshotv1alpha1.Snapshot, erro
 		// A copy: duplicates are appended below.
 		Findings:  slices.Clone(meta.Findings),
 		Inventory: meta.Inventory,
+		Scope:     meta.Scope,
 	}
 	// A resource's identity is group, kind, namespace and name. The version is
 	// left out because one object can be read at several versions.

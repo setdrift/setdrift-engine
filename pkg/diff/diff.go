@@ -118,6 +118,10 @@ type Result struct {
 	// NodesUnknown names the sides whose nodes the snapshot lacks: read
 	// from a directory, or with credentials that can't list nodes.
 	NodesUnknown []string `json:"nodesUnknown,omitempty"`
+	// Limited says what the comparison left out because a side read only
+	// some namespaces: only what both read is compared, so nothing shows as
+	// in one side only for not having been read in the other.
+	Limited []string `json:"limited,omitempty"`
 }
 
 // NodeChange is one way the clusters' nodes differ.
@@ -196,6 +200,10 @@ func Compare(a, b *snapshotv1alpha1.Snapshot, opts Options) (Result, error) {
 		return Result{}, fmt.Errorf("%s: %w", res.B.Label, err)
 	}
 	as, bs := ia.entries, ib.entries
+	res.Limited = limitToCommon(a.GetScope(), b.GetScope(), back, res.A.Label, res.B.Label, as, bs)
+	if n := dropUnread(a.GetScope(), b.GetScope(), back, as, bs); n != "" {
+		res.Limited = append(res.Limited, n)
+	}
 	res.A.PlatformObjects, res.B.PlatformObjects = ia.platform, ib.platform
 	res.Nodes, res.NodesUnknown = compareNodes(a.GetInventory().GetNodes(), b.GetInventory().GetNodes(), res.A.Label, res.B.Label)
 
@@ -487,6 +495,149 @@ func counts(m map[string]int32) string {
 		return "-"
 	}
 	return strings.Join(parts, ", ")
+}
+
+// readNamespaces is the set of namespaces a snapshot read, by the first
+// snapshot's names (back maps the second's); nil means the whole cluster.
+func readNamespaces(sc *snapshotv1alpha1.ReadScope, back map[string]string) map[string]bool {
+	switch sc.GetMode() {
+	case "namespaces", "context-namespace", "readable-namespaces":
+	default:
+		return nil
+	}
+	out := map[string]bool{}
+	for _, ns := range sc.GetNamespaces() {
+		if from, ok := back[ns]; ok {
+			ns = from
+		}
+		out[ns] = true
+	}
+	return out
+}
+
+// limitToCommon drops from both sides what only one side read, and says
+// what was left out.
+func limitToCommon(sa, sb *snapshotv1alpha1.ReadScope, back map[string]string, la, lb string, as, bs map[Key]entry) []string {
+	na, nb := readNamespaces(sa, nil), readNamespaces(sb, back)
+	if na == nil && nb == nil {
+		return nil
+	}
+	common := map[string]bool{}
+	switch {
+	case na == nil:
+		common = nb
+	case nb == nil:
+		common = na
+	default:
+		for ns := range na {
+			if nb[ns] {
+				common[ns] = true
+			}
+		}
+	}
+	keep := func(k Key) bool {
+		if k.Namespace == "" {
+			// a Namespace object of a namespace both read stays; other cluster-scoped resources need the whole cluster on both sides
+			return k.Group == "" && k.Kind == "Namespace" && common[k.Name]
+		}
+		return common[k.Namespace]
+	}
+	dropped := 0
+	for _, m := range []map[Key]entry{as, bs} {
+		for k := range m {
+			if !keep(k) {
+				delete(m, k)
+				dropped++
+			}
+		}
+	}
+	// -n on both sides alike is what was asked: nothing to say
+	limitedBy := func(sc *snapshotv1alpha1.ReadScope) bool {
+		return sc.GetMode() == "context-namespace" || sc.GetMode() == "readable-namespaces"
+	}
+	sameSets := na == nil || nb == nil || len(na) == len(nb) && len(common) == len(na)
+	if !limitedBy(sa) && !limitedBy(sb) && sameSets {
+		return nil
+	}
+	var notes []string
+	for _, side := range []struct {
+		label string
+		sc    *snapshotv1alpha1.ReadScope
+		read  map[string]bool
+	}{{la, sa, na}, {lb, sb, nb}} {
+		if side.read == nil {
+			continue
+		}
+		why := map[string]string{
+			"namespaces":          "as asked (-n)",
+			"context-namespace":   "its credentials may not list namespaces, so its kubeconfig context's namespace",
+			"readable-namespaces": "the ones its credentials can read",
+		}[side.sc.GetMode()]
+		n := fmt.Sprintf("%s read only namespaces %s (%s)", side.label, strings.Join(sortedStrings(side.read), ", "), why)
+		if len(side.sc.GetUnreadable()) > 0 {
+			n += fmt.Sprintf("; not readable there: %s", strings.Join(side.sc.GetUnreadable(), ", "))
+		}
+		notes = append(notes, n)
+	}
+	if len(common) == 0 {
+		notes = append(notes, "the two sides read no namespace in common, so nothing was compared")
+	} else {
+		notes = append(notes, fmt.Sprintf("compared namespaces %s only, and no cluster-scoped resources; %d resources outside them were left out",
+			strings.Join(sortedStrings(common), ", "), dropped))
+	}
+	return notes
+}
+
+// dropUnread drops from both sides the resources of a type either side
+// could not list (where it could not), so they don't show as in one side
+// only, and says what was dropped.
+func dropUnread(sa, sb *snapshotv1alpha1.ReadScope, back map[string]string, as, bs map[Key]entry) string {
+	type gk struct{ group, kind string }
+	all := map[gk]bool{}
+	in := map[gk]map[string]bool{}
+	add := func(u *snapshotv1alpha1.Unread, b bool) {
+		k := gk{u.GetGroup(), u.GetKind()}
+		if u.GetNamespace() == "" {
+			all[k] = true
+			return
+		}
+		ns := u.GetNamespace()
+		if from, ok := back[ns]; b && ok {
+			ns = from
+		}
+		if in[k] == nil {
+			in[k] = map[string]bool{}
+		}
+		in[k][ns] = true
+	}
+	for _, u := range sa.GetUnread() {
+		add(u, false)
+	}
+	for _, u := range sb.GetUnread() {
+		add(u, true)
+	}
+	if len(all)+len(in) == 0 {
+		return ""
+	}
+	dropped := map[string]int{}
+	for _, m := range []map[Key]entry{as, bs} {
+		for k := range m {
+			t := gk{k.Group, k.Kind}
+			if all[t] || in[t][k.Namespace] {
+				delete(m, k)
+				dropped[k.Kind]++
+			}
+		}
+	}
+	if len(dropped) == 0 {
+		return ""
+	}
+	var kinds []string
+	for kind, n := range dropped {
+		kinds = append(kinds, fmt.Sprintf("%s (%d)", kind, n))
+	}
+	sort.Strings(kinds)
+	return "left out where a side could not list them: " + strings.Join(kinds, ", ")
 }
 
 // Manager names who manages a resource, for people.

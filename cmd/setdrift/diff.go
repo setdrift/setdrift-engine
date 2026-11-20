@@ -207,14 +207,21 @@ func (o *diffOptions) read(cmd *cobra.Command, arg string, namespaces []string) 
 		}
 		return onlyNamespaces(s, namespaces), true, nil
 	}
+	// a path that isn't there is a typo, not a context to try
+	if strings.ContainsAny(arg, `/\`) || slices.Contains([]string{".pb", ".json", ".yaml", ".yml"}, filepath.Ext(arg)) {
+		return nil, false, fmt.Errorf("%s: no such file or directory (a snapshot file, a directory of manifests, or a kubeconfig context)", arg)
+	}
 	fmt.Fprintf(cmd.ErrOrStderr(), "Reading %s...\n", arg)
 	eo := &exportOptions{kubeconfig: o.kubeconfig, context: arg, namespaces: namespaces}
 	src, err := eo.open(cmd)
 	if err != nil {
-		return nil, false, fmt.Errorf("%s is not a file or directory, so it was read as a kubeconfig context: %w", arg, err)
+		return nil, false, fmt.Errorf("context %s: %w", arg, err)
 	}
 	s, err = eo.capture(cmd.Context(), src)
-	return s, false, err
+	if err != nil {
+		return nil, false, fmt.Errorf("context %s: %w", arg, err)
+	}
+	return s, false, nil
 }
 
 // when labels a side of one cluster compared with itself: "prod snapshot 2026-11-20 19:24:53Z", or "prod now".
@@ -262,6 +269,12 @@ func printDiff(w io.Writer, r diff.Result, maxFields int, nodes bool) {
 		}
 		if len(about) > 0 {
 			fmt.Fprintf(w, "  %-*s %s\n", width, s.Label+":", strings.Join(about, ", "))
+		}
+	}
+	if len(r.Limited) > 0 {
+		fmt.Fprintln(w, "\nCompared only what both sides read:")
+		for _, n := range r.Limited {
+			fmt.Fprintf(w, "  %s\n", n)
 		}
 	}
 	differ, envOnly := r.Counts()

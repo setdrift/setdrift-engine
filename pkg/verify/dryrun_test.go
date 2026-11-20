@@ -5,6 +5,7 @@ package verify
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -304,5 +305,39 @@ func TestRetry(t *testing.T) {
 	}
 	if _, err := retry(context.Background(), notFound); !apierrors.IsNotFound(err) || calls != 1 {
 		t.Errorf("not found: %v after %d calls", err, calls)
+	}
+}
+
+// A resource the credentials may not patch for the dry-run is not checked:
+// out of the count, and the run fails for it; with -n, only that namespace
+// is checked.
+func TestNotCheckedAndNamespaces(t *testing.T) {
+	other := "apiVersion: v1\nkind: ConfigMap\nmetadata: {name: elsewhere, namespace: prod}\ndata: {k: v}\n"
+	repo := writeRepo(t, map[string]string{
+		"kustomization.yaml": kustomization("a.yaml", "b.yaml", "elsewhere.yaml"),
+		"a.yaml":             manifest("ConfigMap", "a"),
+		"b.yaml":             manifest("ConfigMap", "b"),
+		"elsewhere.yaml":     other,
+	})
+	forbidden := apierrors.NewForbidden(schema.GroupResource{Resource: "configmaps"}, "b", errors.New("cannot patch"))
+	cluster := fakeCluster{
+		live:    map[string]*unstructured.Unstructured{"a": cm("a", "k", "v"), "b": cm("b", "k", "v"), "elsewhere": cm("elsewhere", "k", "v")},
+		results: map[string]*unstructured.Unstructured{"a": cm("a", "k", "v"), "elsewhere": cm("elsewhere", "k", "v")},
+		errs:    map[string]error{"b": forbidden},
+	}
+	report, err := DryRunVerifier{Cluster: cluster, Mapper: mapper()}.Verify(context.Background(), repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Total != 2 || report.Clean != 2 || len(report.NotChecked) != 1 || report.NotChecked[0].Kind != KindNotChecked ||
+		!strings.Contains(report.NotChecked[0].Paths[0], "may not patch") {
+		t.Errorf("report = %+v", report)
+	}
+	if report.Passed() {
+		t.Error("a run with a resource not checked passed")
+	}
+	report, err = DryRunVerifier{Cluster: cluster, Mapper: mapper(), Namespaces: []string{"prod"}}.Verify(context.Background(), repo)
+	if err != nil || report.Total != 1 || report.Clean != 1 || len(report.NotChecked) != 0 || !report.Passed() {
+		t.Errorf("-n prod: %v %+v", err, report)
 	}
 }

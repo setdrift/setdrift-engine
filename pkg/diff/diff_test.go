@@ -248,3 +248,40 @@ func TestNodes(t *testing.T) {
 		t.Errorf("nodes unknown = %v", r.NodesUnknown)
 	}
 }
+
+// A side that read only some namespaces, or could not list a type, limits
+// both: nothing shows as in one side only for not having been read.
+func TestCompareOnlyWhatBothRead(t *testing.T) {
+	full := snap("prod", "", "",
+		res("v1", "ConfigMap", "stage", "a", `{}`, unmanaged, ""),
+		res("v1", "ConfigMap", "prod", "b", `{}`, unmanaged, ""),
+		res("rbac.authorization.k8s.io/v1", "RoleBinding", "stage", "rb", `{}`, unmanaged, ""),
+		res("rbac.authorization.k8s.io/v1", "ClusterRole", "", "cr", `{}`, unmanaged, ""),
+		res("v1", "Namespace", "", "stage", `{}`, unmanaged, ""))
+	limited := snap("prod", "", "",
+		res("v1", "ConfigMap", "stage", "a", `{}`, unmanaged, ""),
+		res("v1", "Namespace", "", "stage", `{}`, unmanaged, ""))
+	limited.Scope = &snapshotv1alpha1.ReadScope{Mode: "readable-namespaces", Namespaces: []string{"stage"}, Unreadable: []string{"prod"},
+		Unread: []*snapshotv1alpha1.Unread{{Namespace: "stage", Group: "rbac.authorization.k8s.io", Kind: "RoleBinding"}}}
+	r, err := Compare(full, limited, Options{LabelA: "then", LabelB: "now"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !r.Same() || r.Identical != 2 {
+		t.Errorf("only in A %v, only in B %v, identical %d; want the two read in both, the same", r.OnlyA, r.OnlyB, r.Identical)
+	}
+	notes := strings.Join(r.Limited, "\n")
+	for _, want := range []string{"now read only namespaces stage (the ones its credentials can read); not readable there: prod",
+		"compared namespaces stage only, and no cluster-scoped resources", "left out where a side could not list them: RoleBinding (1)"} {
+		if !strings.Contains(notes, want) {
+			t.Errorf("notes lack %q:\n%s", want, notes)
+		}
+	}
+	// -n alike on both sides needs no note
+	a, b := snap("x", "", ""), snap("y", "", "")
+	a.Scope = &snapshotv1alpha1.ReadScope{Mode: "namespaces", Namespaces: []string{"shop"}}
+	b.Scope = &snapshotv1alpha1.ReadScope{Mode: "namespaces", Namespaces: []string{"shop"}}
+	if r, _ := Compare(a, b, Options{}); len(r.Limited) != 0 {
+		t.Errorf("-n on both sides: %v", r.Limited)
+	}
+}

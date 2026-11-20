@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -115,6 +116,9 @@ type DryRunVerifier struct {
 	// Threshold is the share of resources, in percent, that must not change;
 	// zero means AcceptancePercent.
 	Threshold int
+	// Namespaces limits the check to resources in these namespaces and their
+	// Namespace objects, as export -n reads them; empty checks everything.
+	Namespaces []string
 }
 
 // Verify implements Verifier. repoDir is a cluster's directory
@@ -129,7 +133,16 @@ func (v DryRunVerifier) Verify(ctx context.Context, repoDir string) (*Report, er
 	if err != nil {
 		return nil, err
 	}
-	report := &Report{Total: len(objs), Skipped: map[string]int{}, Threshold: v.Threshold}
+	if len(v.Namespaces) > 0 {
+		objs = slices.DeleteFunc(objs, func(o *unstructured.Unstructured) bool {
+			if o.GetNamespace() != "" {
+				return !slices.Contains(v.Namespaces, o.GetNamespace())
+			}
+			gvk := o.GroupVersionKind()
+			return !(gvk.Group == "" && gvk.Kind == "Namespace" && slices.Contains(v.Namespaces, o.GetName()))
+		})
+	}
+	report := &Report{Total: len(objs), Skipped: map[string]int{}, Threshold: v.Threshold, Namespaces: v.Namespaces}
 	if n, err := countRedacted(root); err != nil {
 		return nil, err
 	} else if n > 0 {
@@ -164,14 +177,25 @@ func (v DryRunVerifier) Verify(ctx context.Context, repoDir string) (*Report, er
 	if err := g.Wait(); err != nil {
 		return nil, err
 	}
-	for _, d := range diffs {
-		if d == nil {
+	for i, d := range diffs {
+		gvk := objs[i].GroupVersionKind()
+		switch {
+		case d == nil:
 			report.Clean++
-		} else {
+		case d.Kind == KindNotChecked && len(v.Namespaces) > 0 && gvk.Group == "" && gvk.Kind == "Namespace":
+			// namespace-scoped access can't get or patch the cluster-scoped Namespace object; export -n leaves it out the same way
+			report.Skipped["Namespace objects these credentials may not get or patch (cluster-scoped)"]++
+			report.Total--
+		case d.Kind == KindNotChecked:
+			// says nothing about the export: out of the count
+			report.NotChecked = append(report.NotChecked, *d)
+			report.Total--
+		default:
 			report.Diffs = append(report.Diffs, *d)
 		}
 	}
 	sort.Slice(report.Diffs, func(i, j int) bool { return report.Diffs[i].Ref < report.Diffs[j].Ref })
+	sort.Slice(report.NotChecked, func(i, j int) bool { return report.NotChecked[i].Ref < report.NotChecked[j].Ref })
 	return report, nil
 }
 
@@ -248,6 +272,8 @@ func (v DryRunVerifier) check(ctx context.Context, obj *unstructured.Unstructure
 	}
 	live, err := v.Cluster.Get(ctx, mapping.Resource, obj.GetNamespace(), obj.GetName())
 	switch {
+	case apierrors.IsForbidden(err):
+		return diff(KindNotChecked, "", "these credentials may not get it: "+err.Error())
 	case apierrors.IsNotFound(err):
 		return diff(KindNotInCluster, "", "not in the cluster: applying would create it")
 	case err != nil && resourceError(err):
@@ -262,6 +288,8 @@ func (v DryRunVerifier) check(ctx context.Context, obj *unstructured.Unstructure
 	}
 	result, err := v.Cluster.DryRunApply(ctx, mapping.Resource, obj)
 	switch {
+	case apierrors.IsForbidden(err):
+		return diff(KindNotChecked, "", "these credentials may not patch it, which the dry-run needs (it changes nothing): "+err.Error())
 	case err != nil && resourceError(err):
 		return diff(KindRejected, explainApplyError(gvk, err), err.Error())
 	case err != nil:

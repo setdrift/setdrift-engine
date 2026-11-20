@@ -259,6 +259,10 @@ func runClusterErr(all, served []*unstructured.Unstructured, cfg raceConfig, m m
 		disc.Resources = append(disc.Resources, &metav1.APIResourceList{GroupVersion: gv, APIResources: rs})
 	}
 
+	// the access checks list Namespaces to name the existing ones
+	if _, ok := listKinds[schema.GroupVersionResource{Version: "v1", Resource: "namespaces"}]; !ok {
+		listKinds[schema.GroupVersionResource{Version: "v1", Resource: "namespaces"}] = "NamespaceList"
+	}
 	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), listKinds, fetched...)
 	if m.forbid != nil {
 		gvr := *m.forbid

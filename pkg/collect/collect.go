@@ -25,6 +25,9 @@ type Result struct {
 	Findings []*snapshotv1alpha1.Finding
 	// server k8s version, blank for directories
 	KubernetesVersion string
+	// Scope is what was read: the whole cluster, or which namespaces, and
+	// which the credentials could not read.
+	Scope *snapshotv1alpha1.ReadScope
 }
 
 // warn builds the finding directly, adds WARNING (not error resulting in termination)

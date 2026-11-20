@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -66,5 +67,27 @@ func TestUnreachableErrors(t *testing.T) {
 		if got := explainUnreachable(c.err, "prod", "https://x").Error(); !strings.Contains(got, c.want) {
 			t.Errorf("%v: got %q, want %q", c.err, got, c.want)
 		}
+	}
+}
+
+// A kubeconfig that is a directory or can't be read says so plainly, and a ~
+// the shell left alone is the home directory.
+func TestKubeconfigFileErrors(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	if _, err := loadConfig(dir, ""); err == nil || !strings.Contains(err.Error(), "is a directory, not a kubeconfig file") {
+		t.Errorf("directory: %v", err)
+	}
+	if runtime.GOOS != "windows" && os.Getuid() != 0 {
+		p := filepath.Join(dir, "config")
+		if err := os.WriteFile(p, []byte("apiVersion: v1\nkind: Config\n"), 0o000); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := loadConfig(p, ""); err == nil || !strings.Contains(err.Error(), "can't read it (permission denied)") {
+			t.Errorf("unreadable: %v", err)
+		}
+	}
+	if _, err := loadConfig("~/missing", ""); err == nil || !strings.Contains(err.Error(), filepath.Join(dir, "missing")+": no such file") {
+		t.Errorf("~: %v", err)
 	}
 }

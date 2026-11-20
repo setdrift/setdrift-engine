@@ -27,6 +27,7 @@ import (
 
 	"setdrift.io/setdrift-engine/pkg/ownership"
 	"setdrift.io/setdrift-engine/pkg/resource"
+	snapshotv1alpha1 "setdrift.io/setdrift-engine/pkg/snapshot/v1alpha1"
 )
 
 // set defaults
@@ -114,6 +115,10 @@ type ClusterCollector struct {
 	// access is limited to some namespaces. The CLI passes the kubeconfig
 	// context's namespace. Empty means fail with a ScopeError instead.
 	FallbackNamespace string
+	// RequireNamespaces makes a requested (or fallback) namespace that does
+	// not exist an error (a NamespaceError), found before anything is
+	// listed; otherwise it is a NAMESPACE_NOT_FOUND finding. The CLI sets it.
+	RequireNamespaces bool
 	// objects per call; zero means DefaultPageSize
 	PageSize int64
 	// types not to list; nil means DefaultSkip
@@ -158,6 +163,8 @@ type listResult struct {
 	objects []*resource.Object
 	partial *partialType
 	err     error
+	// denied are the namespaces that refused the list (Forbidden), when others allowed it
+	denied []string
 }
 
 // Collect implements Collector, gathers in order- Server Version, Discovery, Kinds by group, Scope, Tasks, Sort, listAll, merge in task order, fail if list empty, get ns resolve owners then hydrate
@@ -231,15 +238,29 @@ func (c *ClusterCollector) Collect(ctx context.Context) (*Result, error) {
 	// Merged in task order, so the result does not depend on which list finished first.
 	var partials []*partialType
 	listed := 0
+	// types refused in some of the namespaces read, by namespace
+	deniedIn := map[string][]string{}
+	// what could not be read, for the scope
+	var unread []*snapshotv1alpha1.Unread
+	defer func() {
+		if res.Scope != nil {
+			res.Scope.Unread = unread
+		}
+	}()
 	for i, r := range results {
 		gvr := tasks[i].info.gvr
 		// LIST_FAILED warning for any error the API server returned for one type, else breaks with error
 		if r.err != nil {
 			res.warn("LIST_FAILED", fmt.Sprintf("%s: %v", gvr, r.err))
+			unread = append(unread, &snapshotv1alpha1.Unread{Group: gvr.Group, Kind: tasks[i].info.kind})
 			continue
 		}
 		tasks[i].info.listed = true
 		listed++
+		for _, ns := range r.denied {
+			deniedIn[ns] = append(deniedIn[ns], gvr.GroupResource().String())
+			unread = append(unread, &snapshotv1alpha1.Unread{Namespace: ns, Group: gvr.Group, Kind: tasks[i].info.kind})
+		}
 		if r.partial != nil {
 			partials = append(partials, r.partial)
 			res.Objects = append(res.Objects, r.partial.objects...)
@@ -248,8 +269,37 @@ func (c *ClusterCollector) Collect(ctx context.Context) (*Result, error) {
 		}
 	}
 
+	if len(deniedIn) > 0 {
+		identity := ""
+		if res.Scope != nil {
+			identity = res.Scope.Identity
+		}
+		if identity == "" {
+			identity = Identity(ctx, c.Dynamic)
+			if res.Scope != nil {
+				res.Scope.Identity = identity
+			}
+		}
+		who := "these credentials"
+		if identity != "" {
+			who += " (" + identity + ")"
+		}
+		nss := make([]string, 0, len(deniedIn))
+		for ns := range deniedIn {
+			nss = append(nss, ns)
+		}
+		sort.Strings(nss)
+		for _, ns := range nss {
+			res.warn("LIST_DENIED", fmt.Sprintf("in namespace %s, %s may not list %d %s, so they were not read there: %s",
+				ns, who, len(deniedIn[ns]), choose(len(deniedIn[ns]) == 1, "type", "types"), truncateList(deniedIn[ns], 12)))
+		}
+	}
+
 	// Nothing at all could be listed: an empty export would look like an empty cluster.
 	if listed == 0 && len(tasks) > 0 {
+		if IsPermission(results[0].err) {
+			return nil, &NoAccessError{Identity: Identity(ctx, c.Dynamic, results[0].err), Namespaces: c.namespaces(), Err: results[0].err}
+		}
 		return nil, fmt.Errorf("no resource type could be listed; first error: %v", results[0].err)
 	}
 
@@ -384,7 +434,7 @@ func (c *ClusterCollector) hydrateByList(ctx context.Context, pt *partialType, n
 			seen[u.GetUID()] = true
 		}
 		return false // nothing to return, setFull updates the stubs
-	})
+	}, func(string) {}) // a namespace that refused the list had no stubs to fill
 	if err != nil {
 		return err
 	}
@@ -405,7 +455,7 @@ func setFull(o *resource.Object, u *unstructured.Unstructured, pt *partialType) 
 }
 
 // listFull is a paged list through the dynamic client, optional keep filter for hydrateByList
-func (c *ClusterCollector) listFull(ctx context.Context, gvr schema.GroupVersionResource, kind string, namespaced bool, keep func(*unstructured.Unstructured) bool) ([]*resource.Object, error) {
+func (c *ClusterCollector) listFull(ctx context.Context, gvr schema.GroupVersionResource, kind string, namespaced bool, keep func(*unstructured.Unstructured) bool, denied func(ns string)) ([]*resource.Object, error) {
 	var out []*resource.Object
 	err := c.paginate(ctx, namespaced, metav1.ListOptions{}, func(ns string) pager.ListPageFunc {
 		return func(ctx context.Context, opts metav1.ListOptions) (runtime.Object, error) {
@@ -424,12 +474,12 @@ func (c *ClusterCollector) listFull(ctx context.Context, gvr schema.GroupVersion
 		u.SetKind(kind)
 		out = append(out, resource.New(u))
 		return nil
-	})
+	}, denied)
 	return out, err
 }
 
 // listMetadata lists pt.gvr metadata-only, into partial objects
-func (c *ClusterCollector) listMetadata(ctx context.Context, pt *partialType) error {
+func (c *ClusterCollector) listMetadata(ctx context.Context, pt *partialType, denied func(ns string)) error {
 	err := c.eachMetadata(ctx, pt.gvr, pt.namespaced, metav1.ListOptions{}, func(pom *metav1.PartialObjectMetadata) error {
 		// turn partial object metadata into a stub Unstructured, containing only metadata and Partial = true
 		m, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&pom.ObjectMeta)
@@ -443,7 +493,7 @@ func (c *ClusterCollector) listMetadata(ctx context.Context, pt *partialType) er
 		o.Partial = true
 		pt.objects = append(pt.objects, o)
 		return nil
-	})
+	}, denied)
 	if err != nil || pt.gvr.GroupResource() != podsResource {
 		return err
 	}
@@ -466,7 +516,7 @@ func (c *ClusterCollector) tagPodPhases(ctx context.Context, pt *partialType, na
 				_ = unstructured.SetNestedField(o.Object, phase, "status", "phase")
 			}
 			return nil
-		})
+		}, func(string) {})
 		if err != nil {
 			return err
 		}
@@ -475,7 +525,7 @@ func (c *ClusterCollector) tagPodPhases(ctx context.Context, pt *partialType, na
 }
 
 // metadata equivalent of listFull's paging
-func (c *ClusterCollector) eachMetadata(ctx context.Context, gvr schema.GroupVersionResource, namespaced bool, opts metav1.ListOptions, fn func(*metav1.PartialObjectMetadata) error) error {
+func (c *ClusterCollector) eachMetadata(ctx context.Context, gvr schema.GroupVersionResource, namespaced bool, opts metav1.ListOptions, fn func(*metav1.PartialObjectMetadata) error, denied func(ns string)) error {
 	return c.paginate(ctx, namespaced, opts, func(ns string) pager.ListPageFunc {
 		return func(ctx context.Context, opts metav1.ListOptions) (runtime.Object, error) {
 			return c.Metadata.Resource(gvr).Namespace(ns).List(ctx, opts)
@@ -486,15 +536,19 @@ func (c *ClusterCollector) eachMetadata(ctx context.Context, gvr schema.GroupVer
 			return fmt.Errorf("unexpected list item type %T", obj)
 		}
 		return fn(pom)
-	})
+	}, denied)
 }
 
-// wrapper for client-go's pager, runs once per set namespace for namespaced objects, otherwise once for all namespaces
-func (c *ClusterCollector) paginate(ctx context.Context, namespaced bool, opts metav1.ListOptions, page func(ns string) pager.ListPageFunc, fn func(runtime.Object) error) error {
+// wrapper for client-go's pager, runs once per set namespace for namespaced objects, otherwise once for all namespaces.
+// Listing several namespaces, a namespace that refuses the type (Forbidden) is skipped and passed to denied, when set:
+// a role can allow ConfigMaps in one namespace and not another. The type fails only if every namespace refuses it.
+func (c *ClusterCollector) paginate(ctx context.Context, namespaced bool, opts metav1.ListOptions, page func(ns string) pager.ListPageFunc, fn func(runtime.Object) error, denied func(ns string)) error {
 	namespaces := []string{metav1.NamespaceAll}
 	if namespaced && len(c.Namespaces) > 0 {
 		namespaces = c.namespaces()
 	}
+	var refused []string
+	var first error
 	for _, ns := range namespaces {
 		p := pager.New(page(ns))
 		p.PageSize = c.PageSize
@@ -502,8 +556,20 @@ func (c *ClusterCollector) paginate(ctx context.Context, namespaced bool, opts m
 			p.PageSize = DefaultPageSize
 		}
 		if err := p.EachListItem(ctx, opts, fn); err != nil {
-			return err
+			if denied == nil || len(namespaces) == 1 || !apierrors.IsForbidden(err) {
+				return err
+			}
+			refused = append(refused, ns)
+			if first == nil {
+				first = err
+			}
 		}
+	}
+	if len(refused) == len(namespaces) {
+		return first
+	}
+	for _, ns := range refused {
+		denied(ns)
 	}
 	return nil
 }
@@ -588,16 +654,18 @@ func (c *ClusterCollector) listAll(ctx context.Context, tasks []listTask) ([]lis
 
 // listOne lists one type, metadata-only or in full
 func (c *ClusterCollector) listOne(ctx context.Context, t listTask) listResult {
+	var denied []string
+	deny := func(ns string) { denied = append(denied, ns) }
 	if t.metadataOnly {
 		pt := &partialType{gvr: t.info.gvr, kind: t.info.kind, namespaced: t.info.namespaced}
-		if err := c.listMetadata(ctx, pt); err != nil {
+		if err := c.listMetadata(ctx, pt, deny); err != nil {
 			return listResult{err: err}
 		}
-		return listResult{partial: pt}
+		return listResult{partial: pt, denied: denied}
 	}
 	// full list for every type not defined as metadata only
-	objs, err := c.listFull(ctx, t.info.gvr, t.info.kind, t.info.namespaced, nil)
-	return listResult{objects: objs, err: err}
+	objs, err := c.listFull(ctx, t.info.gvr, t.info.kind, t.info.namespaced, nil, deny)
+	return listResult{objects: objs, err: err, denied: denied}
 }
 
 // getNamespaces adds the Namespace objects themselves when requested
@@ -710,7 +778,11 @@ func (c *ClusterCollector) resolveOwners(ctx context.Context, res *Result, kinds
 }
 
 // ScopeError means the caller may not list the cluster as a whole (listing namespaces is forbidden), no namespaces were requested, and there is no fallback namespace.
-type ScopeError struct{ Err error }
+type ScopeError struct {
+	Err error
+	// Identity is who the cluster says the credentials are, when known.
+	Identity string
+}
 
 func (e *ScopeError) Error() string {
 	return "credentials can't list resources across the cluster (listing namespaces is forbidden); namespaces to export must be given: " + e.Err.Error()
@@ -718,10 +790,24 @@ func (e *ScopeError) Error() string {
 
 func (e *ScopeError) Unwrap() error { return e.Err }
 
-// scope returns the collector to list with
+// scope returns the collector to list with, and records in res what it reads:
+//   - namespaces asked for must exist and be readable (a NamespaceError);
+//   - with none asked for, credentials that may not list namespaces read the
+//     fallback (the context's namespace), which must be readable, or get a
+//     ScopeError;
+//   - credentials that may list namespaces but not read across them read the
+//     namespaces they can, and the others are recorded as unreadable.
 func (c *ClusterCollector) scope(ctx context.Context, res *Result, kinds map[schema.GroupKind]*typeInfo) (*ClusterCollector, error) {
 	info := kinds[schema.GroupKind{Kind: "Namespace"}]
-	if len(c.Namespaces) > 0 || info == nil {
+	if len(c.Namespaces) > 0 {
+		if err := CheckNamespaces(ctx, c.Dynamic, c.Namespaces, false, c.RequireNamespaces); err != nil {
+			return nil, err
+		}
+		res.Scope = &snapshotv1alpha1.ReadScope{Mode: "namespaces", Namespaces: c.namespaces()}
+		return c, nil
+	}
+	if info == nil {
+		res.Scope = &snapshotv1alpha1.ReadScope{Mode: "cluster"}
 		return c, nil
 	}
 	// Metadata and full lists need the same list permission; the metadata one is cheaper.
@@ -731,17 +817,45 @@ func (c *ClusterCollector) scope(ctx context.Context, res *Result, kinds map[sch
 	} else {
 		_, err = c.Dynamic.Resource(info.gvr).List(ctx, metav1.ListOptions{Limit: 1})
 	}
-	if !apierrors.IsForbidden(err) {
-		return c, nil // other errors surface in the lists themselves
+	switch {
+	case apierrors.IsForbidden(err):
+		if c.FallbackNamespace == "" {
+			return nil, &ScopeError{Err: err, Identity: Identity(ctx, c.Dynamic, err)}
+		}
+		if err := CheckNamespaces(ctx, c.Dynamic, []string{c.FallbackNamespace}, true, c.RequireNamespaces); err != nil {
+			return nil, err
+		}
+		scoped := *c
+		scoped.Namespaces = []string{c.FallbackNamespace}
+		res.Scope = &snapshotv1alpha1.ReadScope{Mode: "context-namespace", Namespaces: scoped.Namespaces, Identity: Identity(ctx, c.Dynamic, err)}
+		res.warn("NAMESPACE_SCOPED_ACCESS", fmt.Sprintf(
+			"credentials can't list resources across the cluster (listing namespaces is forbidden), so only namespace %q was exported; %s",
+			c.FallbackNamespace, c.accessHint(ctx, c.FallbackNamespace)))
+		return &scoped, nil
+	case err != nil:
+		// other errors surface in the lists themselves
+		res.Scope = &snapshotv1alpha1.ReadScope{Mode: "cluster"}
+		return c, nil
 	}
-	if c.FallbackNamespace == "" {
-		return nil, &ScopeError{Err: err}
+	if CanReadCluster(ctx, c.Dynamic) {
+		res.Scope = &snapshotv1alpha1.ReadScope{Mode: "cluster"}
+		return c, nil
+	}
+	// Namespaces can be listed, but not read across: read the ones that can be.
+	readable, unreadable, err := readableNamespaces(ctx, c.Dynamic)
+	if err != nil {
+		return nil, fmt.Errorf("listing namespaces: %w", err)
+	}
+	identity := Identity(ctx, c.Dynamic)
+	if len(readable) == 0 {
+		return nil, &ReadNothingError{Identity: identity, Namespaces: len(unreadable)}
 	}
 	scoped := *c
-	scoped.Namespaces = []string{c.FallbackNamespace}
-	res.warn("NAMESPACE_SCOPED_ACCESS", fmt.Sprintf(
-		"credentials can't list resources across the cluster (listing namespaces is forbidden), so only namespace %q was exported; %s",
-		c.FallbackNamespace, c.accessHint(ctx, c.FallbackNamespace)))
+	scoped.Namespaces = readable
+	res.Scope = &snapshotv1alpha1.ReadScope{Mode: "readable-namespaces", Namespaces: readable, Unreadable: unreadable, Identity: identity}
+	res.warn("NAMESPACE_READABLE_ONLY", fmt.Sprintf(
+		"credentials can't read resources across the cluster, so the %d namespaces they can read were exported (%s), and cluster-scoped resources were not; "+
+			"not readable with them: %s", len(readable), truncateList(readable, 10), truncateList(unreadable, 10)))
 	return &scoped, nil
 }
 

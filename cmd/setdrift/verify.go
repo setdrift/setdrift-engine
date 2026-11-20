@@ -20,6 +20,7 @@ import (
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/restmapper"
 
+	"setdrift.io/setdrift-engine/pkg/collect"
 	"setdrift.io/setdrift-engine/pkg/emit/kustomize"
 	"setdrift.io/setdrift-engine/pkg/platform"
 	snapshotv1alpha1 "setdrift.io/setdrift-engine/pkg/snapshot/v1alpha1"
@@ -37,6 +38,8 @@ type verifyOptions struct {
 	noReport bool
 	// percent of resources that must not change
 	threshold int
+	// limit the check to these namespaces, as export -n
+	namespaces []string
 }
 
 // server side apply with dryRun=All comparing DIR to live object
@@ -80,6 +83,7 @@ is applied to a new cluster.`,
 	cmd.Flags().StringVarP(&o.output, "output", "o", "", "directory to write the report to (default: DIR/verify)")
 	cmd.Flags().BoolVar(&o.noReport, "no-report", false, "write no report, only print the result")
 	cmd.Flags().IntVar(&o.threshold, "threshold", verify.AcceptancePercent, "percent of resources that must not change to pass, 0 to 100")
+	cmd.Flags().StringSliceVarP(&o.namespaces, "namespace", "n", nil, "check only the export's resources in these namespaces, and their Namespace objects; skips cluster-scoped resources (repeatable)")
 	return cmd
 }
 
@@ -117,10 +121,18 @@ func (o *verifyOptions) run(cmd *cobra.Command, dir string) error {
 	if err != nil {
 		return err
 	}
+	// namespaces asked for must be readable, as for export and diff; they
+	// need not exist: verify reports their resources as not in the cluster
+	if len(o.namespaces) > 0 {
+		if err := collect.CheckNamespaces(cmd.Context(), dyn, o.namespaces, false, false); err != nil {
+			return err
+		}
+	}
 	v := verify.DryRunVerifier{
-		Cluster:   verify.DynamicCluster{Client: dyn},
-		Mapper:    restmapper.NewDeferredDiscoveryRESTMapper(memory.NewMemCacheClient(dc)),
-		Threshold: o.threshold,
+		Cluster:    verify.DynamicCluster{Client: dyn},
+		Mapper:     restmapper.NewDeferredDiscoveryRESTMapper(memory.NewMemCacheClient(dc)),
+		Threshold:  o.threshold,
+		Namespaces: o.namespaces,
 	}
 	if info != nil {
 		if t, err := time.Parse(time.RFC3339, info.ExportedAt); err == nil {
@@ -148,8 +160,18 @@ func (o *verifyOptions) run(cmd *cobra.Command, dir string) error {
 		return err
 	}
 
+	identity := ""
+	if len(report.NotChecked) > 0 {
+		identity = collect.Identity(cmd.Context(), dyn)
+	}
+	if report.Total == 0 && len(report.NotChecked) > 0 {
+		return notCheckedError(report, identity)
+	}
 	if report.Total == 0 {
 		msg := "nothing to verify: the kustomization builds no resources"
+		if len(o.namespaces) > 0 {
+			msg = "nothing to verify: the export has no resources in " + strings.Join(o.namespaces, ", ")
+		}
 		if n := skippedTotal(report); n > 0 {
 			msg += fmt.Sprintf(" (%s skipped)", plural(n, "redacted file", "redacted files"))
 		}
@@ -160,7 +182,7 @@ func (o *verifyOptions) run(cmd *cobra.Command, dir string) error {
 	doc := verifyDocument{
 		VerifiedAt: started.Format(time.RFC3339), Context: kc.name, Cluster: cluster.Name,
 		Directory: target, Set: why, SameCluster: same, Report: *report,
-		Passed: report.Passed(), Analysis: report.Analyze(),
+		Passed: report.Passed(), Analysis: report.Analyze(), Identity: identity,
 	}
 	if info != nil {
 		doc.ExportCluster, doc.ExportedAt = info.Cluster, info.ExportedAt
@@ -267,10 +289,47 @@ func failReason(r *verify.Report) string {
 	if !r.MeetsThreshold() {
 		why = append(why, fmt.Sprintf("%.1f%% would not change, %d%% required", r.CleanPercent(), r.RequiredPercent()))
 	}
+	if n := len(r.NotChecked); n > 0 {
+		why = append(why, plural(n, "resource", "resources")+" not checked (no permission)")
+	}
 	if unexplained := r.Unexplained(); unexplained > 0 {
 		why = append(why, plural(unexplained, "unexplained difference", "unexplained differences"))
 	}
 	return strings.Join(why, "; ")
+}
+
+// notCheckedError is a run where the credentials could check nothing: they
+// may not get the resources, or may not patch them for the dry-run.
+func notCheckedError(r *verify.Report, identity string) error {
+	who := "These credentials"
+	if identity != "" {
+		who += " (" + identity + ")"
+	}
+	return fmt.Errorf("%s could check none of the %s: %s", who, plural(len(r.NotChecked), "resource", "resources"), refusals(r.NotChecked, identity))
+}
+
+// refusals says why resources could not be checked, by what was refused.
+func refusals(notChecked []verify.Diff, identity string) string {
+	patch, get := 0, 0
+	for _, d := range notChecked {
+		if len(d.Paths) > 0 && strings.Contains(d.Paths[0], "may not patch") {
+			patch++
+		} else {
+			get++
+		}
+	}
+	var parts []string
+	if patch > 0 {
+		parts = append(parts, fmt.Sprintf("%s may be read but not patched, and verify's dry-run apply needs patch "+
+			"(dryRun=All: the cluster changes nothing); the built-in edit role is enough, e.g. "+
+			"kubectl create rolebinding setdrift-verify -n <namespace> --clusterrole=edit %s", plural(patch, "resource", "resources"), collect.Subject(identity)))
+	}
+	if get > 0 {
+		parts = append(parts, fmt.Sprintf("%s may not be read at all (verify needs get; the view role leaves out RBAC objects, "+
+			"and namespace-scoped access leaves out cluster-scoped resources): check fewer with -n <namespace>, or use credentials with access",
+			plural(get, "resource", "resources")))
+	}
+	return strings.Join(parts, "; ")
 }
 
 // adds up the skipped counts for the "nothing to verify" message

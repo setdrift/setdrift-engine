@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -40,6 +41,28 @@ func explainKubeconfig(err error, rules *clientcmd.ClientConfigLoadingRules, raw
 			return fmt.Errorf("--kubeconfig %s: no such file", rules.ExplicitPath)
 		}
 	}
+	// a file that can't be read, or a directory: say which, for each file read
+	source := "KUBECONFIG"
+	if rules.ExplicitPath != "" {
+		source = "--kubeconfig"
+	}
+	for _, p := range rules.GetLoadingPrecedence() {
+		fi, statErr := os.Stat(p)
+		switch {
+		case statErr == nil && fi.IsDir():
+			return fmt.Errorf("%s %s is a directory, not a kubeconfig file: give the file in it, e.g. %s", source, p, filepath.Join(p, "config"))
+		case statErr == nil:
+			if f, openErr := os.Open(p); openErr != nil {
+				if errors.Is(openErr, os.ErrPermission) {
+					return fmt.Errorf("%s %s: can't read it (permission denied). Check its owner and mode with `ls -l %s`; "+
+						"a kubeconfig is normally readable by you only: chmod 600 %s", source, p, shellArg(p), shellArg(p))
+				}
+				return fmt.Errorf("%s %s: %w", source, p, openErr)
+			} else {
+				f.Close()
+			}
+		}
+	}
 	contexts := sortedContexts(raw)
 	switch {
 	case contextName != "" && raw.Contexts[contextName] == nil && len(contexts) > 0:
@@ -53,6 +76,18 @@ func explainKubeconfig(err error, rules *clientcmd.ClientConfigLoadingRules, raw
 			"or `kind create cluster`, then check `kubectl get namespaces` works; or pass --kubeconfig <file>", lookedIn(rules))
 	}
 	return fmt.Errorf("reading the kubeconfig: %w", err)
+}
+
+// expandHome expands a leading ~ in a path the shell left alone, as in --kubeconfig=~/x.
+func expandHome(path string) string {
+	if path != "~" && !strings.HasPrefix(path, "~/") {
+		return path
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return path
+	}
+	return filepath.Join(home, path[1:])
 }
 
 // lookedIn names the kubeconfig files SetDrift read, saying which are missing.

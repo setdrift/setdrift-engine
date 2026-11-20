@@ -82,6 +82,9 @@ func (p *Pipeline) Run(ctx context.Context, meta snapshot.Meta) (*snapshotv1alph
 	objs := res.Objects
 	// Copies, so the caller's Meta is not changed.
 	meta.Findings = append(slices.Clone(meta.Findings), res.Findings...)
+	if meta.Scope == nil {
+		meta.Scope = res.Scope
+	}
 	for i, stage := range []resource.Stage{p.Redactor, p.Hygiene, p.Ownership, p.Lifecycle, p.Platform, p.Provenance, p.Normalizer} {
 		if stage != nil {
 			var findings []*snapshotv1alpha1.Finding

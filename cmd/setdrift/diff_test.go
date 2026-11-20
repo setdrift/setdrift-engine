@@ -159,7 +159,8 @@ func TestDiffArgs(t *testing.T) {
 	}{
 		{[]string{a, a, "-o", "yaml"}, "-o yaml: use text or json"},
 		{[]string{a, a, "--map-namespace", "shop"}, "--map-namespace shop: use A_NS=B_NS"},
-		{[]string{a, filepath.Join(t.TempDir(), "missing.pb"), "--kubeconfig", filepath.Join(t.TempDir(), "none")}, "is not a file or directory, so it was read as a kubeconfig context"},
+		{[]string{a, filepath.Join(t.TempDir(), "missing.pb")}, "missing.pb: no such file or directory"},
+		{[]string{a, "prod", "--kubeconfig", filepath.Join(t.TempDir(), "none")}, "context prod: --kubeconfig"},
 	} {
 		_, err := runDiff(t, tc.args...)
 		if err == nil || !strings.Contains(err.Error(), tc.want) {

@@ -66,6 +66,10 @@ func fakeCluster(types []apiType, objs ...*unstructured.Unstructured) (*fakedisc
 	for _, o := range objs {
 		ros = append(ros, o)
 	}
+	// the access checks list Namespaces to name the existing ones
+	if _, ok := listKinds[schema.GroupVersionResource{Version: "v1", Resource: "namespaces"}]; !ok {
+		listKinds[schema.GroupVersionResource{Version: "v1", Resource: "namespaces"}] = "NamespaceList"
+	}
 	return disc, dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), listKinds, ros...)
 }
 

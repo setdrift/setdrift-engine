@@ -414,14 +414,8 @@ func (o *exportOptions) capture(ctx context.Context, src *source) (*snapshotv1al
 		Producer:   &snapshotv1alpha1.Producer{Name: "setdrift-cli", Version: version.Version},
 	})
 	// only error with its own message, adhoc error messaging
-	var scopeErr *collect.ScopeError
-	if errors.As(err, &scopeErr) {
-		return nil, fmt.Errorf("your access is limited to some namespaces: your credentials can't list resources across the cluster " +
-			"(listing namespaces is forbidden), and the kubeconfig context sets no namespace to fall back to.\n" +
-			"Pass the namespaces you can read with -n, e.g. -n <your-team-namespace>; `kubectl auth can-i --list -n <namespace>` shows what you can read in one")
-	}
 	if err != nil {
-		return nil, err
+		return nil, explainAccess(err)
 	}
 	if c, ok := src.collector.(*collect.ClusterCollector); ok {
 		// the nodes' shape, for diff; credentials that can't list nodes leave it out
@@ -439,6 +433,34 @@ func (o *exportOptions) capture(ctx context.Context, src *source) (*snapshotv1al
 		}
 	}
 	return snap, nil
+}
+
+// explainAccess turns the collector's access errors into what to do, plainly; other errors pass through.
+func explainAccess(err error) error {
+	var scopeErr *collect.ScopeError
+	var nsErr *collect.NamespaceError
+	var noAccess *collect.NoAccessError
+	var nothing *collect.ReadNothingError
+	switch {
+	case errors.As(err, &scopeErr):
+		who := "These credentials"
+		if scopeErr.Identity != "" {
+			who += " (" + scopeErr.Identity + ")"
+		}
+		return fmt.Errorf("%s may not list namespaces, so SetDrift can't read the cluster as a whole, and the kubeconfig context "+
+			"names no namespace to read instead.\n"+
+			"Pass the namespaces you can read with -n, e.g. -n <your-team-namespace>; `kubectl auth can-i --list -n <namespace>` shows "+
+			"what you can read in one. Or set the context's namespace: kubectl config set-context --current --namespace=<namespace>.\n"+
+			"To read the whole cluster, the credentials need get and list on everything: the built-in view ClusterRole bound cluster-wide "+
+			"is enough (kubectl create clusterrolebinding setdrift-read --clusterrole=view %s)", who, collect.Subject(scopeErr.Identity))
+	case errors.As(err, &nsErr):
+		return nsErr
+	case errors.As(err, &noAccess):
+		return noAccess
+	case errors.As(err, &nothing):
+		return nothing
+	}
+	return err
 }
 
 // awsReader is an AWS connection checked before the cluster read, for --aws
@@ -560,7 +582,7 @@ type kubeContext struct {
 func loadConfig(kubeconfig, context string) (*kubeContext, error) {
 	rules := clientcmd.NewDefaultClientConfigLoadingRules()
 	if kubeconfig != "" {
-		rules.ExplicitPath = kubeconfig
+		rules.ExplicitPath = expandHome(kubeconfig)
 	}
 	cc := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(rules, &clientcmd.ConfigOverrides{CurrentContext: context})
 	raw, err := cc.RawConfig()
@@ -719,7 +741,7 @@ func (o *exportOptions) clusterCollector() (*collect.ClusterCollector, *kubeCont
 	if err != nil {
 		return nil, nil, err
 	}
-	collector := &collect.ClusterCollector{Discovery: dc, Dynamic: dyn, Namespaces: o.namespaces, FallbackNamespace: kc.namespace}
+	collector := &collect.ClusterCollector{Discovery: dc, Dynamic: dyn, Namespaces: o.namespaces, FallbackNamespace: kc.namespace, RequireNamespaces: true}
 	if !o.fullList {
 		// metadata only for high volume, managed resource types like pods, events
 		if collector.Metadata, err = metadata.NewForConfig(cfg); err != nil {
@@ -820,11 +842,7 @@ func printSummary(cmd *cobra.Command, s *snapshotv1alpha1.Snapshot, out string, 
 		}
 	}
 
-	for _, f := range s.Findings {
-		if f.Code == "NAMESPACE_SCOPED_ACCESS" {
-			fmt.Fprintf(w, "Your access is limited to some namespaces: %s.\nPass -n to export other namespaces you can read.\n\n", f.Message)
-		}
-	}
+	printAccess(w, s)
 	fmt.Fprintf(w, "Exported %s from %s to %s\n", plural(len(s.Resources), "resource", "resources"), s.Cluster.GetName(), out)
 	if c := s.Cluster.GetClassification(); c != nil {
 		cls := platform.FromProto(c)
@@ -891,6 +909,48 @@ func printSummary(cmd *cobra.Command, s *snapshotv1alpha1.Snapshot, out string, 
 			}
 			fmt.Fprintf(w, "  - %s\n", l)
 		}
+	}
+}
+
+// printAccess says what the credentials limited the read to, before the summary.
+func printAccess(w io.Writer, s *snapshotv1alpha1.Snapshot) {
+	sc := s.GetScope()
+	who := "these credentials"
+	if id := sc.GetIdentity(); id != "" {
+		who += " (" + id + ")"
+	}
+	switch sc.GetMode() {
+	case "context-namespace":
+		hint := ""
+		for _, f := range s.Findings {
+			if f.Code == "NAMESPACE_SCOPED_ACCESS" {
+				if _, after, ok := strings.Cut(f.Message, "was exported; "); ok {
+					hint = " " + capitalize(after) + "."
+				}
+			}
+		}
+		fmt.Fprintf(w, "Read namespace %s only: %s may not list namespaces, so SetDrift read the kubeconfig context's namespace.%s\n"+
+			"Pass -n to export other namespaces you can read.\n\n", strings.Join(sc.GetNamespaces(), ", "), who, hint)
+	case "readable-namespaces":
+		fmt.Fprintf(w, "Read namespaces %s only: %s can't read across the cluster, only in these, so cluster-scoped resources were not read either.\n"+
+			"Not readable with them (%d): %s\n\n", strings.Join(sc.GetNamespaces(), ", "), who, len(sc.GetUnreadable()), truncate(strings.Join(sc.GetUnreadable(), ", "), 200))
+	}
+	var denied []string
+	for _, f := range s.Findings {
+		if f.Code == "LIST_DENIED" {
+			denied = append(denied, f.Message)
+		}
+	}
+	if len(denied) > 0 {
+		fmt.Fprintln(w, "Not read for lack of permission:")
+		for i, d := range denied {
+			if i == maxSuggestions {
+				fmt.Fprintf(w, "  ... and %d more namespaces in the snapshot (LIST_DENIED)\n", len(denied)-maxSuggestions)
+				break
+			}
+			fmt.Fprintf(w, "  %s\n", capitalize(d))
+		}
+		fmt.Fprintln(w)
 	}
 }
 

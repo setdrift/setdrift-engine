@@ -31,6 +31,10 @@ const (
 	KindLost = "lost-fields"
 	// KindRejected: the cluster rejected the dry-run apply.
 	KindRejected = "rejected"
+	// KindNotChecked: the credentials may not get the resource, or may not
+	// patch it for the dry-run, so it could not be checked. Not counted in
+	// Total: it says nothing about the export.
+	KindNotChecked = "not-checked"
 )
 
 // Diff is a resource that would not come out of the export unchanged: the
@@ -104,6 +108,11 @@ type Report struct {
 	// Threshold is the share of resources, in percent, that must not
 	// change; zero means AcceptancePercent.
 	Threshold int `json:"threshold"`
+	// NotChecked are the resources the credentials may not get, or patch
+	// for the dry-run (Kind KindNotChecked): not in Total, and any fails the run.
+	NotChecked []Diff `json:"notChecked,omitempty"`
+	// Namespaces limits the check to these namespaces (-n); empty is every resource.
+	Namespaces []string `json:"namespaces,omitempty"`
 }
 
 // RequiredPercent is the threshold the run is held to.
@@ -151,7 +160,7 @@ func (r Report) Unexplained() int {
 // resources would not change, and every difference is explained. A run
 // that checked nothing does not pass.
 func (r Report) Passed() bool {
-	return r.MeetsThreshold() && r.Unexplained() == 0
+	return r.MeetsThreshold() && r.Unexplained() == 0 && len(r.NotChecked) == 0
 }
 
 // Analysis summarizes a report's differences, to tell their likely cause.
