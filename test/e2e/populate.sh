@@ -26,16 +26,16 @@ k apply -n argocd --server-side --force-conflicts \
   -f "https://raw.githubusercontent.com/argoproj/argo-cd/$ARGOCD_VERSION/manifests/install.yaml" >/dev/null
 k apply --server-side --force-conflicts \
   -f "https://github.com/fluxcd/flux2/releases/download/$FLUX_VERSION/install.yaml" >/dev/null
-# Installed through the setdrift-source-repo post-renderer, so the export
+# Installed through the setdrift-chart-repo post-renderer, so the export
 # can name the chart repository (sd-chart below is not: RESTORE.md then
 # shows the chart's hints).
 export PATH="$here/../../bin:$PATH"
 [[ -x $here/../../bin/setdrift ]] || make -C "$here/../.." build >/dev/null
-helm plugin list 2>/dev/null | grep -q '^setdrift-source-repo' ||
-  helm plugin install "$here/../../contrib/helm/setdrift-source-repo" >/dev/null
+helm plugin list 2>/dev/null | grep -q '^setdrift-chart-repo' ||
+  helm plugin install "$here/../../contrib/helm/setdrift-chart-repo" >/dev/null
 helm --kube-context "$context" upgrade --install external-secrets external-secrets \
   --repo https://charts.external-secrets.io --version "$ESO_CHART_VERSION" \
-  --post-renderer setdrift-source-repo --post-renderer-args --source-repo=https://charts.external-secrets.io \
+  --post-renderer setdrift-chart-repo --post-renderer-args --chart-repo=https://charts.external-secrets.io \
   -n external-secrets --create-namespace --wait >/dev/null
 k wait --for condition=established --timeout=120s \
   crd/applications.argoproj.io crd/gitrepositories.source.toolkit.fluxcd.io \

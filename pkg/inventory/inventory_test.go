@@ -77,7 +77,7 @@ func TestHelmReleases(t *testing.T) {
 	other := obj(map[string]any{"apiVersion": "v1", "kind": "Secret", "metadata": map[string]any{"name": "sh.helm.release.v1.api.v1", "namespace": "shop"}})
 	other.HelmRelease = &snapshotv1alpha1.HelmRelease{Namespace: "shop", Name: "api", Chart: "api"}
 	sa := obj(map[string]any{"apiVersion": "v1", "kind": "ServiceAccount", "metadata": map[string]any{"name": "web", "namespace": "shop",
-		"annotations": map[string]any{"meta.helm.sh/release-name": "web", "setdrift.io/source-repo": "https://charts.example.com"}}})
+		"annotations": map[string]any{"meta.helm.sh/release-name": "web", "setdrift.io/chart-repo": "https://charts.example.com"}}})
 	inv := Build([]*resource.Object{rec, other, sa})
 	if len(inv.HelmReleases) != 2 || inv.HelmReleases[0].Name != "api" || inv.HelmReleases[0].Repository != "" ||
 		inv.HelmReleases[1].Repository != "https://charts.example.com" {

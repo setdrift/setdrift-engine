@@ -32,9 +32,11 @@ type diffOptions struct {
 	kubeconfig string
 	namespaces []string
 	nsMap      []string
-	output     string
+	format     string
 	exitCode   bool
 	maxFields  int
+	// CI/CD pipelines' field managers, for reading a live side
+	ciFieldManagers []string
 }
 
 // exitError ends the CLI with a given status; err, when set, is printed.
@@ -80,7 +82,7 @@ with --map-namespace: setdrift diff prod prod --map-namespace shop=shop-prod.`,
   setdrift diff setdrift-export/snapshots/2026-11-16T090000Z-prod.pb prod   # what changed since
   setdrift diff staging prod -n shop --map-namespace shop-staging=shop
   setdrift diff prod prod --map-namespace shop=shop-canary   # two namespaces of one cluster
-  setdrift diff staging prod -o json > diff.json
+  setdrift diff staging prod --format json > diff.json
   setdrift diff staging prod --exit-code            # in CI: exit 1 when they differ`,
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -96,15 +98,16 @@ with --map-namespace: setdrift diff prod prod --map-namespace shop=shop-prod.`,
 	f.StringVar(&o.kubeconfig, "kubeconfig", "", "path to kubeconfig (default: KUBECONFIG or ~/.kube/config)")
 	f.StringSliceVarP(&o.namespaces, "namespace", "n", nil, "compare only these namespaces, as named in A; skips cluster-scoped resources (repeatable)")
 	f.StringSliceVar(&o.nsMap, "map-namespace", nil, "pair namespace A_NS in A with B_NS in B, as A_NS=B_NS (repeatable)")
-	f.StringVarP(&o.output, "output", "o", "text", "text, or json for every field")
+	f.StringVar(&o.format, "format", "text", "output format: text, or json for every field")
 	f.BoolVar(&o.exitCode, "exit-code", false, "exit 1 when A and B differ beyond each cluster's own values, 2 on error")
 	f.IntVar(&o.maxFields, "max-fields", 5, "fields shown per resource in text output")
+	f.StringSliceVar(&o.ciFieldManagers, "ci-field-manager", nil, "kubectl field manager of a CI/CD pipeline, as for export (repeatable)")
 	return cmd
 }
 
 func (o *diffOptions) run(cmd *cobra.Command, a, b string) error {
-	if o.output != "text" && o.output != "json" {
-		return fmt.Errorf("-o %s: use text or json", o.output)
+	if o.format != "text" && o.format != "json" {
+		return fmt.Errorf("--format %s: use text or json", o.format)
 	}
 	nsMap := map[string]string{}
 	for _, m := range o.nsMap {
@@ -165,7 +168,7 @@ func (o *diffOptions) run(cmd *cobra.Command, a, b string) error {
 	if !fileB {
 		res.B.CapturedAt = ""
 	}
-	if o.output == "json" {
+	if o.format == "json" {
 		enc := json.NewEncoder(cmd.OutOrStdout())
 		enc.SetEscapeHTML(false)
 		enc.SetIndent("", "  ")
@@ -212,7 +215,7 @@ func (o *diffOptions) read(cmd *cobra.Command, arg string, namespaces []string) 
 		return nil, false, fmt.Errorf("%s: no such file or directory (a snapshot file, a directory of manifests, or a kubeconfig context)", arg)
 	}
 	fmt.Fprintf(cmd.ErrOrStderr(), "Reading %s...\n", arg)
-	eo := &exportOptions{kubeconfig: o.kubeconfig, context: arg, namespaces: namespaces}
+	eo := &exportOptions{kubeconfig: o.kubeconfig, context: arg, namespaces: namespaces, ciFieldManagers: o.ciFieldManagers}
 	src, err := eo.open(cmd)
 	if err != nil {
 		return nil, false, fmt.Errorf("context %s: %w", arg, err)
@@ -306,7 +309,7 @@ func printDiff(w io.Writer, r diff.Result, maxFields int, nodes bool) {
 			}
 			for i, f := range c.Fields {
 				if i == maxFields {
-					fmt.Fprintf(w, "      ... %d more (-o json, or --max-fields)\n", len(c.Fields)-maxFields)
+					fmt.Fprintf(w, "      ... %d more (--format json, or --max-fields)\n", len(c.Fields)-maxFields)
 					break
 				}
 				fmt.Fprintf(w, "      %s: %s -> %s\n", f.Path, value(f.A), value(f.B))

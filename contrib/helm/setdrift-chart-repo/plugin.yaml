@@ -1,14 +1,14 @@
 # Copyright The SetDrift Authors
 # SPDX-License-Identifier: Apache-2.0
 
-# Helm 4 post-renderer plugin - adds setdrift.io/source-repo=<url> to every release object, install with:
-#   helm plugin install contrib/helm/setdrift-source-repo
+# Helm 4 post-renderer plugin - adds setdrift.io/chart-repo=<url> to every release object, install with:
+#   helm plugin install contrib/helm/setdrift-chart-repo
 #   helm install web oci://registry.example.com/charts/web \
-#     --post-renderer setdrift-source-repo \
-#     --post-renderer-args --source-repo=oci://registry.example.com/charts
+#     --post-renderer setdrift-chart-repo \
+#     --post-renderer-args --chart-repo=oci://registry.example.com/charts
 apiVersion: v1
 type: postrenderer/v1
-name: setdrift-source-repo
+name: setdrift-chart-repo
 version: 0.1.0
 sourceURL: https://github.com/setdrift/setdrift-engine
 runtime: subprocess

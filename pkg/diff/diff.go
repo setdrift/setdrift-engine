@@ -654,6 +654,8 @@ func Manager(p *snapshotv1alpha1.Provenance) string {
 		name = "operator"
 	case snapshotv1alpha1.Source_SOURCE_PLATFORM:
 		name = "platform"
+	case snapshotv1alpha1.Source_SOURCE_CI_CD:
+		name = "CI/CD"
 	default:
 		return "applied by hand"
 	}

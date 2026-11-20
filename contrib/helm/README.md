@@ -53,7 +53,7 @@ setdrift export -o ./prod-export --helm-repos ./prod-export/helm-repos.yaml
 
 For teams that already run Helm from scripts or CI, a post-renderer can
 record the repository on the release's objects, as the annotation
-`setdrift.io/source-repo: <url>`, at every install or upgrade. Each export
+`setdrift.io/chart-repo: <url>`, at every install or upgrade. Each export
 then reads it from the cluster with no file to maintain. An entry in a
 `--helm-repos` file for the same release still wins.
 
@@ -64,22 +64,22 @@ Helm 4 (post-renderers are plugins):
 
 ```sh
 # from a checkout of this repository:
-helm plugin install contrib/helm/setdrift-source-repo
+helm plugin install contrib/helm/setdrift-chart-repo
 # or package it once and install the archive on other machines, e.g. CI runners:
-make helm-plugin    # bin/setdrift-source-repo.tgz
-helm plugin install setdrift-source-repo.tgz
+make helm-plugin    # bin/setdrift-chart-repo.tgz
+helm plugin install setdrift-chart-repo.tgz
 
 helm install ingress-nginx ingress-nginx --repo https://kubernetes.github.io/ingress-nginx \
-  --post-renderer setdrift-source-repo \
-  --post-renderer-args --source-repo=https://kubernetes.github.io/ingress-nginx
+  --post-renderer setdrift-chart-repo \
+  --post-renderer-args --chart-repo=https://kubernetes.github.io/ingress-nginx
 ```
 
 Helm 3.10 or later (`--post-renderer` takes an executable):
 
 ```sh
 helm install ingress-nginx ingress-nginx --repo https://kubernetes.github.io/ingress-nginx \
-  --post-renderer ./contrib/helm/setdrift-source-repo/postrender.sh \
-  --post-renderer-args --source-repo=https://kubernetes.github.io/ingress-nginx
+  --post-renderer ./contrib/helm/setdrift-chart-repo/postrender.sh \
+  --post-renderer-args --chart-repo=https://kubernetes.github.io/ingress-nginx
 ```
 
 Existing releases get the annotation at their next `helm upgrade` with the
@@ -92,7 +92,7 @@ plugin's message), run it by hand to see why, e.g. a URL it refused or
 SetDrift missing from PATH:
 
 ```sh
-setdrift helm-postrender --source-repo=<url> < /dev/null    # or kubectl-setdrift
+setdrift helm-postrender --chart-repo=<url> < /dev/null    # or kubectl-setdrift
 ```
 
 Chart authors can get the same annotation without a post-renderer by

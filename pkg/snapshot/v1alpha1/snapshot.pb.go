@@ -39,6 +39,9 @@ const (
 	// created and kept up to date by the Kubernetes platform (e.g. EKS), which
 	// creates it again in a new cluster; in the snapshot, not in the export
 	Source_SOURCE_PLATFORM Source = 6
+	// deployed by a CI/CD pipeline: the setdrift.io/source-* annotations it
+	// stamps, or its kubectl field manager (setdrift export --ci-field-manager)
+	Source_SOURCE_CI_CD Source = 7
 )
 
 // Enum value maps for Source.
@@ -51,6 +54,7 @@ var (
 		4: "SOURCE_HELM",
 		5: "SOURCE_OPERATOR",
 		6: "SOURCE_PLATFORM",
+		7: "SOURCE_CI_CD",
 	}
 	Source_value = map[string]int32{
 		"SOURCE_UNSPECIFIED": 0,
@@ -60,6 +64,7 @@ var (
 		"SOURCE_HELM":        4,
 		"SOURCE_OPERATOR":    5,
 		"SOURCE_PLATFORM":    6,
+		"SOURCE_CI_CD":       7,
 	}
 )
 
@@ -1317,7 +1322,7 @@ type HelmRelease struct {
 	// which is not always the repository it was installed from
 	Home    string   `protobuf:"bytes,7,opt,name=home,proto3" json:"home,omitempty"`
 	Sources []string `protobuf:"bytes,8,rep,name=sources,proto3" json:"sources,omitempty"`
-	// the chart repository, from the setdrift.io/source-repo annotation a
+	// the chart repository, from the setdrift.io/chart-repo annotation a
 	// post-renderer puts on the release's objects (setdrift helm-postrender).
 	// Not from export --helm-repos, which is applied when RESTORE.md is
 	// written and not kept in the snapshot.
@@ -2435,7 +2440,7 @@ const file_setdrift_snapshot_v1alpha1_snapshot_proto_rawDesc = "" +
 	"\aversion\x18\x02 \x01(\tR\aversion\x127\n" +
 	"\x18service_account_role_arn\x18\x03 \x01(\tR\x15serviceAccountRoleArn\x121\n" +
 	"\x14configuration_values\x18\x04 \x01(\tR\x13configurationValues\x129\n" +
-	"\x18configuration_redactions\x18\x05 \x03(\tR\x17configurationRedactions*\x96\x01\n" +
+	"\x18configuration_redactions\x18\x05 \x03(\tR\x17configurationRedactions*\xa8\x01\n" +
 	"\x06Source\x12\x16\n" +
 	"\x12SOURCE_UNSPECIFIED\x10\x00\x12\x14\n" +
 	"\x10SOURCE_UNMANAGED\x10\x01\x12\x12\n" +
@@ -2443,7 +2448,8 @@ const file_setdrift_snapshot_v1alpha1_snapshot_proto_rawDesc = "" +
 	"\vSOURCE_FLUX\x10\x03\x12\x0f\n" +
 	"\vSOURCE_HELM\x10\x04\x12\x13\n" +
 	"\x0fSOURCE_OPERATOR\x10\x05\x12\x13\n" +
-	"\x0fSOURCE_PLATFORM\x10\x06*\xad\x01\n" +
+	"\x0fSOURCE_PLATFORM\x10\x06\x12\x10\n" +
+	"\fSOURCE_CI_CD\x10\a*\xad\x01\n" +
 	"\x0fRedactionReason\x12 \n" +
 	"\x1cREDACTION_REASON_UNSPECIFIED\x10\x00\x12!\n" +
 	"\x1dREDACTION_REASON_SECRET_VALUE\x10\x01\x12/\n" +

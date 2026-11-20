@@ -70,6 +70,7 @@ type exportOptions struct {
 	fullList            bool
 	argoInstanceLabel   string
 	unmanagedOnly       bool
+	ciFieldManagers     []string
 	groupBy             string
 	// secret settings
 	externalSecrets   string
@@ -130,7 +131,8 @@ under redacted/, outside every kustomization.yaml.`,
 	f.StringVar(&o.secretStore, "secret-store", "", "name of the External Secrets store the ExternalSecrets reference (default "+kustomize.DefaultStoreName+")")
 	f.StringVar(&o.secretStoreKind, "secret-store-kind", "ClusterSecretStore", "kind of that store: ClusterSecretStore or SecretStore")
 	f.StringVar(&o.secretKeyTemplate, "secret-key-template", "", "remote key of each Secret, a Go template with .Cluster, .Namespace and .Name (default {{.Cluster}}/{{.Namespace}}/{{.Name}}; with a leading / for aws-parameter-store)")
-	f.BoolVar(&o.unmanagedOnly, "unmanaged-only", false, "write only resources no GitOps tool or Helm manages, to adopt into Git (the snapshot keeps everything)")
+	f.BoolVar(&o.unmanagedOnly, "unmanaged-only", false, "write only resources no GitOps tool, Helm or CI/CD pipeline manages, to adopt into Git (the snapshot keeps everything)")
+	f.StringSliceVar(&o.ciFieldManagers, "ci-field-manager", nil, "kubectl field manager of a CI/CD pipeline (kubectl apply --field-manager=NAME): what it wrote counts as deployed from Git, not applied by hand (repeatable)")
 	f.BoolVar(&o.fullList, "full-list", false, "list every resource in full instead of listing high-volume types metadata-only first")
 	f.BoolVar(&o.keepSourceDefaults, "keep-source-defaults", false, "keep values this cluster's own defaults set that another cluster may lack, such as the storage class a claim got from the default class, so claims ask for the same class by name in any cluster (see RESTORE.md's storage classes)")
 	f.StringVar(&o.helmRepos, "helm-repos", "", "YAML file naming the chart repository of Helm releases, which Helm does not record, so RESTORE.md writes complete helm install commands: <chart>: <url> for every release of a chart, or <namespace>/<release>: <url> for one (RESTORE.md lists the charts to fill in)")
@@ -405,7 +407,7 @@ func (o *exportOptions) capture(ctx context.Context, src *source) (*snapshotv1al
 	p := pipeline.New(src.collector)
 	p.Lifecycle = lifecycle.Filter{IncludeFinishedJobs: o.includeFinishedJobs}
 	p.Platform = src.plat
-	p.Provenance = provenance.LabelClassifier{ArgoInstanceLabel: o.argoInstanceLabel, Platform: src.plat}
+	p.Provenance = provenance.LabelClassifier{ArgoInstanceLabel: o.argoInstanceLabel, Platform: src.plat, CIFieldManagers: o.ciFieldManagers}
 	p.Normalizer = normalize.Normalizer{ArgoInstanceLabel: o.argoInstanceLabel, KeepSourceDefaults: o.keepSourceDefaults}
 	snap, err := p.Run(ctx, snapshot.Meta{
 		ID:         id,
@@ -852,13 +854,20 @@ func printSummary(cmd *cobra.Command, s *snapshotv1alpha1.Snapshot, out string, 
 			fmt.Fprintf(w, "Platform: %s, not certain enough for platform-specific output; the export is generic.\n", cls.Summary())
 		}
 	}
-	for src := snapshotv1alpha1.Source_SOURCE_UNMANAGED; src <= snapshotv1alpha1.Source_SOURCE_PLATFORM; src++ {
+	for src := snapshotv1alpha1.Source_SOURCE_UNMANAGED; src <= snapshotv1alpha1.Source_SOURCE_CI_CD; src++ {
 		if n := bySource[src]; n > 0 {
 			note := ""
-			if src == snapshotv1alpha1.Source_SOURCE_PLATFORM {
+			switch src {
+			case snapshotv1alpha1.Source_SOURCE_PLATFORM:
 				note = "  (created by " + platformCreators(s) + "; in the snapshot, not written)"
+			case snapshotv1alpha1.Source_SOURCE_CI_CD:
+				note = "  (deployed by a pipeline: setdrift.io/source-* annotations or --ci-field-manager)"
 			}
-			fmt.Fprintf(w, "  %-10s %d%s\n", strings.ToLower(strings.TrimPrefix(src.String(), "SOURCE_")), n, note)
+			name := strings.ToLower(strings.TrimPrefix(src.String(), "SOURCE_"))
+			if src == snapshotv1alpha1.Source_SOURCE_CI_CD {
+				name = "ci/cd"
+			}
+			fmt.Fprintf(w, "  %-10s %d%s\n", name, n, note)
 		}
 	}
 	if unmanagedOnly {

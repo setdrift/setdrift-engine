@@ -23,9 +23,9 @@ build: ## Build bin/setdrift
 plugin: build ## Build bin/kubectl-setdrift (runs as `kubectl setdrift`)
 	cp $(BIN)/setdrift $(BIN)/kubectl-setdrift
 
-helm-plugin: ## Package the Helm post-renderer plugin as bin/setdrift-source-repo.tgz (helm plugin install <file or URL>)
+helm-plugin: ## Package the Helm post-renderer plugin as bin/setdrift-chart-repo.tgz (helm plugin install <file or URL>)
 	mkdir -p $(BIN)
-	COPYFILE_DISABLE=1 tar -C contrib/helm -czf $(BIN)/setdrift-source-repo.tgz setdrift-source-repo
+	COPYFILE_DISABLE=1 tar -C contrib/helm -czf $(BIN)/setdrift-chart-repo.tgz setdrift-chart-repo
 
 test: ## Run all tests
 	go test ./...

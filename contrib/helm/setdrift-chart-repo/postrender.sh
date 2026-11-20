@@ -8,5 +8,5 @@ for cmd in setdrift kubectl-setdrift; do
     exec "$cmd" helm-postrender "$@"
   fi
 done
-echo "setdrift-source-repo: neither setdrift nor kubectl-setdrift is on PATH; install SetDrift first" >&2
+echo "setdrift-chart-repo: neither setdrift nor kubectl-setdrift is on PATH; install SetDrift first" >&2
 exit 127

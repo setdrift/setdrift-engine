@@ -40,12 +40,12 @@ func Build(objs []*resource.Object) *snapshotv1alpha1.Inventory {
 		if o.HelmRelease != nil {
 			inv.HelmReleases = append(inv.HelmReleases, o.HelmRelease)
 		}
-		if ann := o.GetAnnotations(); ann[helmsource.SourceRepo] != "" && ann["meta.helm.sh/release-name"] != "" {
+		if ann := o.GetAnnotations(); ann[helmsource.ChartRepo] != "" && ann["meta.helm.sh/release-name"] != "" {
 			ns := ann["meta.helm.sh/release-namespace"]
 			if ns == "" {
 				ns = o.GetNamespace()
 			}
-			repos[ns+"/"+ann["meta.helm.sh/release-name"]] = ann[helmsource.SourceRepo]
+			repos[ns+"/"+ann["meta.helm.sh/release-name"]] = ann[helmsource.ChartRepo]
 		}
 		gvk := o.GroupVersionKind()
 		switch gvk.Group + "/" + gvk.Kind {

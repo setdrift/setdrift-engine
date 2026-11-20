@@ -7,6 +7,7 @@ package main
 
 import (
 	"bytes"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -451,4 +452,48 @@ func TestSnapshotPaths(t *testing.T) {
 			}
 		}
 	})
+}
+
+// A resource a CI/CD pipeline annotated is deployed from Git: not in
+// --unmanaged-only, and not listed as applied by hand.
+func TestUnmanagedOnlyLeavesOutCICD(t *testing.T) {
+	in := t.TempDir()
+	manifests := `apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: from-ci
+  namespace: shop
+  annotations: {setdrift.io/source-repo: "https://github.com/acme/shop", setdrift.io/source-revision: "3f2c1a9"}
+data: {a: "1"}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: by-hand, namespace: shop}
+data: {a: "1"}
+`
+	if err := os.WriteFile(filepath.Join(in, "cm.yaml"), []byte(manifests), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(t.TempDir(), "out")
+	var stdout bytes.Buffer
+	root := newRootCmd()
+	root.SetArgs([]string{"export", "--from-dir", in, "--cluster-name", "prod", "-o", out, "--unmanaged-only", "--no-snapshot"})
+	root.SetOut(&stdout)
+	if err := root.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	var written []string
+	_ = filepath.WalkDir(filepath.Join(out, "clusters", "prod", "namespaces"), func(p string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() && strings.HasSuffix(p, ".yaml") && filepath.Base(p) != "kustomization.yaml" {
+			written = append(written, filepath.Base(p))
+		}
+		return nil
+	})
+	if strings.Join(written, ",") != "by-hand.yaml" {
+		t.Errorf("--unmanaged-only wrote %v, want only by-hand.yaml", written)
+	}
+	summary := stdout.String()
+	if !strings.Contains(summary, "ci/cd") || strings.Contains(summary, "from-ci") {
+		t.Errorf("summary:\n%s", summary)
+	}
 }

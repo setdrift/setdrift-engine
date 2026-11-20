@@ -301,3 +301,16 @@ func TestRestoreFindings(t *testing.T) {
 		t.Error("empty jobTemplate.metadata kept")
 	}
 }
+
+// A CI/CD pipeline's source annotations and the Helm post-renderer's chart
+// repository are stamped at every deploy: provenance and the inventory have
+// read them, and the manifest drops them.
+func TestPipelineAnnotationsRemoved(t *testing.T) {
+	o := parse(t, `{"apiVersion": "v1", "kind": "ConfigMap", "metadata": {"name": "x", "annotations": {
+	  "setdrift.io/source-repo": "https://github.com/acme/shop", "setdrift.io/source-path": "deploy",
+	  "setdrift.io/source-revision": "3f2c1a9", "setdrift.io/deployed-by": "https://github.com/acme/shop/actions/runs/1",
+	  "setdrift.io/chart-repo": "https://charts.example.com", "team": "payments"}}}`)
+	if got := jsonOf(run(t, o)["metadata"]); got != `{"annotations":{"team":"payments"},"name":"x"}` {
+		t.Errorf("metadata: %s", got)
+	}
+}

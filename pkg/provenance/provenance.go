@@ -71,6 +71,10 @@ const (
 // override default argo instance label
 type LabelClassifier struct {
 	ArgoInstanceLabel string
+	// CIFieldManagers are the kubectl field managers of CI/CD pipelines
+	// (kubectl apply --field-manager=github-actions): an object one of them
+	// wrote, with no other manager, is CI/CD's, with low confidence.
+	CIFieldManagers []string
 	// Platform is the stage that classified the platform, which runs before
 	// this one; its Result decides which name-based platform rules apply
 	// (kind's add-ons). Nil, or an unsure result, applies only the rules
@@ -94,6 +98,7 @@ func (c LabelClassifier) Process(_ context.Context, objs []*resource.Object) ([]
 		}
 		o.Provenance = c.classify(o, c.platformResult())
 		idx.check(o)
+		o.Provenance = c.pipeline(o, o.Provenance)
 		out = append(out, o)
 	}
 	// attach findings scoped to namespace if relvant
@@ -115,7 +120,74 @@ func (c LabelClassifier) platformResult() *platform.Classification {
 
 // Classify provenance from labels and annotations, attaches metadata to object
 func (c LabelClassifier) Classify(o *resource.Object) *snapshotv1alpha1.Provenance {
-	return c.classify(o, c.platformResult())
+	return c.pipeline(o, c.classify(o, c.platformResult()))
+}
+
+// The annotations a CI/CD pipeline stamps on what it deploys, so its
+// objects are not taken for ones applied by hand. Only the repository is
+// required. Values, e.g. in GitHub Actions:
+//
+//	setdrift.io/source-repo: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY
+//	setdrift.io/source-path: deploy/prod
+//	setdrift.io/source-revision: $GITHUB_SHA
+//	setdrift.io/deployed-by: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
+const (
+	SourceRepoAnnotation     = "setdrift.io/source-repo"
+	SourcePathAnnotation     = "setdrift.io/source-path"
+	SourceRevisionAnnotation = "setdrift.io/source-revision"
+	DeployedByAnnotation     = "setdrift.io/deployed-by"
+)
+
+// SourceAnnotations are the CI/CD source annotations.
+var SourceAnnotations = []string{SourceRepoAnnotation, SourcePathAnnotation, SourceRevisionAnnotation, DeployedByAnnotation}
+
+// pipeline applies a CI/CD pipeline's evidence, after the GitOps markers:
+//   - the source annotations make an object no tool claims, or that only a
+//     low-confidence marker does (helm template | kubectl apply leaves
+//     Helm's label), CI/CD's, managed from its repository;
+//   - on an object Argo CD, Flux, Helm, an operator or the platform manages,
+//     they are kept as extra evidence: those markers are stronger;
+//   - with neither, a write by one of CIFieldManagers makes it CI/CD's.
+func (c LabelClassifier) pipeline(o *resource.Object, p *snapshotv1alpha1.Provenance) *snapshotv1alpha1.Provenance {
+	ann := o.GetAnnotations()
+	src := map[string]string{}
+	for _, k := range SourceAnnotations {
+		if v := ann[k]; v != "" {
+			src[k] = v
+		}
+	}
+	weak := p.GetSource() == snapshotv1alpha1.Source_SOURCE_UNMANAGED || p.GetSource() == snapshotv1alpha1.Source_SOURCE_UNSPECIFIED ||
+		p.GetEvidence()[confidenceKey] == lowConfidence
+	if repo := src[SourceRepoAnnotation]; repo != "" && weak {
+		manager := repo
+		if path := src[SourcePathAnnotation]; path != "" {
+			manager += "//" + strings.TrimPrefix(path, "/")
+		}
+		return &snapshotv1alpha1.Provenance{Source: snapshotv1alpha1.Source_SOURCE_CI_CD, Manager: manager, Evidence: src}
+	}
+	if len(src) > 0 && !weak {
+		ev := make(map[string]string, len(p.GetEvidence())+len(src))
+		for k, v := range p.GetEvidence() {
+			ev[k] = v
+		}
+		for k, v := range src {
+			ev[k] = v
+		}
+		p.Evidence = ev
+		return p
+	}
+	if p.GetSource() == snapshotv1alpha1.Source_SOURCE_UNMANAGED || p.GetSource() == snapshotv1alpha1.Source_SOURCE_UNSPECIFIED {
+		for _, m := range o.GetManagedFields() {
+			if m.Subresource != "status" && slices.Contains(c.CIFieldManagers, m.Manager) {
+				ev := map[string]string{"fieldManager": m.Manager, confidenceKey: lowConfidence}
+				for k, v := range src {
+					ev[k] = v
+				}
+				return &snapshotv1alpha1.Provenance{Source: snapshotv1alpha1.Source_SOURCE_CI_CD, Evidence: ev}
+			}
+		}
+	}
+	return p
 }
 
 func (c LabelClassifier) classify(o *resource.Object, cls *platform.Classification) *snapshotv1alpha1.Provenance {

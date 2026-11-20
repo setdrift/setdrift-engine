@@ -153,6 +153,9 @@ enum Source {
   // created and kept up to date by the Kubernetes platform (e.g. EKS), which
   // creates it again in a new cluster; in the snapshot, not in the export
   SOURCE_PLATFORM = 6;
+  // deployed by a CI/CD pipeline: the setdrift.io/source-* annotations it
+  // stamps, or its kubectl field manager (setdrift export --ci-field-manager)
+  SOURCE_CI_CD = 7;
 }
 
 // record that a value was removed and why, not the value
@@ -247,7 +250,7 @@ message HelmRelease {
   // which is not always the repository it was installed from
   string home = 7;
   repeated string sources = 8;
-  // the chart repository, from the setdrift.io/source-repo annotation a
+  // the chart repository, from the setdrift.io/chart-repo annotation a
   // post-renderer puts on the release's objects (setdrift helm-postrender).
   // Not from export --helm-repos, which is applied when RESTORE.md is
   // written and not kept in the snapshot.

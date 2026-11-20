@@ -39,7 +39,7 @@ metadata:
 		t.Fatal(err)
 	}
 	got := out.String()
-	if n := strings.Count(got, "setdrift.io/source-repo: https://charts.example.com"); n != 3 {
+	if n := strings.Count(got, "setdrift.io/chart-repo: https://charts.example.com"); n != 3 {
 		t.Errorf("%d annotations:\n%s", n, got)
 	}
 	if !strings.Contains(got, "team: a") || strings.Contains(got, "template:\n      metadata:\n        annotations") {

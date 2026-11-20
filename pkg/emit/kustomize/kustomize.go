@@ -141,7 +141,8 @@ func Unmanaged(r *snapshotv1alpha1.Resource) bool {
 	switch p.GetSource() {
 	case snapshotv1alpha1.Source_SOURCE_UNMANAGED, snapshotv1alpha1.Source_SOURCE_UNSPECIFIED:
 		return true
-	case snapshotv1alpha1.Source_SOURCE_OPERATOR, snapshotv1alpha1.Source_SOURCE_PLATFORM:
+	case snapshotv1alpha1.Source_SOURCE_OPERATOR, snapshotv1alpha1.Source_SOURCE_PLATFORM, snapshotv1alpha1.Source_SOURCE_CI_CD:
+		// a CI/CD pipeline deploys it from Git, even when only its field manager says so
 		return false
 	}
 	if p.GetEvidence()["confidence"] == "low" {

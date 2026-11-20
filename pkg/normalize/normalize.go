@@ -70,6 +70,14 @@ var (
 		"argocd.argoproj.io/tracking-id",
 		"meta.helm.sh/release-name",
 		"meta.helm.sh/release-namespace",
+		// a CI/CD pipeline's (see provenance.SourceAnnotations): source-revision
+		// changes with every deploy, and differs between clusters
+		"setdrift.io/source-repo",
+		"setdrift.io/source-path",
+		"setdrift.io/source-revision",
+		"setdrift.io/deployed-by",
+		// the Helm post-renderer's (helmsource.ChartRepo), read into the inventory
+		"setdrift.io/chart-repo",
 	}
 	toolLabels = []string{
 		"kustomize.toolkit.fluxcd.io/name",

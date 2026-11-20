@@ -1655,6 +1655,8 @@ func manager(r *snapshotv1alpha1.Resource) string {
 		src = "Argo CD"
 	case snapshotv1alpha1.Source_SOURCE_FLUX:
 		src = "Flux"
+	case snapshotv1alpha1.Source_SOURCE_CI_CD:
+		src = "CI/CD"
 	case snapshotv1alpha1.Source_SOURCE_UNMANAGED, snapshotv1alpha1.Source_SOURCE_UNSPECIFIED:
 		return "applied by hand"
 	}

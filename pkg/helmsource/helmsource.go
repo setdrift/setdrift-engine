@@ -5,7 +5,7 @@
 // from, which Helm itself does not keep, so RESTORE.md can write a complete
 // helm install command. Two ways: Repos, a file the user passes to export
 // (--helm-repos), and Annotate, a Helm post-renderer (setdrift
-// helm-postrender) that adds the SourceRepo annotation to every object at
+// helm-postrender) that adds the ChartRepo annotation to every object at
 // install time, which the export reads back.
 package helmsource
 
@@ -19,10 +19,10 @@ import (
 	yamlv3 "go.yaml.in/yaml/v3"
 )
 
-// SourceRepo is the annotation naming a release's chart repository, e.g.
+// ChartRepo is the annotation naming a release's chart repository, e.g.
 // https://charts.external-secrets.io or oci://registry/charts. An
 // annotation rather than a label, since label values cannot hold a URL.
-const SourceRepo = "setdrift.io/source-repo"
+const ChartRepo = "setdrift.io/chart-repo"
 
 // CheckRepoURL checks a chart repository URL: http(s):// or oci://, with a
 // host, and no credentials. The URL is written into RESTORE.md (and, from
@@ -52,7 +52,7 @@ func CheckRepoURL(repo string) error {
 	return nil
 }
 
-// Annotate copies the YAML documents in r to w, adding SourceRepo=repo to
+// Annotate copies the YAML documents in r to w, adding ChartRepo=repo to
 // each object's metadata.annotations.
 func Annotate(r io.Reader, w io.Writer, repo string) error {
 	if err := CheckRepoURL(repo); err != nil {
@@ -75,7 +75,7 @@ func Annotate(r io.Reader, w io.Writer, repo string) error {
 			continue // empty documents
 		}
 		annotations := child(child(doc.Content[0], "metadata"), "annotations")
-		set(annotations, SourceRepo, repo)
+		set(annotations, ChartRepo, repo)
 		if err := enc.Encode(&doc); err != nil {
 			return err
 		}

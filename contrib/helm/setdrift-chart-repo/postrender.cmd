@@ -13,7 +13,7 @@ for %%N in (setdrift.exe kubectl-setdrift.exe) do (
   if not defined SETDRIFT set "SETDRIFT=%%~$PATH:N"
 )
 if not defined SETDRIFT (
-  echo setdrift-source-repo: neither setdrift nor kubectl-setdrift is on PATH; install SetDrift first 1>&2
+  echo setdrift-chart-repo: neither setdrift nor kubectl-setdrift is on PATH; install SetDrift first 1>&2
   exit /b 9009
 )
 "%SETDRIFT%" helm-postrender %*

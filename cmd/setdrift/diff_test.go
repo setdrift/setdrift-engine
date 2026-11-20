@@ -87,7 +87,7 @@ func TestDiffDirectories(t *testing.T) {
 		t.Errorf("without --exit-code: %v", err)
 	}
 
-	out, err = runDiff(t, a, b, "-o", "json")
+	out, err = runDiff(t, a, b, "--format", "json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +157,8 @@ func TestDiffArgs(t *testing.T) {
 		args []string
 		want string
 	}{
-		{[]string{a, a, "-o", "yaml"}, "-o yaml: use text or json"},
+		{[]string{a, a, "--format", "yaml"}, "--format yaml: use text or json"},
+		{[]string{a, a, "-o", "json"}, "unknown shorthand flag: 'o'"},
 		{[]string{a, a, "--map-namespace", "shop"}, "--map-namespace shop: use A_NS=B_NS"},
 		{[]string{a, filepath.Join(t.TempDir(), "missing.pb")}, "missing.pb: no such file or directory"},
 		{[]string{a, "prod", "--kubeconfig", filepath.Join(t.TempDir(), "none")}, "context prod: --kubeconfig"},

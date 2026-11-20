@@ -155,3 +155,51 @@ func TestOperatorOwner(t *testing.T) {
 		}
 	}
 }
+
+// A CI/CD pipeline's annotations, or its field manager when asked for, make
+// an object CI/CD's; GitOps markers stay stronger, with the annotations kept
+// as evidence.
+func TestCIPipeline(t *testing.T) {
+	src := map[string]string{
+		SourceRepoAnnotation:     "https://github.com/acme/shop",
+		SourcePathAnnotation:     "/deploy/prod",
+		SourceRevisionAnnotation: "3f2c1a9",
+	}
+	c := LabelClassifier{CIFieldManagers: []string{"github-actions"}}
+
+	p := c.Classify(object("v1", "ConfigMap", "shop", "a", nil, src))
+	if p.Source != snapshotv1alpha1.Source_SOURCE_CI_CD || p.Manager != "https://github.com/acme/shop//deploy/prod" ||
+		p.Evidence[SourceRevisionAnnotation] != "3f2c1a9" {
+		t.Errorf("annotated: %+v", p)
+	}
+
+	// helm template | kubectl apply leaves Helm's label only: the pipeline wins
+	p = c.Classify(object("v1", "ConfigMap", "shop", "b", map[string]string{"app.kubernetes.io/managed-by": "Helm"}, src))
+	if p.Source != snapshotv1alpha1.Source_SOURCE_CI_CD {
+		t.Errorf("Helm label and annotations: %+v", p)
+	}
+
+	// Argo CD's tracking id is stronger; the annotations stay as evidence
+	argo := map[string]string{"argocd.argoproj.io/tracking-id": "shop:/ConfigMap:shop/c"}
+	for k, v := range src {
+		argo[k] = v
+	}
+	p = c.Classify(object("v1", "ConfigMap", "shop", "c", nil, argo))
+	if p.Source != snapshotv1alpha1.Source_SOURCE_ARGO_CD || p.Evidence[SourceRepoAnnotation] != "https://github.com/acme/shop" {
+		t.Errorf("Argo CD and annotations: %+v", p)
+	}
+
+	// the field manager counts only when asked for
+	withManager := func() *resource.Object {
+		o := object("v1", "ConfigMap", "shop", "d", nil, nil)
+		o.SetManagedFields([]metav1.ManagedFieldsEntry{{Manager: "github-actions", Operation: metav1.ManagedFieldsOperationApply}})
+		return o
+	}
+	p = c.Classify(withManager())
+	if p.Source != snapshotv1alpha1.Source_SOURCE_CI_CD || p.Evidence["fieldManager"] != "github-actions" || p.Evidence["confidence"] != "low" {
+		t.Errorf("field manager: %+v", p)
+	}
+	if p = (LabelClassifier{}).Classify(withManager()); p.Source != snapshotv1alpha1.Source_SOURCE_UNMANAGED {
+		t.Errorf("field manager not asked for: %+v", p)
+	}
+}
