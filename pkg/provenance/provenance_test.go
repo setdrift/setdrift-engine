@@ -203,3 +203,31 @@ func TestCIPipeline(t *testing.T) {
 		t.Errorf("field manager not asked for: %+v", p)
 	}
 }
+
+func TestCanonicalRepo(t *testing.T) {
+	for in, want := range map[string]string{
+		"https://github.com/foo/bar":                        "https://github.com/foo/bar",
+		"http://github.com/foo/bar/":                        "https://github.com/foo/bar",
+		"github.com/foo/bar":                                "https://github.com/foo/bar",
+		"github/foo/bar":                                    "https://github.com/foo/bar",
+		"GitHub.com/foo/bar":                                "https://github.com/foo/bar",
+		"https://github.com/foo/bar.git":                    "https://github.com/foo/bar",
+		"git@github.com:foo/bar.git":                        "https://github.com/foo/bar",
+		"ssh://git@github.com/foo/bar":                      "https://github.com/foo/bar",
+		"https://x-access-token:ghs_abc@github.com/foo/bar": "https://github.com/foo/bar",
+		"gitlab/group/sub/project":                          "https://gitlab.com/group/sub/project",
+		"https://git.example.com:8443/team/app":             "https://git.example.com:8443/team/app",
+		"foo/bar":                                           "foo/bar",
+		"internal-repo":                                     "internal-repo",
+	} {
+		if got := CanonicalRepo(in); got != want {
+			t.Errorf("CanonicalRepo(%q) = %q, want %q", in, got, want)
+		}
+	}
+	// the manager and the evidence carry the canonical form, without the token
+	p := (LabelClassifier{}).Classify(object("v1", "ConfigMap", "shop", "a", nil,
+		map[string]string{SourceRepoAnnotation: "https://ci:secret@github.com/foo/bar.git"}))
+	if p.Manager != "https://github.com/foo/bar" || p.Evidence[SourceRepoAnnotation] != "https://github.com/foo/bar" {
+		t.Errorf("classified: %+v", p)
+	}
+}

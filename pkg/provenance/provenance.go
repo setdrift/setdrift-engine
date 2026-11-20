@@ -138,6 +138,49 @@ const (
 	DeployedByAnnotation     = "setdrift.io/deployed-by"
 )
 
+// repoHosts are the shorthands for the common Git hosts: github/foo/bar.
+var repoHosts = map[string]string{"github": "github.com", "gitlab": "gitlab.com", "bitbucket": "bitbucket.org"}
+
+// CanonicalRepo writes a repository however a pipeline names it as one URL,
+// so the same repository groups the same:
+//
+//	https://github.com/foo/bar, http://github.com/foo/bar/, github.com/foo/bar,
+//	github/foo/bar, https://github.com/foo/bar.git, git@github.com:foo/bar.git,
+//	ssh://git@github.com/foo/bar  ->  https://github.com/foo/bar
+//
+// Credentials in it (https://user:token@host/...) are dropped, so they never
+// reach a snapshot. A value that names no host is kept as written.
+func CanonicalRepo(repo string) string {
+	r := strings.TrimSpace(repo)
+	r = strings.TrimSuffix(strings.TrimSuffix(r, "/"), ".git")
+	// git@host:owner/repo, the scp-like form
+	if at, rest, ok := strings.Cut(r, "@"); ok && !strings.Contains(at, "/") && !strings.Contains(at, ":") {
+		if host, path, ok := strings.Cut(rest, ":"); ok && !strings.HasPrefix(path, "//") {
+			r = host + "/" + path
+		}
+	}
+	// scheme://[user[:token]@]host/path
+	if _, rest, ok := strings.Cut(r, "://"); ok {
+		r = rest
+	}
+	if at := strings.LastIndex(r, "@"); at >= 0 && at < strings.Index(r+"/", "/") {
+		r = r[at+1:]
+	}
+	host, path, ok := strings.Cut(r, "/")
+	if !ok || path == "" {
+		return strings.TrimSpace(repo)
+	}
+	host = strings.ToLower(host)
+	if full, ok := repoHosts[host]; ok {
+		host = full
+	}
+	if !strings.Contains(host, ".") && !strings.Contains(host, ":") {
+		// no host named: keep it as written
+		return strings.TrimSpace(repo)
+	}
+	return "https://" + host + "/" + strings.TrimSuffix(path, "/")
+}
+
 // SourceAnnotations are the CI/CD source annotations.
 var SourceAnnotations = []string{SourceRepoAnnotation, SourcePathAnnotation, SourceRevisionAnnotation, DeployedByAnnotation}
 
@@ -158,6 +201,9 @@ func (c LabelClassifier) pipeline(o *resource.Object, p *snapshotv1alpha1.Proven
 	}
 	weak := p.GetSource() == snapshotv1alpha1.Source_SOURCE_UNMANAGED || p.GetSource() == snapshotv1alpha1.Source_SOURCE_UNSPECIFIED ||
 		p.GetEvidence()[confidenceKey] == lowConfidence
+	if repo, ok := src[SourceRepoAnnotation]; ok {
+		src[SourceRepoAnnotation] = CanonicalRepo(repo)
+	}
 	if repo := src[SourceRepoAnnotation]; repo != "" && weak {
 		manager := repo
 		if path := src[SourcePathAnnotation]; path != "" {
