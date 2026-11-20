@@ -62,6 +62,7 @@ type exportOptions struct {
 	output       string
 	snapshotPath string
 	snapshotJSON string
+	noSnapshot   bool
 	force        bool
 	yes          bool
 	// export settings
@@ -102,7 +103,8 @@ Secret values never leave the cluster: Secrets are written with placeholders
 under redacted/, outside every kustomization.yaml.`,
 		Example: `  setdrift export                      # current context, into ./setdrift-export
   setdrift export -o ./prod-export
-  setdrift export --context prod -n payments -n checkout -o ./out --snapshot snap.pb
+  setdrift export --context prod -n payments -n checkout -o ./out
+  setdrift export -o ./out --snapshot ~/snapshots/   # the snapshot elsewhere (default: ./out/snapshots/)
   setdrift export --from-dir ./manifests --cluster-name test -o ./out
   setdrift export -o ./prod-export --helm-repos ./prod-export/helm-repos.yaml`,
 		// RunE not Run so error goes back to main and printed once
@@ -115,8 +117,9 @@ under redacted/, outside every kustomization.yaml.`,
 	f.StringVar(&o.fromDir, "from-dir", "", "read manifests from a directory instead of a cluster (not with the cluster and AWS flags, e.g. -n)")
 	f.StringVar(&o.clusterName, "cluster-name", "", "cluster name used in the repo layout (default: derived from the context)")
 	f.StringVarP(&o.output, "output", "o", "setdrift-export", "directory to write the repository to")
-	f.StringVar(&o.snapshotPath, "snapshot", "", "also write the protobuf snapshot to this file")
-	f.StringVar(&o.snapshotJSON, "snapshot-json", "", "also write the snapshot as readable JSON to this file")
+	f.StringVar(&o.snapshotPath, "snapshot", "", "file or directory for the protobuf snapshot (default: <output>/snapshots/<time>-<cluster>.pb, kept out of Git)")
+	f.StringVar(&o.snapshotJSON, "snapshot-json", "", "file or directory for the snapshot as readable JSON (default: <output>/snapshots/<time>-<cluster>.json)")
+	f.BoolVar(&o.noSnapshot, "no-snapshot", false, "write no snapshot files")
 	f.BoolVar(&o.force, "force", false, "write into a non-empty output directory, replacing clusters/<cluster>/ in it (asks first)")
 	f.BoolVarP(&o.yes, "yes", "y", false, "with --force, replace without asking")
 	f.BoolVar(&o.includeFinishedJobs, "include-finished-jobs", false, "export Jobs that have completed or failed")
@@ -155,6 +158,11 @@ func (o *exportOptions) run(cmd *cobra.Command) error {
 		return err
 	}
 	kc := src.kc
+	// the snapshot files, checked before the read so a bad path fails at once
+	snapPB, snapJSON, err := o.snapshotPaths(cmd, src.cluster.Name, time.Now().UTC())
+	if err != nil {
+		return err
+	}
 
 	// Before cluster read, a pipe or test buffer means no prompt
 	interactive := false
@@ -181,27 +189,150 @@ func (o *exportOptions) run(cmd *cobra.Command) error {
 	if unmatched := emitter.HelmRepos.Unmatched(); len(unmatched) > 0 {
 		fmt.Fprintf(cmd.ErrOrStderr(), "warning: --helm-repos: no Helm release in the export matches %s\n", strings.Join(unmatched, ", "))
 	}
-	if o.snapshotPath != "" {
-		b, err := snapshot.Marshal(snap)
-		if err != nil {
-			return err
-		}
-		if err := writePrivate(o.snapshotPath, b); err != nil {
-			return err
-		}
-	}
-	if o.snapshotJSON != "" {
-		b, err := snapshot.MarshalInspectJSON(snap)
-		if err != nil {
-			return err
-		}
-		if err := writePrivate(o.snapshotJSON, b); err != nil {
-			return err
-		}
+	if err := o.writeSnapshots(snap, snapPB, snapJSON); err != nil {
+		return err
 	}
 
 	printSummary(cmd, snap, o.output, o.unmanagedOnly, emitter.ExternalSecrets != nil)
+	if snapPB != "" || snapJSON != "" {
+		fmt.Fprintf(cmd.OutOrStdout(), "Snapshot: %s\n", strings.Join(nonEmpty(snapPB, snapJSON), ", "))
+	}
 	return nil
+}
+
+// snapshotsDir is where export writes its snapshots by default, in the
+// export, kept out of Git by the export's .gitignore: each export adds one,
+// a history to compare with setdrift diff.
+const snapshotsDir = "snapshots"
+
+// snapshotPaths returns where the snapshot files go: by default
+// <output>/snapshots/<time>-<cluster>.pb and .json; --snapshot and
+// --snapshot-json name a file or a directory for either; --no-snapshot
+// writes none. An existing file is replaced only with --force.
+func (o *exportOptions) snapshotPaths(cmd *cobra.Command, cluster string, at time.Time) (pb, js string, err error) {
+	if o.noSnapshot {
+		if o.snapshotPath != "" || o.snapshotJSON != "" {
+			return "", "", errors.New("--no-snapshot writes no snapshot, so it cannot be used with --snapshot or --snapshot-json")
+		}
+		return "", "", nil
+	}
+	base := at.Format("2006-01-02T150405Z") + "-" + fileName(cluster)
+	def := filepath.Join(o.output, snapshotsDir)
+	if pb, err = snapshotFile("--snapshot", o.snapshotPath, def, base+".pb", o.force); err != nil {
+		return "", "", err
+	}
+	if js, err = snapshotFile("--snapshot-json", o.snapshotJSON, def, base+".json", o.force); err != nil {
+		return "", "", err
+	}
+	if filepath.Clean(pb) == filepath.Clean(js) {
+		return "", "", fmt.Errorf("--snapshot and --snapshot-json both name %s: give them different files", pb)
+	}
+	if o.snapshotJSON != "" && !strings.EqualFold(filepath.Ext(js), ".json") {
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: --snapshot-json %s: the file holds JSON, but its name does not end in .json\n", o.snapshotJSON)
+	}
+	return pb, js, nil
+}
+
+// snapshotFile resolves one snapshot flag: empty means name in def; a
+// directory (existing, or ending in /) gets name in it; ~ is the home
+// directory, for --snapshot=~/x, which the shell does not expand.
+func snapshotFile(flag, arg, def, name string, force bool) (string, error) {
+	if arg == "" {
+		return filepath.Join(def, name), nil
+	}
+	if arg == "~" || strings.HasPrefix(arg, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("%s %s: %w", flag, arg, err)
+		}
+		arg = filepath.Join(home, arg[1:])
+	}
+	if strings.HasSuffix(arg, "/") || strings.HasSuffix(arg, string(filepath.Separator)) {
+		return filepath.Join(arg, name), nil
+	}
+	fi, err := os.Stat(arg)
+	switch {
+	case err == nil && fi.IsDir():
+		return filepath.Join(arg, name), nil
+	case err == nil && !force:
+		return "", fmt.Errorf("%s %s: the file exists; pass --force to replace it, or name another file or a directory", flag, arg)
+	}
+	return arg, nil
+}
+
+// writeSnapshots writes the snapshot files that are set, creating their
+// directories, and keeps the export's snapshots/ out of Git.
+func (o *exportOptions) writeSnapshots(snap *snapshotv1alpha1.Snapshot, pb, js string) error {
+	def := filepath.Join(o.output, snapshotsDir)
+	for _, f := range []struct {
+		path    string
+		marshal func(*snapshotv1alpha1.Snapshot) ([]byte, error)
+	}{{pb, snapshot.Marshal}, {js, snapshot.MarshalInspectJSON}} {
+		if f.path == "" {
+			continue
+		}
+		if filepath.Dir(filepath.Clean(f.path)) == filepath.Clean(def) {
+			if err := ignoreSnapshots(o.output); err != nil {
+				return err
+			}
+		}
+		b, err := f.marshal(snap)
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(f.path), 0o755); err != nil {
+			return err
+		}
+		if err := writePrivate(f.path, b); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// gitignoreLine keeps an export's snapshots out of Git: they change with
+// every export, and the repository holds what is applied.
+const gitignoreLine = "/" + snapshotsDir + "/"
+
+// ignoreSnapshots adds snapshots/ to the .gitignore at the export's root,
+// creating it, unless it is there already.
+func ignoreSnapshots(out string) error {
+	path := filepath.Join(out, ".gitignore")
+	old, err := os.ReadFile(path)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	for _, l := range strings.Split(string(old), "\n") {
+		if strings.TrimSpace(l) == gitignoreLine {
+			return nil
+		}
+	}
+	add := "# setdrift export: its snapshots, a local history for setdrift diff, not part of the repository\n" + gitignoreLine + "\n"
+	if len(old) > 0 && !strings.HasSuffix(string(old), "\n") {
+		add = "\n" + add
+	}
+	if err := os.MkdirAll(out, 0o755); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err := f.WriteString(add); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+func nonEmpty(s ...string) []string {
+	var out []string
+	for _, v := range s {
+		if v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 // source is what a snapshot is read from, opened and checked before the
@@ -748,7 +879,7 @@ func printSummary(cmd *cobra.Command, s *snapshotv1alpha1.Snapshot, out string, 
 		fmt.Fprintf(w, ": %s", strings.Join(todo, ", "))
 	}
 	fmt.Fprintln(w, ".")
-	fmt.Fprintf(w, "Overview: %s (%s, %s; every finding is in --snapshot-json).\n",
+	fmt.Fprintf(w, "Overview: %s (%s, %s; every finding is in the snapshot).\n",
 		filepath.Join(kustomize.ClusterDir(out, s.Cluster.GetName()), "README.md"), plural(redactions, "redaction", "redactions"), plural(findings, "finding", "findings"))
 
 	if lines := ov.Cleanup; len(lines) > 0 {

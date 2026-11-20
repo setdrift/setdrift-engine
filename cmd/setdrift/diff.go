@@ -62,7 +62,8 @@ itself, and says what differs and what it can tell about why: who manages
 each resource on each side, whether a Helm chart version differs, and which
 differences are only each cluster's own values (its name, region, account).
 
-A and B are each a kubeconfig context, a snapshot file (export --snapshot),
+A and B are each a kubeconfig context, a snapshot file (each export saves
+one in its snapshots/ directory),
 or a directory of manifests. Both are read and normalized as export reads
 them, so server defaults, status and secret values never show up as
 differences: Secrets compare by their keys. Each platform's own objects
@@ -76,7 +77,7 @@ shown, but not counted as a difference.
 To compare two namespaces of one cluster, give the same context twice
 with --map-namespace: setdrift diff prod prod --map-namespace shop=shop-prod.`,
 		Example: `  setdrift diff staging prod
-  setdrift diff prod-monday.pb prod                 # what changed in prod since the snapshot
+  setdrift diff setdrift-export/snapshots/2026-11-16T090000Z-prod.pb prod   # what changed since
   setdrift diff staging prod -n shop --map-namespace shop-staging=shop
   setdrift diff prod prod --map-namespace shop=shop-canary   # two namespaces of one cluster
   setdrift diff staging prod -o json > diff.json
@@ -202,7 +203,7 @@ func (o *diffOptions) read(cmd *cobra.Command, arg string, namespaces []string) 
 		}
 		s, err := snapshot.Unmarshal(raw)
 		if err != nil {
-			return nil, false, fmt.Errorf("%s: %w (a snapshot is written with export --snapshot)", arg, err)
+			return nil, false, fmt.Errorf("%s: %w (export saves snapshots in its snapshots/ directory)", arg, err)
 		}
 		return onlyNamespaces(s, namespaces), true, nil
 	}

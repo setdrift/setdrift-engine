@@ -139,3 +139,38 @@ func TestFileSourceKustomize(t *testing.T) {
 		})
 	}
 }
+
+// An export read as manifests leaves out its own snapshots and verify
+// reports; a snapshots/ directory elsewhere is read.
+func TestFileSourceSkipsExportRecords(t *testing.T) {
+	dir := t.TempDir()
+	cm := func(name string) string {
+		return "apiVersion: v1\nkind: ConfigMap\nmetadata: {name: " + name + ", namespace: shop}\n"
+	}
+	for path, content := range map[string]string{
+		"clusters/prod/cm.yaml":              cm("in-export"),
+		"snapshots/2026-11-20-prod.json":     `{"schemaVersion": "setdrift.snapshot.v1alpha1"}`,
+		"verify/2026-11-20-prod-report.json": `{"passed": true}`,
+		"apps/snapshots/cm.yaml":             cm("app-snapshots"),
+	} {
+		p := filepath.Join(dir, filepath.FromSlash(path))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	res, err := collect.FileSource{Dir: dir}.Collect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, o := range res.Objects {
+		names = append(names, o.GetName())
+	}
+	sort.Strings(names)
+	if strings.Join(names, ",") != "app-snapshots,in-export" {
+		t.Errorf("read %v, want app-snapshots and in-export", names)
+	}
+}

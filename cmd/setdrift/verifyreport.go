@@ -210,18 +210,22 @@ func changedBy(d verify.Diff) string {
 
 var unsafeName = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
 
+// fileName makes a cluster name usable in a file name: an EKS ARN or a
+// context with slashes still makes one name.
+func fileName(cluster string) string {
+	if s := strings.Trim(unsafeName.ReplaceAllString(cluster, "-"), "-"); s != "" {
+		return s
+	}
+	return "cluster"
+}
+
 // writeVerifyReport writes the run as <dir>/<time>-<cluster>-report.md and
 // .json, and returns the Markdown file's path.
 func writeVerifyReport(dir string, d verifyDocument, at time.Time) (string, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
-	// an EKS ARN or a context with slashes still makes one file name
-	cluster := strings.Trim(unsafeName.ReplaceAllString(d.Cluster, "-"), "-")
-	if cluster == "" {
-		cluster = "cluster"
-	}
-	base := filepath.Join(dir, at.UTC().Format("2006-01-02T150405Z")+"-"+cluster+"-report")
+	base := filepath.Join(dir, at.UTC().Format("2006-01-02T150405Z")+"-"+fileName(d.Cluster)+"-report")
 	js, err := json.MarshalIndent(d, "", "  ")
 	if err != nil {
 		return "", err

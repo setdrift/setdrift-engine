@@ -14,8 +14,10 @@
 
 # Cluster data. Exports are redacted, but still name clusters, accounts, ARNs
 # and hosts, so they stay out of the public repo.
-# out/: the export directory the README examples use (-o ./out).
+# out/ and setdrift-export/: the export directories the README examples use
+# (-o ./out, and the default).
 /out/
+/setdrift-export/
 # Protobuf snapshots (setdrift export --snapshot FILE), wherever they land.
 *.pb
 

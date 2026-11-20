@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
@@ -229,7 +230,7 @@ func TestSnapshotFilesArePrivate(t *testing.T) {
 	}
 	root := newRootCmd()
 	root.SetArgs([]string{"export", "--from-dir", filepath.Join("..", "..", "testdata", "corpus", "basic", "input"),
-		"-o", filepath.Join(dir, "out"), "--snapshot", pb, "--snapshot-json", js})
+		"-o", filepath.Join(dir, "out"), "--snapshot", pb, "--snapshot-json", js, "--force", "--yes"})
 	root.SetOut(&bytes.Buffer{})
 	if err := root.Execute(); err != nil {
 		t.Fatal(err)
@@ -330,4 +331,124 @@ func TestSummaryCountsExternalSecrets(t *testing.T) {
 	if !strings.Contains(out.String(), "1 ExternalSecret for the redacted Secrets is in external-secrets/") {
 		t.Errorf("summary:\n%s", out.String())
 	}
+}
+
+// Snapshots go to <output>/snapshots/ by default, out of Git; the flags take
+// a file or a directory, and a bad path fails before anything is read.
+func TestSnapshotPaths(t *testing.T) {
+	input := filepath.Join("..", "..", "testdata", "corpus", "basic", "input")
+	export := func(t *testing.T, args ...string) error {
+		t.Helper()
+		root := newRootCmd()
+		root.SetArgs(append([]string{"export", "--from-dir", input, "--cluster-name", "prod"}, args...))
+		root.SetOut(&bytes.Buffer{})
+		root.SetErr(&bytes.Buffer{})
+		return root.Execute()
+	}
+	snapshots := func(t *testing.T, dir string) []string {
+		t.Helper()
+		var out []string
+		entries, _ := os.ReadDir(dir)
+		for _, e := range entries {
+			out = append(out, e.Name())
+		}
+		return out
+	}
+
+	t.Run("default", func(t *testing.T) {
+		out := filepath.Join(t.TempDir(), "out")
+		if err := export(t, "-o", out); err != nil {
+			t.Fatal(err)
+		}
+		got := snapshots(t, filepath.Join(out, "snapshots"))
+		if len(got) != 2 || !strings.HasSuffix(got[0], "-prod.json") || !strings.HasSuffix(got[1], "-prod.pb") {
+			t.Errorf("snapshots = %v", got)
+		}
+		ignore, err := os.ReadFile(filepath.Join(out, ".gitignore"))
+		if err != nil || !strings.Contains(string(ignore), "\n/snapshots/\n") {
+			t.Errorf(".gitignore = %q, %v", ignore, err)
+		}
+		// exporting again keeps the earlier snapshots, and the .gitignore line once
+		time.Sleep(1100 * time.Millisecond)
+		if err := export(t, "-o", out, "--force", "--yes"); err != nil {
+			t.Fatal(err)
+		}
+		if got := snapshots(t, filepath.Join(out, "snapshots")); len(got) != 4 {
+			t.Errorf("after a second export: %v", got)
+		}
+		ignore, _ = os.ReadFile(filepath.Join(out, ".gitignore"))
+		if strings.Count(string(ignore), "/snapshots/") != 1 {
+			t.Errorf(".gitignore after a second export:\n%s", ignore)
+		}
+	})
+
+	t.Run("an existing .gitignore gets the line appended", func(t *testing.T) {
+		out := filepath.Join(t.TempDir(), "out")
+		_ = os.MkdirAll(out, 0o755)
+		_ = os.WriteFile(filepath.Join(out, ".gitignore"), []byte("*.tmp"), 0o644)
+		if err := export(t, "-o", out, "--force", "--yes"); err != nil {
+			t.Fatal(err)
+		}
+		ignore, _ := os.ReadFile(filepath.Join(out, ".gitignore"))
+		if !strings.HasPrefix(string(ignore), "*.tmp\n") || !strings.HasSuffix(string(ignore), "/snapshots/\n") {
+			t.Errorf(".gitignore = %q", ignore)
+		}
+	})
+
+	t.Run("flags", func(t *testing.T) {
+		dir := t.TempDir()
+		t.Setenv("HOME", filepath.Join(dir, "home"))
+		_ = os.MkdirAll(filepath.Join(dir, "home"), 0o755)
+		existing := filepath.Join(dir, "existing.pb")
+		_ = os.WriteFile(existing, []byte("old"), 0o600)
+		for _, c := range []struct {
+			name string
+			args []string
+			// want is the snapshot file written, relative to dir; or wantErr
+			want, wantErr string
+		}{
+			{"a file name", []string{"--snapshot", filepath.Join(dir, "foo")}, "foo", ""},
+			{"any extension", []string{"--snapshot", filepath.Join(dir, "file.txt")}, "file.txt", ""},
+			{"a directory", []string{"--snapshot", dir}, "*-prod.pb", ""},
+			{"a new directory", []string{"--snapshot", filepath.Join(dir, "new") + "/"}, "new/*-prod.pb", ""},
+			{"a missing parent", []string{"--snapshot", filepath.Join(dir, "a", "b", "snap.pb")}, "a/b/snap.pb", ""},
+			{"~ unexpanded", []string{"--snapshot=~/"}, "home/*-prod.pb", ""},
+			{"an existing file", []string{"--snapshot", existing}, "", "the file exists; pass --force"},
+			{"the same file twice", []string{"--snapshot", filepath.Join(dir, "x"), "--snapshot-json", filepath.Join(dir, "x")}, "", "both name"},
+			{"--no-snapshot with a path", []string{"--no-snapshot", "--snapshot", filepath.Join(dir, "y")}, "", "cannot be used with --snapshot"},
+		} {
+			out := filepath.Join(t.TempDir(), "out")
+			err := export(t, append([]string{"-o", out}, c.args...)...)
+			if c.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), c.wantErr) {
+					t.Errorf("%s: err = %v, want %q", c.name, err, c.wantErr)
+				}
+				// checked before the read: nothing written
+				if _, statErr := os.Stat(out); statErr == nil {
+					t.Errorf("%s: the export was written before the path was refused", c.name)
+				}
+				continue
+			}
+			if err != nil {
+				t.Errorf("%s: %v", c.name, err)
+				continue
+			}
+			matches, _ := filepath.Glob(filepath.Join(dir, c.want))
+			if len(matches) == 0 {
+				t.Errorf("%s: no %s", c.name, c.want)
+			}
+		}
+	})
+
+	t.Run("--no-snapshot", func(t *testing.T) {
+		out := filepath.Join(t.TempDir(), "out")
+		if err := export(t, "-o", out, "--no-snapshot"); err != nil {
+			t.Fatal(err)
+		}
+		for _, f := range []string{"snapshots", ".gitignore"} {
+			if _, err := os.Stat(filepath.Join(out, f)); err == nil {
+				t.Errorf("--no-snapshot wrote %s", f)
+			}
+		}
+	})
 }

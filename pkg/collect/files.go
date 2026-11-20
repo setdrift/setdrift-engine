@@ -45,6 +45,13 @@ func (f FileSource) Collect(ctx context.Context) (*Result, error) {
 		if d.IsDir() && path != f.Dir && strings.HasPrefix(d.Name(), ".") {
 			return fs.SkipDir
 		}
+		// An export's own records beside its clusters/: the snapshots and
+		// verify reports, which are not manifests.
+		if d.IsDir() && exportRecords[d.Name()] {
+			if fi, err := os.Stat(filepath.Join(filepath.Dir(path), "clusters")); err == nil && fi.IsDir() {
+				return fs.SkipDir
+			}
+		}
 		// A Kustomization that only lists files in the tree builds exactly those files, so it is skipped. One that
 		// changes them (patches, a namespace, images, generators) or pulls in files from elsewhere is refused:
 		// read as manifests, a patch and its base would be the same object twice, and the export would keep the
@@ -113,6 +120,10 @@ const kustomizeGroup = "kustomize.config.k8s.io"
 
 // kustomizationFiles are the file names Kustomize reads a directory's Kustomization from
 var kustomizationFiles = map[string]bool{"kustomization.yaml": true, "kustomization.yml": true, "Kustomization": true}
+
+// exportRecords are the directories setdrift writes at an export's root
+// beside clusters/: export's snapshots and verify's reports.
+var exportRecords = map[string]bool{"snapshots": true, "verify": true}
 
 // KustomizeError means the directory to read holds a Kustomization that builds something other than its files,
 // so it must be rendered before it can be exported.
