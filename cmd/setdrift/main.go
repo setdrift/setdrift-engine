@@ -6,6 +6,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -30,6 +31,14 @@ func main() {
 
 	// parse arguments, pick and execute subcommands, reads cmd.Context()
 	if err := newRootCmd().ExecuteContext(ctx); err != nil {
+		// a command that sets its own exit status (diff --exit-code)
+		var ee *exitError
+		if errors.As(err, &ee) {
+			if ee.err != nil {
+				fmt.Fprintln(os.Stderr, "error:", ee.err)
+			}
+			os.Exit(ee.code)
+		}
 		// print errors to stderr, exit with status 1
 		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
@@ -50,9 +59,8 @@ func newRootCmd() *cobra.Command {
 		root.Annotations = map[string]string{cobra.CommandDisplayNameAnnotation: "kubectl setdrift"}
 	}
 
-	// five sub commands, four are defined in other files in this folder (export, verify, snapshot, and helm-postrender)
-	// version is small so just defined in line
-	root.AddCommand(newExportCmd(), newVerifyCmd(), newSecretsCmd(), newSnapshotCmd(), newHelmPostRenderCmd(), &cobra.Command{
+	// the sub commands are defined in other files in this folder; version is small so just defined in line
+	root.AddCommand(newExportCmd(), newVerifyCmd(), newDiffCmd(), newSecretsCmd(), newSnapshotCmd(), newHelmPostRenderCmd(), &cobra.Command{
 		Use:   "version",
 		Short: "Print the version",
 		Run: func(cmd *cobra.Command, _ []string) {

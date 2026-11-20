@@ -149,96 +149,24 @@ func (o *exportOptions) run(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-	cluster := &snapshotv1alpha1.Cluster{Name: o.clusterName}
-
-	var collector collect.Collector
-	var kc *kubeContext
-	var awsConn *awsReader
-	// the platform classifier's evidence before the objects: the kubeconfig, the API server, --aws
-	plat := &platform.Stage{}
-	// from directory flag pre-empts other cluster specific flags
-	if o.fromDir != "" {
-		// these flags only mean something when reading a cluster; reject them (e.g. -n would otherwise export every namespace)
-		for _, name := range clusterOnlyFlags {
-			if f := cmd.Flags().Lookup(name); f != nil && f.Changed {
-				flag := "--" + name
-				if f.Shorthand != "" {
-					flag += " (-" + f.Shorthand + ")"
-				}
-				return fmt.Errorf("%s applies to reading a cluster, so it cannot be used with --from-dir", flag)
-			}
-		}
-		collector = collect.FileSource{Dir: o.fromDir}
-		if cluster.Name == "" {
-			cluster.Name = "local"
-		}
-	} else {
-		c, k, err := o.clusterCollector()
-		if err != nil {
-			return err
-		}
-		collector, kc = c, k
-		applyContext(cluster, kc)
-		if o.aws {
-			// connect to AWS now, so bad credentials or a wrong cluster fail
-			// before minutes of cluster reading rather than after
-			if awsConn, err = o.connectAWS(cmd.Context(), kc); err != nil {
-				return err
-			}
-		}
-		// a quick first request, so an unreachable cluster or expired credentials fail now and plainly
-		if err := checkReachable(cmd.Context(), kc); err != nil {
-			return err
-		}
-		plat.Initial = platform.FromKubeconfig(kc.platform)
-		probed, notes := platform.Probe(cmd.Context(), c.Discovery, c.Dynamic)
-		plat.Initial, plat.Notes = append(plat.Initial, probed...), notes
-		if awsConn != nil {
-			plat.Initial = append(plat.Initial, platform.Signal{Source: "aws", Detail: "EKS cluster " + awsConn.name + " found with --aws",
-				Distribution: platform.EKS, Infrastructure: platform.AWS, Region: awsConn.region, Weight: platform.Strong})
-		}
+	src, err := o.open(cmd)
+	if err != nil {
+		return err
 	}
+	kc := src.kc
 
 	// Before cluster read, a pipe or test buffer means no prompt
 	interactive := false
 	if f, ok := cmd.InOrStdin().(*os.File); ok {
 		interactive = term.IsTerminal(int(f.Fd()))
 	}
-	if err := confirmReplace(o.output, cluster.Name, o.force, o.yes, interactive, cmd.InOrStdin(), cmd.ErrOrStderr()); err != nil {
+	if err := confirmReplace(o.output, src.cluster.Name, o.force, o.yes, interactive, cmd.InOrStdin(), cmd.ErrOrStderr()); err != nil {
 		return err
 	}
 
-	id, err := newID()
+	snap, err := o.capture(cmd.Context(), src)
 	if err != nil {
 		return err
-	}
-	p := pipeline.New(collector)
-	p.Lifecycle = lifecycle.Filter{IncludeFinishedJobs: o.includeFinishedJobs}
-	p.Platform = plat
-	p.Provenance = provenance.LabelClassifier{ArgoInstanceLabel: o.argoInstanceLabel, Platform: plat}
-	p.Normalizer = normalize.Normalizer{ArgoInstanceLabel: o.argoInstanceLabel, KeepSourceDefaults: o.keepSourceDefaults}
-	snap, err := p.Run(cmd.Context(), snapshot.Meta{
-		ID:         id,
-		CapturedAt: time.Now().UTC(),
-		Cluster:    cluster,
-		Producer:   &snapshotv1alpha1.Producer{Name: "setdrift-cli", Version: version.Version},
-	})
-	// only error with its own message, adhoc error messaging
-	var scopeErr *collect.ScopeError
-	if errors.As(err, &scopeErr) {
-		return fmt.Errorf("your access is limited to some namespaces: your credentials can't list resources across the cluster " +
-			"(listing namespaces is forbidden), and the kubeconfig context sets no namespace to fall back to.\n" +
-			"Pass the namespaces you can read with -n, e.g. -n <your-team-namespace>; `kubectl auth can-i --list -n <namespace>` shows what you can read in one")
-	}
-	if err != nil {
-		return err
-	}
-
-	if awsConn != nil {
-		// the rest of the AWS read needs the snapshot: its IRSA roles and volumes
-		if err := awsinventory.Collect(cmd.Context(), awsConn.clients, awsConn.name, awsConn.region, snap); err != nil {
-			return fmt.Errorf("--aws: %w", err)
-		}
 	}
 
 	if kc != nil {
@@ -273,6 +201,103 @@ func (o *exportOptions) run(cmd *cobra.Command) error {
 
 	printSummary(cmd, snap, o.output, o.unmanagedOnly, emitter.ExternalSecrets != nil)
 	return nil
+}
+
+// source is what a snapshot is read from, opened and checked before the
+// read: a cluster (kc set) or a directory of manifests.
+type source struct {
+	collector collect.Collector
+	kc        *kubeContext
+	aws       *awsReader
+	// the platform classifier's evidence before the objects: the kubeconfig, the API server, --aws
+	plat    *platform.Stage
+	cluster *snapshotv1alpha1.Cluster
+}
+
+// open connects to the cluster (or the directory) the flags name, failing
+// fast on a bad kubeconfig, an unreachable cluster or bad AWS credentials.
+func (o *exportOptions) open(cmd *cobra.Command) (*source, error) {
+	src := &source{plat: &platform.Stage{}, cluster: &snapshotv1alpha1.Cluster{Name: o.clusterName}}
+	// from directory flag pre-empts other cluster specific flags
+	if o.fromDir != "" {
+		// these flags only mean something when reading a cluster; reject them (e.g. -n would otherwise export every namespace)
+		for _, name := range clusterOnlyFlags {
+			if f := cmd.Flags().Lookup(name); f != nil && f.Changed {
+				flag := "--" + name
+				if f.Shorthand != "" {
+					flag += " (-" + f.Shorthand + ")"
+				}
+				return nil, fmt.Errorf("%s applies to reading a cluster, so it cannot be used with --from-dir", flag)
+			}
+		}
+		src.collector = collect.FileSource{Dir: o.fromDir}
+		if src.cluster.Name == "" {
+			src.cluster.Name = "local"
+		}
+		return src, nil
+	}
+	c, kc, err := o.clusterCollector()
+	if err != nil {
+		return nil, err
+	}
+	src.collector, src.kc = c, kc
+	applyContext(src.cluster, kc)
+	if o.aws {
+		// connect to AWS now, so bad credentials or a wrong cluster fail
+		// before minutes of cluster reading rather than after
+		if src.aws, err = o.connectAWS(cmd.Context(), kc); err != nil {
+			return nil, err
+		}
+	}
+	// a quick first request, so an unreachable cluster or expired credentials fail now and plainly
+	if err := checkReachable(cmd.Context(), kc); err != nil {
+		return nil, err
+	}
+	plat := src.plat
+	plat.Initial = platform.FromKubeconfig(kc.platform)
+	probed, notes := platform.Probe(cmd.Context(), c.Discovery, c.Dynamic)
+	plat.Initial, plat.Notes = append(plat.Initial, probed...), notes
+	if src.aws != nil {
+		plat.Initial = append(plat.Initial, platform.Signal{Source: "aws", Detail: "EKS cluster " + src.aws.name + " found with --aws",
+			Distribution: platform.EKS, Infrastructure: platform.AWS, Region: src.aws.region, Weight: platform.Strong})
+	}
+	return src, nil
+}
+
+// capture reads the source through the pipeline into a snapshot.
+func (o *exportOptions) capture(ctx context.Context, src *source) (*snapshotv1alpha1.Snapshot, error) {
+	id, err := newID()
+	if err != nil {
+		return nil, err
+	}
+	p := pipeline.New(src.collector)
+	p.Lifecycle = lifecycle.Filter{IncludeFinishedJobs: o.includeFinishedJobs}
+	p.Platform = src.plat
+	p.Provenance = provenance.LabelClassifier{ArgoInstanceLabel: o.argoInstanceLabel, Platform: src.plat}
+	p.Normalizer = normalize.Normalizer{ArgoInstanceLabel: o.argoInstanceLabel, KeepSourceDefaults: o.keepSourceDefaults}
+	snap, err := p.Run(ctx, snapshot.Meta{
+		ID:         id,
+		CapturedAt: time.Now().UTC(),
+		Cluster:    src.cluster,
+		Producer:   &snapshotv1alpha1.Producer{Name: "setdrift-cli", Version: version.Version},
+	})
+	// only error with its own message, adhoc error messaging
+	var scopeErr *collect.ScopeError
+	if errors.As(err, &scopeErr) {
+		return nil, fmt.Errorf("your access is limited to some namespaces: your credentials can't list resources across the cluster " +
+			"(listing namespaces is forbidden), and the kubeconfig context sets no namespace to fall back to.\n" +
+			"Pass the namespaces you can read with -n, e.g. -n <your-team-namespace>; `kubectl auth can-i --list -n <namespace>` shows what you can read in one")
+	}
+	if err != nil {
+		return nil, err
+	}
+	if src.aws != nil {
+		// the rest of the AWS read needs the snapshot: its IRSA roles and volumes
+		if err := awsinventory.Collect(ctx, src.aws.clients, src.aws.name, src.aws.region, snap); err != nil {
+			return nil, fmt.Errorf("--aws: %w", err)
+		}
+	}
+	return snap, nil
 }
 
 // awsReader is an AWS connection checked before the cluster read, for --aws

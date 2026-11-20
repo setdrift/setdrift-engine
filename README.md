@@ -27,6 +27,11 @@ In a few seconds you get:
 - **Proof it matches.** `setdrift verify` dry-runs the export against the
   cluster and reports how much would change: nothing, if the export is
   right.
+- **What differs between clusters.** `setdrift diff staging prod` compares
+  two clusters (or a cluster with last week's snapshot) field by field,
+  with who manages each resource on each side, the Helm chart versions, and
+  the differences that are only each cluster's name, region or account set
+  apart.
 - **A restore playbook.** RESTORE.md is the checklist for recreating the
   cluster elsewhere, with the commands filled in: CRDs to create first, Helm
   releases to install with their chart versions, webhooks to wait for,
@@ -115,6 +120,13 @@ setdrift export --from-dir ./manifests --cluster-name test -o ./out
 # Check the export: its platform set on a cluster of the same platform, else
 # the generic set (--set generic|platform to choose)
 setdrift verify ./out
+
+# Compare two clusters, or a cluster with an earlier snapshot of itself:
+# what differs, who manages it on each side, and which differences are only
+# each cluster's own values (name, region, account)
+setdrift diff staging prod
+setdrift diff prod-monday.pb prod
+setdrift diff staging prod --map-namespace shop-staging=shop --exit-code
 
 # Copy the redacted Secrets' values from the source cluster into AWS Secrets
 # Manager or Parameter Store, for the ExternalSecrets (plan first, then confirm)
@@ -243,6 +255,7 @@ collect -> redact -> (inventory) -> hygiene -> ownership -> lifecycle -> platfor
 | [pkg/normalize](pkg/normalize) | Strips server-owned state so the export round-trips cleanly: fields only Kubernetes' controllers own (from managedFields), values equal to the API server's defaults, owner references, status and server-set metadata, `kubectl rollout restart` timestamps, and the markers Argo CD, Flux and Helm stamp on what they apply (the snapshot keeps them as provenance evidence). |
 | [pkg/snapshot](pkg/snapshot) | The versioned snapshot ([proto](proto/setdrift/snapshot/v1alpha1/snapshot.proto)), the contract between the CLI, the agent and the control plane. Protobuf is canonical; JSON is for inspection. |
 | [pkg/emit/kustomize](pkg/emit/kustomize) | Writes a snapshot as a Kustomize repository: the generic set, the platform's set, the README's overview, the ExternalSecrets and RESTORE.md. Resources with redacted values go to `redacted/`, outside every kustomization; objects the platform manages are left out. |
+| [pkg/diff](pkg/diff) | Compares two snapshots: pairs resources by group, kind, namespace and name (with namespace mapping), compares the normalized manifests field by field (lists of named items, such as containers, by name), sets aside each cluster's own values (name, region, account, mapped namespaces), and gives what the snapshots tell about why: the manager on each side, the Helm chart versions, the API versions. Platform objects are not compared. |
 | [pkg/verify](pkg/verify) | The acceptance test: a server-side dry-run apply of every exported resource, compared with the live object. Passes when at least 95% would not change and every remaining diff is explained; reports custom resources whose CRD the cluster lacks. |
 | [pkg/secretexport](pkg/secretexport) | `setdrift secrets export`: plans and writes the remote secrets the ExternalSecrets read, from the source cluster's Secrets, through a provider (AWS Secrets Manager, Parameter Store). |
 
