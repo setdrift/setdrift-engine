@@ -106,22 +106,48 @@ func TestDiffDirectories(t *testing.T) {
 	}
 }
 
-func TestDiffSnapshotWithItself(t *testing.T) {
+func TestDiffSnapshotOverTime(t *testing.T) {
 	dir := t.TempDir()
-	pb := filepath.Join(dir, "before.pb")
-	root := newRootCmd()
-	root.SetArgs([]string{"export", "--from-dir", filepath.Join("..", "..", "testdata", "corpus", "basic", "input"),
-		"--cluster-name", "prod", "-o", filepath.Join(dir, "out"), "--snapshot", pb})
-	root.SetOut(&bytes.Buffer{})
-	if err := root.Execute(); err != nil {
-		t.Fatal(err)
+	export := func(pb string) {
+		root := newRootCmd()
+		root.SetArgs([]string{"export", "--from-dir", filepath.Join("..", "..", "testdata", "corpus", "basic", "input"),
+			"--cluster-name", "prod", "-o", filepath.Join(dir, filepath.Base(pb)+".out"), "--snapshot", pb})
+		root.SetOut(&bytes.Buffer{})
+		if err := root.Execute(); err != nil {
+			t.Fatal(err)
+		}
 	}
-	out, err := runDiff(t, pb, pb)
+	before, after := filepath.Join(dir, "before.pb"), filepath.Join(dir, "after.pb")
+	export(before)
+	export(after)
+	out, err := runDiff(t, before, after)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out, "Comparing prod snapshot ") || !strings.Contains(out, "No differences.") {
-		t.Errorf("snapshot with itself:\n%s", out)
+		t.Errorf("one cluster at two times:\n%s", out)
+	}
+}
+
+// Two namespaces of one source: each side reads only its mapped namespaces.
+func TestDiffNamespacesOfOneCluster(t *testing.T) {
+	a := copyCorpus(t, "c")
+	// a second namespace, prod, holding a changed copy of shop's ConfigMap and nothing else
+	extra := "---\napiVersion: v1\nkind: Namespace\nmetadata: {name: prod}\n---\napiVersion: v1\nkind: ConfigMap\nmetadata: {name: only-prod, namespace: prod}\ndata: {x: \"1\"}\n"
+	if err := os.WriteFile(filepath.Join(a, "prod.yaml"), []byte(extra), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runDiff(t, a, a); err == nil || !strings.Contains(err.Error(), "with itself: to compare two of its namespaces") {
+		t.Errorf("itself without a map: %v", err)
+	}
+	out, err := runDiff(t, a, a, "--map-namespace", "shop=prod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Comparing c (shop) with c (prod)", "Only in c (prod) (1):", "prod, applied by hand: ConfigMap only-prod"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("lacks %q:\n%s", want, out)
+		}
 	}
 }
 

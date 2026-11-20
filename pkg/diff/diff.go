@@ -21,6 +21,8 @@ import (
 	"strconv"
 	"strings"
 
+	"k8s.io/apimachinery/pkg/api/resource"
+
 	snapshotv1alpha1 "setdrift.io/setdrift-engine/pkg/snapshot/v1alpha1"
 )
 
@@ -106,6 +108,20 @@ type Result struct {
 	Changed   []Change `json:"changed,omitempty"`
 	OnlyA     []Object `json:"onlyA,omitempty"`
 	OnlyB     []Object `json:"onlyB,omitempty"`
+	// Nodes lists how the clusters' nodes differ in shape (count, instance
+	// types, zones, allocatable capacity). Nodes come and go with
+	// autoscaling, so these do not count as differences for Same.
+	Nodes []NodeChange `json:"nodes,omitempty"`
+	// NodesUnknown names the sides whose nodes the snapshot lacks: read
+	// from a directory, or with credentials that can't list nodes.
+	NodesUnknown []string `json:"nodesUnknown,omitempty"`
+}
+
+// NodeChange is one way the clusters' nodes differ.
+type NodeChange struct {
+	What string `json:"what"`
+	A    string `json:"a"`
+	B    string `json:"b"`
 }
 
 // Same reports whether the snapshots match, apart from the clusters' own values.
@@ -137,6 +153,18 @@ type entry struct {
 	obj      Object
 	manifest any
 	helm     *snapshotv1alpha1.HelmRelease
+	// volume is a claim's bound volume, from the snapshot's inventory
+	volume *snapshotv1alpha1.Volume
+	// hpa: a HorizontalPodAutoscaler scales it, so its replicas are left out
+	hpa bool
+}
+
+// indexed is a snapshot's resources by key, and what they need from each other.
+type indexed struct {
+	entries  map[Key]entry
+	platform int
+	// mounts lists the workloads mounting each claim, by "namespace/claim"
+	mounts map[string][]string
 }
 
 // Compare compares snapshot a with snapshot b.
@@ -156,15 +184,17 @@ func Compare(a, b *snapshotv1alpha1.Snapshot, opts Options) (Result, error) {
 	for from, to := range opts.NamespaceMap {
 		back[to] = from
 	}
-	as, platA, err := index(a, nil)
+	ia, err := index(a, nil)
 	if err != nil {
 		return Result{}, fmt.Errorf("%s: %w", res.A.Label, err)
 	}
-	bs, platB, err := index(b, back)
+	ib, err := index(b, back)
 	if err != nil {
 		return Result{}, fmt.Errorf("%s: %w", res.B.Label, err)
 	}
-	res.A.PlatformObjects, res.B.PlatformObjects = platA, platB
+	as, bs := ia.entries, ib.entries
+	res.A.PlatformObjects, res.B.PlatformObjects = ia.platform, ib.platform
+	res.Nodes, res.NodesUnknown = compareNodes(a.GetInventory().GetNodes(), b.GetInventory().GetNodes(), res.A.Label, res.B.Label)
 
 	subA, subB := substitutions(res.A, opts.NamespaceMap, true), substitutions(res.B, opts.NamespaceMap, false)
 	for _, k := range sortedKeys(as) {
@@ -175,11 +205,12 @@ func Compare(a, b *snapshotv1alpha1.Snapshot, opts Options) (Result, error) {
 			continue
 		}
 		raw := compare("", ea.manifest, eb.manifest, nil)
-		if len(raw) == 0 {
+		vol, volWhy := compareVolumes(ea, eb, raw, ia.mounts[ea.obj.Namespace+"/"+ea.obj.Key.Name], res.A.Label, res.B.Label)
+		if len(raw) == 0 && len(vol) == 0 {
 			res.Identical++
 			continue
 		}
-		c := Change{A: ea.obj, B: eb.obj}
+		c := Change{A: ea.obj, B: eb.obj, Fields: vol}
 		for _, f := range raw {
 			if f.Path == "metadata.namespace" && opts.NamespaceMap[ea.obj.Namespace] == eb.obj.Namespace {
 				continue
@@ -194,7 +225,7 @@ func Compare(a, b *snapshotv1alpha1.Snapshot, opts Options) (Result, error) {
 			res.Identical++
 			continue
 		}
-		c.Reasons = reasons(ea, eb, res.A.Label, res.B.Label)
+		c.Reasons = append(reasons(ea, eb, res.A.Label, res.B.Label), volWhy...)
 		res.Changed = append(res.Changed, c)
 	}
 	for _, k := range sortedKeys(bs) {
@@ -240,22 +271,25 @@ func side(s *snapshotv1alpha1.Snapshot) Side {
 
 // index keys a snapshot's resources, leaving out the platform's own. back
 // maps the second snapshot's namespaces to the first's.
-func index(s *snapshotv1alpha1.Snapshot, back map[string]string) (map[Key]entry, int, error) {
+func index(s *snapshotv1alpha1.Snapshot, back map[string]string) (indexed, error) {
 	helm := map[string]*snapshotv1alpha1.HelmRelease{}
 	for _, h := range s.GetInventory().GetHelmReleases() {
 		helm[h.GetNamespace()+"/"+h.GetName()] = h
 	}
-	out := map[Key]entry{}
-	platformObjects := 0
+	volumes := map[string]*snapshotv1alpha1.Volume{}
+	for _, v := range s.GetInventory().GetVolumes() {
+		volumes[v.GetNamespace()+"/"+v.GetClaim()] = v
+	}
+	ix := indexed{entries: map[Key]entry{}, mounts: map[string][]string{}}
 	for _, r := range s.GetResources() {
 		p := r.GetProvenance()
 		if p.GetSource() == snapshotv1alpha1.Source_SOURCE_PLATFORM {
-			platformObjects++
+			ix.platform++
 			continue
 		}
 		var m any
 		if err := json.Unmarshal([]byte(r.GetManifestJson()), &m); err != nil {
-			return nil, 0, fmt.Errorf("%s %s/%s: %w", r.GetKind(), r.GetNamespace(), r.GetName(), err)
+			return indexed{}, fmt.Errorf("%s %s/%s: %w", r.GetKind(), r.GetNamespace(), r.GetName(), err)
 		}
 		g, _, found := strings.Cut(r.GetApiVersion(), "/")
 		if !found {
@@ -268,6 +302,18 @@ func index(s *snapshotv1alpha1.Snapshot, back map[string]string) (map[Key]entry,
 		if ns, ok := back[k.Name]; ok && k.Group == "" && k.Kind == "Namespace" {
 			k.Name = ns
 		}
+		if prev, dup := ix.entries[k]; dup {
+			// namespace x is mapped to y, and this snapshot has both x and y
+			x, y := prev.obj.Namespace, r.GetNamespace()
+			if k.Kind == "Namespace" && k.Group == "" {
+				// the Namespace objects themselves: the earlier one's own name is in its manifest
+				name, _ := mapKey(prev.manifest, "metadata", "name")
+				x, _ = name.(string)
+				y = r.GetName()
+			}
+			return indexed{}, fmt.Errorf("it has both namespace %s and namespace %s, which --map-namespace pairs with the same one: "+
+				"limit the comparison to the mapped namespaces with -n", x, y)
+		}
 		e := entry{
 			obj:      Object{Key: k, APIVersion: r.GetApiVersion(), Namespace: r.GetNamespace(), Manager: Manager(p), Source: source(p.GetSource())},
 			manifest: m,
@@ -275,9 +321,169 @@ func index(s *snapshotv1alpha1.Snapshot, back map[string]string) (map[Key]entry,
 		if p.GetSource() == snapshotv1alpha1.Source_SOURCE_HELM {
 			e.helm = helm[p.GetManager()]
 		}
-		out[k] = e
+		if k.Group == "" && k.Kind == "PersistentVolumeClaim" {
+			e.volume = volumes[r.GetNamespace()+"/"+r.GetName()]
+		}
+		for _, f := range r.GetFindings() {
+			if f.GetCode() == "REPLICAS_FROM_HPA" {
+				e.hpa = true
+			}
+		}
+		for _, claim := range claims(m) {
+			key := r.GetNamespace() + "/" + claim
+			ix.mounts[key] = append(ix.mounts[key], r.GetKind()+" "+r.GetName())
+		}
+		ix.entries[k] = e
 	}
-	return out, platformObjects, nil
+	return ix, nil
+}
+
+// claims lists the claims a workload's pods mount.
+func claims(m any) []string {
+	var out []string
+	for _, path := range [][]string{
+		{"spec", "template", "spec", "volumes"},                        // Deployment, StatefulSet, DaemonSet, Job, ReplicaSet
+		{"spec", "jobTemplate", "spec", "template", "spec", "volumes"}, // CronJob
+		{"spec", "volumes"}, // Pod
+	} {
+		v := m
+		for _, p := range path {
+			mm, _ := v.(map[string]any)
+			v = mm[p]
+		}
+		vols, _ := v.([]any)
+		for _, vol := range vols {
+			vm, _ := vol.(map[string]any)
+			pvc, _ := vm["persistentVolumeClaim"].(map[string]any)
+			if name, _ := pvc["claimName"].(string); name != "" {
+				out = append(out, name)
+			}
+		}
+	}
+	return out
+}
+
+// compareVolumes compares two claims' bound volumes, as the inventory
+// recorded them: the claim's manifest leaves out what a cluster's defaults
+// set, such as the default storage class, so two claims can match while
+// their volumes do not. It returns the differing fields, as "(volume) ..."
+// paths, and why.
+func compareVolumes(a, b entry, manifestFields []Field, mountedBy []string, la, lb string) ([]Field, []string) {
+	va, vb := a.volume, b.volume
+	if va == nil || vb == nil {
+		return nil, nil
+	}
+	named := false
+	for _, f := range manifestFields {
+		if f.Path == "spec.storageClassName" {
+			named = true
+		}
+	}
+	var fields []Field
+	var why []string
+	add := func(what, x, y string) {
+		if x != y {
+			fields = append(fields, Field{Path: "(volume) " + what, A: orNil(x), B: orNil(y)})
+		}
+	}
+	if !named {
+		add("storageClass", va.GetStorageClass(), vb.GetStorageClass())
+		if va.GetStorageClass() != vb.GetStorageClass() {
+			_, setA := mapKey(a.manifest, "spec", "storageClassName")
+			_, setB := mapKey(b.manifest, "spec", "storageClassName")
+			if !setA && !setB {
+				w := fmt.Sprintf("the claim names no storage class, so each cluster's default applied: %s in %s, %s in %s",
+					va.GetStorageClass(), la, vb.GetStorageClass(), lb)
+				why = append(why, w)
+			}
+		}
+	}
+	add("capacity", va.GetCapacity(), vb.GetCapacity())
+	add("driver", va.GetDriver(), vb.GetDriver())
+	add("reclaimPolicy", va.GetReclaimPolicy(), vb.GetReclaimPolicy())
+	add("volumeMode", va.GetVolumeMode(), vb.GetVolumeMode())
+	add("fsType", va.GetFsType(), vb.GetFsType())
+	if (len(fields) > 0 || named) && len(mountedBy) > 0 {
+		why = append(why, "mounted by "+strings.Join(mountedBy, ", "))
+	}
+	return fields, why
+}
+
+func orNil(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
+}
+
+func mapKey(m any, path ...string) (any, bool) {
+	v := m
+	for _, p := range path {
+		mm, ok := v.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		if v, ok = mm[p]; !ok {
+			return nil, false
+		}
+	}
+	return v, true
+}
+
+// compareNodes lists how two node summaries differ.
+func compareNodes(a, b *snapshotv1alpha1.NodeSummary, la, lb string) ([]NodeChange, []string) {
+	var unknown []string
+	if a == nil {
+		unknown = append(unknown, la)
+	}
+	if b == nil {
+		unknown = append(unknown, lb)
+	}
+	if unknown != nil {
+		return nil, unknown
+	}
+	var out []NodeChange
+	add := func(what, x, y string) {
+		if x != y {
+			out = append(out, NodeChange{What: what, A: x, B: y})
+		}
+	}
+	add("nodes", strconv.Itoa(int(a.GetCount())), strconv.Itoa(int(b.GetCount())))
+	add("instance types", counts(a.GetInstanceTypes()), counts(b.GetInstanceTypes()))
+	add("node groups", counts(a.GetPools()), counts(b.GetPools()))
+	add("zones", counts(a.GetZones()), counts(b.GetZones()))
+	add("OS/architecture", counts(a.GetPlatforms()), counts(b.GetPlatforms()))
+	add("kubelet versions", counts(a.GetKubeletVersions()), counts(b.GetKubeletVersions()))
+	add("allocatable CPU", a.GetCpu(), b.GetCpu())
+	add("allocatable memory", gib(a.GetMemory()), gib(b.GetMemory()))
+	add("allocatable pods", strconv.FormatInt(a.GetPods(), 10), strconv.FormatInt(b.GetPods(), 10))
+	return out, nil
+}
+
+// gib renders a memory quantity in GiB: "7.7Gi".
+func gib(q string) string {
+	v, err := resource.ParseQuantity(q)
+	if err != nil {
+		return q
+	}
+	return strconv.FormatFloat(float64(v.Value())/(1<<30), 'f', 1, 64) + "Gi"
+}
+
+// counts renders "m5.large x3, m5.xlarge x1".
+func counts(m map[string]int32) string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, fmt.Sprintf("%s x%d", k, m[k]))
+	}
+	if len(parts) == 0 {
+		return "-"
+	}
+	return strings.Join(parts, ", ")
 }
 
 // Manager names who manages a resource, for people.
@@ -315,6 +521,13 @@ func reasons(a, b entry, la, lb string) []string {
 	var out []string
 	if a.obj.Manager != b.obj.Manager {
 		out = append(out, fmt.Sprintf("managed differently: %s in %s, %s in %s", a.obj.Manager, la, b.obj.Manager, lb))
+	}
+	if a.hpa != b.hpa {
+		in := la
+		if b.hpa {
+			in = lb
+		}
+		out = append(out, fmt.Sprintf("a HorizontalPodAutoscaler scales it in %s only, so its replicas are left out there", in))
 	}
 	if a.obj.APIVersion != b.obj.APIVersion {
 		out = append(out, fmt.Sprintf("read as %s in %s, %s in %s", a.obj.APIVersion, la, b.obj.APIVersion, lb))

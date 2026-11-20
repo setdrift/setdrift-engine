@@ -176,10 +176,34 @@ message Inventory {
   AwsInventory aws = 3;
   // the deployed revision of each Helm release, from its release record
   repeated HelmRelease helm_releases = 4;
+  // the cluster's nodes, summarized: read from a cluster only, and only
+  // when the credentials can list nodes
+  NodeSummary nodes = 5;
 }
 
 // HelmRelease is the chart a Helm release runs, from the release record's
 // chart metadata. Values and rendered manifests are not read.
+// The shape of a cluster's nodes at capture time, without node names:
+// nodes come and go with autoscaling, so their shape is what compares.
+message NodeSummary {
+  int32 count = 1;
+  // node counts by instance type (node.kubernetes.io/instance-type)
+  map<string, int32> instance_types = 2;
+  // node counts by zone (topology.kubernetes.io/zone)
+  map<string, int32> zones = 3;
+  // node counts by CPU architecture and OS, e.g. linux/arm64
+  map<string, int32> platforms = 4;
+  // node counts by kubelet version
+  map<string, int32> kubelet_versions = 5;
+  // node counts by node group or pool: EKS node groups, Karpenter node
+  // pools, GKE node pools, AKS agent pools
+  map<string, int32> pools = 6;
+  // allocatable totals, as Kubernetes quantities
+  string cpu = 7;
+  string memory = 8;
+  int64 pods = 9;
+}
+
 message HelmRelease {
   string namespace = 1;
   string name = 2;

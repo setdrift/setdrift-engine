@@ -166,3 +166,85 @@ func TestSubstitutionBoundaries(t *testing.T) {
 		t.Errorf("short cluster name substituted: %q", got)
 	}
 }
+
+func TestVolumesAndHPA(t *testing.T) {
+	pvc := `{"apiVersion":"v1","kind":"PersistentVolumeClaim","metadata":{"name":"data","namespace":"shop"},"spec":{"resources":{"requests":{"storage":"1Gi"}}}}`
+	deploy := `{"spec":{"template":{"spec":{"volumes":[{"name":"d","persistentVolumeClaim":{"claimName":"data"}}]}}}}`
+	mk := func(name, class string, hpa bool) *snapshotv1alpha1.Snapshot {
+		web := res("apps/v1", "Deployment", "shop", "web", `{"spec":{"replicas":3}}`, unmanaged, "")
+		if hpa {
+			web = res("apps/v1", "Deployment", "shop", "web", `{"spec":{}}`, unmanaged, "")
+			web.Findings = []*snapshotv1alpha1.Finding{{Code: "REPLICAS_FROM_HPA"}}
+		}
+		s := snap(name, "", "",
+			res("v1", "PersistentVolumeClaim", "shop", "data", pvc, unmanaged, ""),
+			res("apps/v1", "Deployment", "shop", "db", deploy, unmanaged, ""),
+			web)
+		s.Inventory = &snapshotv1alpha1.Inventory{Volumes: []*snapshotv1alpha1.Volume{{Namespace: "shop", Claim: "data", StorageClass: class, Capacity: "1Gi"}}}
+		return s
+	}
+	r, err := Compare(mk("staging", "gp3", true), mk("prod", "io2", false), Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := map[string]Change{}
+	for _, c := range r.Changed {
+		byName[c.A.Key.Name] = c
+	}
+	data := byName["data"]
+	if len(data.Fields) != 1 || data.Fields[0].Path != "(volume) storageClass" || data.Fields[0].A != "gp3" {
+		t.Errorf("volume fields = %+v", data.Fields)
+	}
+	if strings.Join(data.Reasons, "; ") != "the claim names no storage class, so each cluster's default applied: gp3 in staging, io2 in prod; mounted by Deployment db" {
+		t.Errorf("volume reasons = %q", data.Reasons)
+	}
+	web := byName["web"]
+	if len(web.Reasons) != 1 || web.Reasons[0] != "a HorizontalPodAutoscaler scales it in staging only, so its replicas are left out there" {
+		t.Errorf("hpa reasons = %q", web.Reasons)
+	}
+	// both scaled by an HPA: the replicas are left out on both sides, so nothing differs
+	r, _ = Compare(mk("staging", "gp3", true), mk("prod", "gp3", true), Options{})
+	if !r.Same() {
+		t.Errorf("same classes, HPA on both sides: %+v", r.Changed)
+	}
+}
+
+func TestNamespaceCollision(t *testing.T) {
+	a := snap("a", "", "", res("v1", "ConfigMap", "shop", "cfg", `{}`, unmanaged, ""))
+	b := snap("b", "", "",
+		res("v1", "ConfigMap", "shop", "cfg", `{}`, unmanaged, ""),
+		res("v1", "ConfigMap", "shop-prod", "cfg", `{}`, unmanaged, ""))
+	_, err := Compare(a, b, Options{NamespaceMap: map[string]string{"shop": "shop-prod"}})
+	if err == nil || !strings.Contains(err.Error(), "both namespace shop and namespace shop-prod") {
+		t.Errorf("err = %v", err)
+	}
+}
+
+func TestNodes(t *testing.T) {
+	a := snap("a", "", "")
+	b := snap("b", "", "")
+	a.Inventory = &snapshotv1alpha1.Inventory{Nodes: &snapshotv1alpha1.NodeSummary{Count: 3, InstanceTypes: map[string]int32{"m5.large": 3}, Cpu: "6", Memory: "24Gi", Pods: 87}}
+	b.Inventory = &snapshotv1alpha1.Inventory{Nodes: &snapshotv1alpha1.NodeSummary{Count: 4, InstanceTypes: map[string]int32{"m5.large": 2, "m5.xlarge": 2}, Cpu: "12", Memory: "48Gi", Pods: 116}}
+	r, _ := Compare(a, b, Options{})
+	got := map[string]string{}
+	for _, n := range r.Nodes {
+		got[n.What] = n.A + " -> " + n.B
+	}
+	want := map[string]string{
+		"nodes":              "3 -> 4",
+		"instance types":     "m5.large x3 -> m5.large x2, m5.xlarge x2",
+		"allocatable CPU":    "6 -> 12",
+		"allocatable memory": "24.0Gi -> 48.0Gi",
+		"allocatable pods":   "87 -> 116",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("nodes = %v, want %v", got, want)
+	}
+	if !r.Same() {
+		t.Error("node differences count as differences")
+	}
+	r, _ = Compare(a, snap("c", "", ""), Options{})
+	if len(r.NodesUnknown) != 1 || r.NodesUnknown[0] != "c" {
+		t.Errorf("nodes unknown = %v", r.NodesUnknown)
+	}
+}

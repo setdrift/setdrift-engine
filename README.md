@@ -127,6 +127,7 @@ setdrift verify ./out
 setdrift diff staging prod
 setdrift diff prod-monday.pb prod
 setdrift diff staging prod --map-namespace shop-staging=shop --exit-code
+setdrift diff prod prod --map-namespace shop=shop-canary   # two namespaces of one cluster
 
 # Copy the redacted Secrets' values from the source cluster into AWS Secrets
 # Manager or Parameter Store, for the ExternalSecrets (plan first, then confirm)

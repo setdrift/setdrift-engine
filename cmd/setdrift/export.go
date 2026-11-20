@@ -41,6 +41,7 @@ import (
 	"setdrift.io/setdrift-engine/pkg/collect"
 	"setdrift.io/setdrift-engine/pkg/emit/kustomize"
 	"setdrift.io/setdrift-engine/pkg/helmsource"
+	"setdrift.io/setdrift-engine/pkg/inventory"
 	"setdrift.io/setdrift-engine/pkg/lifecycle"
 	"setdrift.io/setdrift-engine/pkg/normalize"
 	"setdrift.io/setdrift-engine/pkg/pipeline"
@@ -290,6 +291,15 @@ func (o *exportOptions) capture(ctx context.Context, src *source) (*snapshotv1al
 	}
 	if err != nil {
 		return nil, err
+	}
+	if c, ok := src.collector.(*collect.ClusterCollector); ok {
+		// the nodes' shape, for diff; credentials that can't list nodes leave it out
+		if nodes, err := inventory.Nodes(ctx, c.Dynamic); err == nil {
+			if snap.Inventory == nil {
+				snap.Inventory = &snapshotv1alpha1.Inventory{}
+			}
+			snap.Inventory.Nodes = nodes
+		}
 	}
 	if src.aws != nil {
 		// the rest of the AWS read needs the snapshot: its IRSA roles and volumes

@@ -66,10 +66,19 @@ A and B are each a kubeconfig context, a snapshot file (export --snapshot),
 or a directory of manifests. Both are read and normalized as export reads
 them, so server defaults, status and secret values never show up as
 differences: Secrets compare by their keys. Each platform's own objects
-(EKS's, kind's) are not compared.`,
+(EKS's, kind's) are not compared.
+
+Volumes compare as bound, so a claim that names no storage class shows
+each cluster's default class. Replicas a HorizontalPodAutoscaler sets are
+left out. The nodes' shape (count, instance types, zones, capacity) is
+shown, but not counted as a difference.
+
+To compare two namespaces of one cluster, give the same context twice
+with --map-namespace: setdrift diff prod prod --map-namespace shop=shop-prod.`,
 		Example: `  setdrift diff staging prod
   setdrift diff prod-monday.pb prod                 # what changed in prod since the snapshot
   setdrift diff staging prod -n shop --map-namespace shop-staging=shop
+  setdrift diff prod prod --map-namespace shop=shop-canary   # two namespaces of one cluster
   setdrift diff staging prod -o json > diff.json
   setdrift diff staging prod --exit-code            # in CI: exit 1 when they differ`,
 		Args: cobra.ExactArgs(2),
@@ -104,15 +113,30 @@ func (o *diffOptions) run(cmd *cobra.Command, a, b string) error {
 		}
 		nsMap[from] = to
 	}
-	bNamespaces := make([]string, 0, len(o.namespaces))
-	for _, ns := range o.namespaces {
+	namespaces := o.namespaces
+	if a == b {
+		// one cluster (or snapshot) with itself: two of its namespaces
+		if len(nsMap) == 0 {
+			return fmt.Errorf("comparing %s with itself: to compare two of its namespaces, pass --map-namespace A_NS=B_NS", a)
+		}
+		if len(namespaces) == 0 {
+			// each side is the mapped namespaces only, or the other side's
+			// namespaces would pair with them
+			for from := range nsMap {
+				namespaces = append(namespaces, from)
+			}
+			sort.Strings(namespaces)
+		}
+	}
+	bNamespaces := make([]string, 0, len(namespaces))
+	for _, ns := range namespaces {
 		if to, ok := nsMap[ns]; ok {
 			ns = to
 		}
 		bNamespaces = append(bNamespaces, ns)
 	}
 
-	sa, fileA, err := o.read(cmd, a, o.namespaces)
+	sa, fileA, err := o.read(cmd, a, namespaces)
 	if err != nil {
 		return err
 	}
@@ -121,7 +145,11 @@ func (o *diffOptions) run(cmd *cobra.Command, a, b string) error {
 		return err
 	}
 	la, lb := sa.GetCluster().GetName(), sb.GetCluster().GetName()
-	if la == lb {
+	switch {
+	case a == b:
+		// two namespaces of one cluster
+		la, lb = la+" ("+strings.Join(namespaces, ", ")+")", lb+" ("+strings.Join(bNamespaces, ", ")+")"
+	case la == lb:
 		// one cluster at two times: say which is which
 		la, lb = when(sa, la, fileA), when(sb, lb, fileB)
 	}
@@ -144,7 +172,8 @@ func (o *diffOptions) run(cmd *cobra.Command, a, b string) error {
 			return err
 		}
 	} else {
-		printDiff(cmd.OutOrStdout(), res, o.maxFields)
+		// two namespaces of one cluster have the same nodes
+		printDiff(cmd.OutOrStdout(), res, o.maxFields, a != b)
 	}
 	if o.exitCode && !res.Same() {
 		return &exitError{code: 1}
@@ -215,7 +244,7 @@ func onlyNamespaces(s *snapshotv1alpha1.Snapshot, namespaces []string) *snapshot
 	return s
 }
 
-func printDiff(w io.Writer, r diff.Result, maxFields int) {
+func printDiff(w io.Writer, r diff.Result, maxFields int, nodes bool) {
 	la, lb := r.A.Label, r.B.Label
 	fmt.Fprintf(w, "Comparing %s with %s\n", la, lb)
 	width := max(len(la), len(lb)) + 1
@@ -242,6 +271,9 @@ func printDiff(w io.Writer, r diff.Result, maxFields int) {
 	fmt.Fprintf(w, "\nOnly in %s: %d   Only in %s: %d\n", la, len(r.OnlyA), lb, len(r.OnlyB))
 	if r.A.PlatformObjects+r.B.PlatformObjects > 0 {
 		fmt.Fprintf(w, "Not compared: each platform's own objects (%d in %s, %d in %s)\n", r.A.PlatformObjects, la, r.B.PlatformObjects, lb)
+	}
+	if nodes {
+		printNodes(w, r)
 	}
 	if r.Same() {
 		fmt.Fprintln(w, "\nNo differences.")
@@ -287,6 +319,29 @@ func printDiff(w io.Writer, r diff.Result, maxFields int) {
 			}
 		}
 		fmt.Fprintf(w, "\nDiffer only in each cluster's own values (%d): %s\n", envOnly, truncate(strings.Join(names, ", "), 300))
+	}
+}
+
+// printNodes shows how the clusters' nodes differ: not counted as a
+// difference, since nodes come and go with autoscaling.
+func printNodes(w io.Writer, r diff.Result) {
+	if len(r.NodesUnknown) > 0 {
+		if len(r.NodesUnknown) == 1 {
+			fmt.Fprintf(w, "Nodes: not compared (not read in %s)\n", r.NodesUnknown[0])
+		}
+		return
+	}
+	if len(r.Nodes) == 0 {
+		fmt.Fprintln(w, "Nodes: same shape (count, instance types, zones, capacity)")
+		return
+	}
+	fmt.Fprintln(w, "\nNodes (shown, not counted as a difference: nodes change with autoscaling):")
+	width := 0
+	for _, n := range r.Nodes {
+		width = max(width, len(n.What))
+	}
+	for _, n := range r.Nodes {
+		fmt.Fprintf(w, "  %-*s  %s -> %s\n", width, n.What, n.A, n.B)
 	}
 }
 
