@@ -74,6 +74,9 @@ helm install ingress-nginx ingress-nginx --repo https://kubernetes.github.io/ing
   --post-renderer-args --chart-repo=https://kubernetes.github.io/ingress-nginx
 ```
 
+Tested by hand with Helm 4 on macOS. Helm 3 (`postrender.sh`) and Windows
+(`postrender.cmd`) are not tested yet.
+
 Helm 3.10 or later (`--post-renderer` takes an executable):
 
 ```sh
