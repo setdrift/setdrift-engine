@@ -1,7 +1,4 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
-// tests for the verify command's own checks and messages; the dry-run, comparison is tested in pkg/verify
+// tests the verify command's own checks, messages and report files, the dry-run and the comparison are tested in pkg/verify
 
 package main
 
@@ -11,6 +8,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	goruntime "runtime"
 	"strings"
 	"testing"
 	"time"
@@ -24,7 +22,7 @@ import (
 	"setdrift.io/setdrift-engine/pkg/verify"
 )
 
-// A DIR that isn't an export is reported as such, even with no usable kubeconfig: the directory is checked first
+// check that a DIR that isnt an export is reported as that even with no usable kubeconfig, since the directory is checked first
 func TestVerifyChecksDirFirst(t *testing.T) {
 	t.Setenv("KUBECONFIG", filepath.Join(t.TempDir(), "missing"))
 	root := newRootCmd()
@@ -35,7 +33,7 @@ func TestVerifyChecksDirFirst(t *testing.T) {
 	}
 }
 
-// The failure message names the part of the acceptance test that was missed
+// check that the failure message names the part of the acceptance test that was missed
 func TestFailReason(t *testing.T) {
 	unexplained := verify.Diff{Ref: "a"}
 	explained := verify.Diff{Ref: "b", Explanation: "bare Pod"}
@@ -54,8 +52,7 @@ func TestFailReason(t *testing.T) {
 	}
 }
 
-// The note appears only when the export's kube-system UID is known and differs
-// from the cluster's.
+// check that the other cluster note appears only when the export's kube-system uid is known and differs from the cluster's
 func TestOtherClusterNote(t *testing.T) {
 	ns := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "v1", "kind": "Namespace",
 		"metadata": map[string]any{"name": "kube-system", "uid": "uid-target"}}}
@@ -87,6 +84,7 @@ func TestOtherClusterNote(t *testing.T) {
 	}
 }
 
+// check that likelyCause picks the right cause for a clean run, another cluster, changes since the export, one common field and missing resources
 func TestLikelyCause(t *testing.T) {
 	no, yes := false, true
 	changed := func(n int, d verify.Diff) []verify.Diff {
@@ -105,6 +103,7 @@ func TestLikelyCause(t *testing.T) {
 		{"clean", verifyDocument{}, ""},
 		{"other cluster", verifyDocument{SameCluster: &no, ExportCluster: "prod", Report: verify.Report{Diffs: changed(2, byHand)}}, "a different cluster than the export came from (prod)"},
 		{"changed since", verifyDocument{SameCluster: &yes, ExportedAt: "T", Report: verify.Report{Diffs: changed(3, byHand)}}, "The cluster changed after the export (T): 3 of the 3 resources were written since, by kubectl-edit (3)"},
+		{"changed since, time unknown", verifyDocument{SameCluster: &yes, Report: verify.Report{Diffs: changed(3, byHand)}}, "The cluster changed after the export: 3 of the 3 resources were written since"},
 		{"one field everywhere", verifyDocument{Report: verify.Report{Diffs: changed(4, verify.Diff{Kind: verify.KindChanged, Fields: []verify.Field{{Path: "metadata.labels.x"}}})}}, "One field differs on 4 of the changed resources: metadata.labels.x"},
 		{"gone", verifyDocument{Report: verify.Report{Diffs: changed(2, verify.Diff{Kind: verify.KindNotInCluster})}}, "2 of the 2 are not in the cluster"},
 	} {
@@ -116,12 +115,13 @@ func TestLikelyCause(t *testing.T) {
 	}
 }
 
+// check that the report files get a file-safe name, private permissions and a .gitignore, the json round-trips and the markdown escapes pipes in table cells
 func TestVerifyReportFiles(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "verify")
 	at := time.Date(2026, 11, 20, 19, 14, 2, 0, time.UTC)
 	doc := verifyDocument{Cluster: "arn:aws:eks:us-east-2:111122223333:cluster/prod", Report: verify.Report{Total: 2, Clean: 1, Diffs: []verify.Diff{
 		{Ref: "ConfigMap shop/a", Kind: verify.KindChanged, Fields: []verify.Field{{Path: "data.k", Cluster: "x|y", Export: "z"}}}}}}
-	md, err := writeVerifyReport(dir, doc, at)
+	md, err := writeVerifyReport(dir, doc, at, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,8 +136,30 @@ func TestVerifyReportFiles(t *testing.T) {
 	if err := json.Unmarshal(raw, &back); err != nil || back.Report.Diffs[0].Fields[0].Cluster != "x|y" {
 		t.Errorf("json: %v %+v", err, back)
 	}
-	text, _ := os.ReadFile(md)
+	text, err := os.ReadFile(md)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if goruntime.GOOS != "windows" {
+		for _, f := range []string{md, strings.TrimSuffix(md, ".md") + ".json"} {
+			fi, err := os.Stat(f)
+			// checking if the file is missing, if so theres no mode to compare
+			if err != nil {
+				t.Errorf("%s: %v", filepath.Base(f), err)
+				continue
+			}
+			if fi.Mode().Perm() != 0o600 {
+				t.Errorf("%s: mode %v; want 0600", filepath.Base(f), fi.Mode().Perm())
+			}
+		}
+	}
+	if gi, err := os.ReadFile(filepath.Join(dir, ".gitignore")); err != nil || !strings.Contains(string(gi), "*") {
+		t.Errorf("verify/.gitignore = %q, %v; want the reports ignored", gi, err)
+	}
 	if !strings.Contains(string(text), "| `data.k` | `\"x\\|y\"` | `\"z\"` |") {
 		t.Errorf("markdown table:\n%s", text)
 	}
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

@@ -1,5 +1,4 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
+// tests that Run leaves the caller's Meta alone and explains a metadata-only object left without the ownership stage
 
 package pipeline_test
 
@@ -17,10 +16,13 @@ import (
 	snapshotv1alpha1 "setdrift.io/setdrift-engine/pkg/snapshot/v1alpha1"
 )
 
+// fixed is a collector that gives back the same result every time
 type fixed struct{ res *collect.Result }
 
+// Collect gives back the fixed result, so fixed satisfies collect.Collector
 func (f fixed) Collect(context.Context) (*collect.Result, error) { return f.res, nil }
 
+// configMap builds a ConfigMap object in the shop namespace, metadata-only when partial is set
 func configMap(name string, partial bool) *resource.Object {
 	u := &unstructured.Unstructured{}
 	u.SetAPIVersion("v1")
@@ -32,7 +34,7 @@ func configMap(name string, partial bool) *resource.Object {
 	return o
 }
 
-// TestRunLeavesMetaAlone: Run must not change the caller's Meta.
+// check that Run doesnt change the caller's Meta, its Cluster or the backing array of its Findings
 func TestRunLeavesMetaAlone(t *testing.T) {
 	cluster := &snapshotv1alpha1.Cluster{Name: "prod"}
 	findings := make([]*snapshotv1alpha1.Finding, 1, 10) // spare capacity
@@ -56,7 +58,7 @@ func TestRunLeavesMetaAlone(t *testing.T) {
 	}
 }
 
-// TestPartialWithoutOwnership: a clear error instead of Build's.
+// check that a metadata-only object without the ownership stage gets a clear error naming the stage, instead of Build's
 func TestPartialWithoutOwnership(t *testing.T) {
 	p := pipeline.New(fixed{&collect.Result{Objects: []*resource.Object{configMap("a", true)}}})
 	p.Ownership = nil
@@ -65,3 +67,6 @@ func TestPartialWithoutOwnership(t *testing.T) {
 		t.Errorf("error %v, want one naming the Ownership stage", err)
 	}
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

@@ -1,14 +1,15 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
+// tests metadata-only listing against a fake cluster, which objects get fetched in full and how, and that no stub reaches the snapshot
 
 package collect_test
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"strings"
 	"testing"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/fields"
@@ -25,13 +26,14 @@ import (
 	"setdrift.io/setdrift-engine/pkg/snapshot"
 )
 
+// the resources the fake dynamic client serves, for its list kinds
 var (
 	podsGVR        = schema.GroupVersionResource{Version: "v1", Resource: "pods"}
 	deploymentsGVR = schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "deployments"}
 	replicasetsGVR = schema.GroupVersionResource{Group: "apps", Version: "v1", Resource: "replicasets"}
 )
 
-// obj builds a minimal object. owner, when set, is the controller owner's UID.
+// obj builds a minimal object in namespace shop with a spec marker, owner when set is the controller owner's uid
 func obj(apiVersion, kind, name, uid, owner string) *unstructured.Unstructured {
 	u := &unstructured.Unstructured{}
 	u.SetAPIVersion(apiVersion)
@@ -47,6 +49,7 @@ func obj(apiVersion, kind, name, uid, owner string) *unstructured.Unstructured {
 	return u
 }
 
+// partial gives back the metadata-only view of u, as the metadata API serves it
 func partial(u *unstructured.Unstructured) *metav1.PartialObjectMetadata {
 	return &metav1.PartialObjectMetadata{
 		TypeMeta:   metav1.TypeMeta{APIVersion: u.GetAPIVersion(), Kind: u.GetKind()},
@@ -54,9 +57,7 @@ func partial(u *unstructured.Unstructured) *metav1.PartialObjectMetadata {
 	}
 }
 
-// newCollector builds a fake cluster with a Deployment, its ReplicaSet, a
-// Succeeded Pod owned by that ReplicaSet, a running Pod with no owner and a
-// Failed Pod with no owner.
+// newCollector builds a fake cluster with a Deployment, its ReplicaSet, a Succeeded Pod owned by that ReplicaSet, a running Pod with no owner and a Failed Pod with no owner
 func newCollector(t *testing.T) (*collect.ClusterCollector, *dynamicfake.FakeDynamicClient) {
 	t.Helper()
 	deploy := obj("apps/v1", "Deployment", "web", "d1", "")
@@ -91,7 +92,7 @@ func newCollector(t *testing.T) (*collect.ClusterCollector, *dynamicfake.FakeDyn
 	}
 	pods := []*metav1.PartialObjectMetadata{partial(child), partial(bare1), partial(bare2)}
 	md := metadatafake.NewSimpleMetadataClient(scheme, partial(rs), pods[0], pods[1], pods[2])
-	// The fake ignores field selectors; apply status.phase like the API server.
+	// the fake ignores field selectors, so this applies status.phase like the API server does
 	md.PrependReactor("list", "pods", func(a clienttesting.Action) (bool, runtime.Object, error) {
 		sel := a.(clienttesting.ListAction).GetListRestrictions().Fields
 		if sel == nil || sel.Empty() {
@@ -109,12 +110,14 @@ func newCollector(t *testing.T) (*collect.ClusterCollector, *dynamicfake.FakeDyn
 	return &collect.ClusterCollector{Discovery: disc, Dynamic: dyn, Metadata: md}, dyn
 }
 
+// summary is what a test checks about one collected object, its name, whether its a stub and whether it has full data
 type summary struct {
 	name    string
 	partial bool
 	full    bool
 }
 
+// collectSummary runs c and gives back its objects summarized
 func collectSummary(t *testing.T, c *collect.ClusterCollector) []summary {
 	t.Helper()
 	res, err := c.Collect(context.Background())
@@ -124,6 +127,7 @@ func collectSummary(t *testing.T, c *collect.ClusterCollector) []summary {
 	return summarize(res)
 }
 
+// summarize turns a result's objects into summaries sorted by name
 func summarize(res *collect.Result) []summary {
 	var out []summary
 	for _, o := range res.Objects {
@@ -134,8 +138,7 @@ func summarize(res *collect.Result) []summary {
 	return out
 }
 
-// Children of collected objects stay metadata-only; objects with no exported
-// owner are fetched in full.
+// want is the expected summary, children of collected objects stay metadata-only and objects with no exported owner are fetched in full
 var want = []summary{
 	{name: "debug", full: true},
 	{name: "toolbox", full: true},
@@ -144,13 +147,13 @@ var want = []summary{
 	{name: "web-abc-1", partial: true},
 }
 
+// check that the bare Pods are fetched one GET each and Pods and ReplicaSets are never listed in full
 func TestMetadataOnlyHydrateByGet(t *testing.T) {
 	c, dyn := newCollector(t)
 	got := collectSummary(t, c)
 	assertEqual(t, got, want)
 
-	// Full data came from one Deployment list plus one GET per bare Pod; Pods
-	// and ReplicaSets were never listed in full.
+	// full data came from one Deployment list plus one GET per bare Pod, Pods and ReplicaSets were never listed in full
 	var gets, lists []string
 	for _, a := range dyn.Actions() {
 		switch a.GetVerb() {
@@ -164,6 +167,37 @@ func TestMetadataOnlyHydrateByGet(t *testing.T) {
 	assertEqual(t, gets, []string{"pods", "pods"})
 }
 
+// check that when the server refuses one Pod, the other Pods fetched one by one are still exported, only the refused one is dropped with HYDRATE_FAILED
+func TestHydrateByGetKeepsFetched(t *testing.T) {
+	c, dyn := newCollector(t)
+	dyn.PrependReactor("get", "pods", func(a clienttesting.Action) (bool, runtime.Object, error) {
+		// refusing the debug Pod only, the toolbox Pod is served as usual
+		if a.(clienttesting.GetAction).GetName() == "debug" {
+			return true, nil, apierrors.NewForbidden(schema.GroupResource{Resource: "pods"}, "debug", errors.New("denied"))
+		}
+		return false, nil, nil
+	})
+	res, err := c.Collect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := summarize(res)
+	assertEqual(t, got, []summary{
+		{name: "toolbox", full: true},
+		{name: "web", full: true},
+		{name: "web-abc", partial: true},
+		{name: "web-abc-1", partial: true},
+	})
+	warned := false
+	for _, f := range res.Findings {
+		warned = warned || f.Code == "HYDRATE_FAILED"
+	}
+	if !warned {
+		t.Error("no HYDRATE_FAILED finding for the refused Pod")
+	}
+}
+
+// check that above HydrateGetLimit the Pods are listed in full instead of fetched one by one
 func TestMetadataOnlyHydrateByList(t *testing.T) {
 	c, dyn := newCollector(t)
 	c.HydrateGetLimit = 1 // two bare Pods exceed it, so Pods are listed in full
@@ -176,6 +210,7 @@ func TestMetadataOnlyHydrateByList(t *testing.T) {
 	}
 }
 
+// check that without a metadata client every object is listed in full
 func TestFullListWithoutMetadataClient(t *testing.T) {
 	c, _ := newCollector(t)
 	c.Metadata = nil
@@ -190,6 +225,7 @@ func TestFullListWithoutMetadataClient(t *testing.T) {
 	}
 }
 
+// assertEqual fails the test unless got and want hold the same items in the same order
 func assertEqual[T comparable](t *testing.T, got, want []T) {
 	t.Helper()
 	if len(got) != len(want) {
@@ -202,8 +238,7 @@ func assertEqual[T comparable](t *testing.T, got, want []T) {
 	}
 }
 
-// Metadata-only objects must never reach the snapshot: ownership drops every
-// one that hydrate left partial, and snapshot.Build rejects any that remain.
+// check that no metadata-only object reaches the snapshot, ownership drops every one hydrate left partial and snapshot.Build rejects any that remain
 func TestPipelineDropsAllPartials(t *testing.T) {
 	c, _ := newCollector(t)
 	snap, err := pipeline.New(c).Run(context.Background(), snapshot.Meta{})
@@ -215,10 +250,10 @@ func TestPipelineDropsAllPartials(t *testing.T) {
 		names = append(names, r.Name)
 	}
 	sort.Strings(names)
-	// debug is Failed, so lifecycle skips it.
+	// debug is Failed, so lifecycle skips it
 	assertEqual(t, names, []string{"toolbox", "web"})
 
-	// The metadata-only child Pod still counts as terminated.
+	// the metadata-only child Pod still counts as terminated
 	var msgs []string
 	for _, f := range snap.Findings {
 		if f.Code == "TERMINATED_PODS_TO_CLEANUP" {
@@ -230,8 +265,7 @@ func TestPipelineDropsAllPartials(t *testing.T) {
 	}
 }
 
-// Metadata-only Pods carry their phase when terminated, from the
-// status.phase-filtered lists.
+// check that metadata-only Pods carry their phase when terminated, from the status.phase filtered lists
 func TestPodPhasesTagged(t *testing.T) {
 	c, _ := newCollector(t)
 	res, err := c.Collect(context.Background())
@@ -252,3 +286,6 @@ func TestPodPhasesTagged(t *testing.T) {
 	}
 	t.Fatal("web-abc-1 not collected")
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

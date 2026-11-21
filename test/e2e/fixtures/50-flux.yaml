@@ -1,5 +1,3 @@
-# Copyright The SetDrift Authors
-# SPDX-License-Identifier: Apache-2.0
 # A real Flux Kustomization (Flux installed by populate.sh).
 apiVersion: v1
 kind: Namespace
@@ -22,3 +20,6 @@ spec:
   prune: true
   sourceRef: {kind: GitRepository, name: podinfo}
   targetNamespace: sd-flux
+
+# Copyright The SetDrift Authors
+# SPDX-License-Identifier: Apache-2.0

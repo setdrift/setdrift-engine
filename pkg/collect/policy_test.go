@@ -1,5 +1,4 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
+// tests the collector's policies against a fake cluster, which errors skip a type and which stop, missing owners, scoped access and stable ordering
 
 package collect_test
 
@@ -26,12 +25,13 @@ import (
 	snapshotv1alpha1 "setdrift.io/setdrift-engine/pkg/snapshot/v1alpha1"
 )
 
-// apiType is one served type for fakeCluster.
+// apiType is one type fakeCluster serves
 type apiType struct {
 	gv, resource, kind string
 	namespaced         bool
 }
 
+// the types the tests serve
 var (
 	podType        = apiType{"v1", "pods", "Pod", true}
 	namespaceType  = apiType{"v1", "namespaces", "Namespace", false}
@@ -41,17 +41,18 @@ var (
 	clusterRole    = apiType{"rbac.authorization.k8s.io/v1", "clusterroles", "ClusterRole", false}
 )
 
+// gvr gives back the type's group version resource
 func (a apiType) gvr() schema.GroupVersionResource {
 	gv, _ := schema.ParseGroupVersion(a.gv)
 	return gv.WithResource(a.resource)
 }
 
-// fakeCluster serves objs for types through discovery and the dynamic client.
-func fakeCluster(types []apiType, objs ...*unstructured.Unstructured) (*fakediscovery.FakeDiscovery, *dynamicfake.FakeDynamicClient) {
+// fakeCluster serves objs for apiTypes through a fake discovery and a fake dynamic client
+func fakeCluster(apiTypes []apiType, objs ...*unstructured.Unstructured) (*fakediscovery.FakeDiscovery, *dynamicfake.FakeDynamicClient) {
 	byGV := map[string][]metav1.APIResource{}
 	var order []string
 	listKinds := map[schema.GroupVersionResource]string{}
-	for _, a := range types {
+	for _, a := range apiTypes {
 		if _, ok := byGV[a.gv]; !ok {
 			order = append(order, a.gv)
 		}
@@ -73,7 +74,7 @@ func fakeCluster(types []apiType, objs ...*unstructured.Unstructured) (*fakedisc
 	return disc, dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), listKinds, ros...)
 }
 
-// owned builds an object in namespace shop with a controller owner.
+// owned builds an object, in namespace shop unless cluster-scoped, with owner as its controller owner when set
 func owned(apiVersion, kind, name, uid string, owner *metav1.OwnerReference) *unstructured.Unstructured {
 	u := &unstructured.Unstructured{}
 	u.SetAPIVersion(apiVersion)
@@ -91,10 +92,12 @@ func owned(apiVersion, kind, name, uid string, owner *metav1.OwnerReference) *un
 	return u
 }
 
+// ref builds an owner reference, for owned
 func ref(apiVersion, kind, name, uid string) *metav1.OwnerReference {
 	return &metav1.OwnerReference{APIVersion: apiVersion, Kind: kind, Name: name, UID: types.UID(uid)}
 }
 
+// codes gives back each finding's message by code, from the snapshot and its resources
 func codes(s *snapshotv1alpha1.Snapshot) map[string]string {
 	out := map[string]string{}
 	for _, f := range s.Findings {
@@ -108,6 +111,7 @@ func codes(s *snapshotv1alpha1.Snapshot) map[string]string {
 	return out
 }
 
+// names gives back the snapshot's resources as kind/name
 func names(s *snapshotv1alpha1.Snapshot) []string {
 	var out []string
 	for _, r := range s.Resources {
@@ -116,8 +120,7 @@ func names(s *snapshotv1alpha1.Snapshot) []string {
 	return out
 }
 
-// TestListErrorPolicy: an error the API server returns for one type skips that
-// type; credential and transport errors abort.
+// check that an error the API server gives for one type skips that type, while credential and transport errors abort
 func TestListErrorPolicy(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -153,8 +156,7 @@ func TestListErrorPolicy(t *testing.T) {
 	}
 }
 
-// TestRequestedNamespaces: with namespaces requested, their Namespace objects
-// are exported, cluster-scoped types are not, and a missing one is reported.
+// check that with namespaces requested their Namespace objects are exported, cluster-scoped types arent, and a missing one is reported
 func TestRequestedNamespaces(t *testing.T) {
 	disc, dyn := fakeCluster([]apiType{namespaceType, configMapType, clusterRole},
 		owned("v1", "Namespace", "shop", "n1", nil),
@@ -173,19 +175,17 @@ func TestRequestedNamespaces(t *testing.T) {
 	}
 }
 
-// TestMissingOwners covers the three reasons a controller owner can be
-// missing from the lists.
+// check the three reasons a controller owner can be missing from the lists, created late, deleted, or of a type not served
 func TestMissingOwners(t *testing.T) {
-	// Created after ReplicaSets were listed (a rollout): the list doesn't
-	// have it, a GET does.
+	// created after ReplicaSets were listed (a rollout), the list doesnt have it, a GET does
 	lateRS := owned("apps/v1", "ReplicaSet", "web-new", "rs-new", nil)
 	rolloutPod := owned("v1", "Pod", "web-new-1", "p1", ref("apps/v1", "ReplicaSet", "web-new", "rs-new"))
-	// Its Job was deleted: garbage.
+	// its Job was deleted, so its garbage
 	orphan := owned("v1", "Pod", "migrate-1", "p2", ref("batch/v1", "Job", "migrate", "job-gone"))
-	// Its Job was deleted and recreated under the same name: garbage too.
+	// its Job was deleted and recreated under the same name, garbage too
 	newJob := owned("batch/v1", "Job", "reindex", "job-new", nil)
 	stale := owned("v1", "Pod", "reindex-1", "p3", ref("batch/v1", "Job", "reindex", "job-old"))
-	// Owned by a type the cluster doesn't serve to us: kept.
+	// owned by a type the cluster doesnt serve to us, so its kept
 	widgetPod := owned("v1", "Pod", "widget-1", "p4", ref("example.com/v1", "Widget", "w", "w1"))
 
 	disc, dyn := fakeCluster([]apiType{podType, replicaSetType, jobType}, lateRS, rolloutPod, orphan, newJob, stale, widgetPod)
@@ -211,8 +211,7 @@ func TestMissingOwners(t *testing.T) {
 	}
 }
 
-// TestMirrorPodsNotFetched: a static Pod's mirror is a child of its Node,
-// which is never collected. It stays metadata-only and is dropped.
+// check that a static Pod's mirror, a child of its Node which is never collected, stays metadata-only and is dropped
 func TestMirrorPodsNotFetched(t *testing.T) {
 	mirror := owned("v1", "Pod", "etcd-node1", "p1", ref("v1", "Node", "node1", "node-uid"))
 	mirror.SetAnnotations(map[string]string{"kubernetes.io/config.mirror": "abc"})
@@ -227,7 +226,7 @@ func TestMirrorPodsNotFetched(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Namespace: "shop", Name: mirror.GetName(), UID: mirror.GetUID(), OwnerReferences: mirror.GetOwnerReferences(), Annotations: mirror.GetAnnotations()},
 	}
 	md := metadatafake.NewSimpleMetadataClient(scheme, pom)
-	// The fake ignores field selectors; the Pod is running.
+	// the fake ignores field selectors, the Pod is running so the phase lists are empty
 	md.PrependReactor("list", "pods", func(a clienttesting.Action) (bool, runtime.Object, error) {
 		if sel := a.(clienttesting.ListAction).GetListRestrictions().Fields; sel == nil || sel.Empty() {
 			return false, nil, nil
@@ -248,20 +247,19 @@ func TestMirrorPodsNotFetched(t *testing.T) {
 	}
 }
 
-// TestConcurrentListingDeterministic: the result doesn't depend on how many
-// types are listed at once or which finishes first.
+// check that the result doesnt depend on how many types are listed at once or which finishes first
 func TestConcurrentListingDeterministic(t *testing.T) {
-	var types []apiType
+	var apiTypes []apiType
 	var objs []*unstructured.Unstructured
 	for i := range 40 {
 		a := apiType{fmt.Sprintf("g%02d.example.com/v1", i), "things", "Thing", true}
-		types = append(types, a)
+		apiTypes = append(apiTypes, a)
 		for j := range 3 {
 			objs = append(objs, owned(a.gv, "Thing", fmt.Sprintf("t%d", j), fmt.Sprintf("u-%d-%d", i, j), nil))
 		}
 	}
 	run := func(concurrency int) string {
-		disc, dyn := fakeCluster(types, objs...)
+		disc, dyn := fakeCluster(apiTypes, objs...)
 		res, err := (&collect.ClusterCollector{Discovery: disc, Dynamic: dyn, Concurrency: concurrency}).Collect(context.Background())
 		if err != nil {
 			t.Fatal(err)
@@ -283,9 +281,7 @@ func TestConcurrentListingDeterministic(t *testing.T) {
 	}
 }
 
-// TestNamespaceScopedAccess: a caller who may not list Namespaces gets the
-// fallback namespace, with a finding naming what they can list there; with
-// no fallback, a ScopeError.
+// check that a caller who may not list Namespaces gets the fallback namespace with a finding naming what they can list there, and a ScopeError with no fallback
 func TestNamespaceScopedAccess(t *testing.T) {
 	setup := func() (*fakediscovery.FakeDiscovery, *dynamicfake.FakeDynamicClient) {
 		other := owned("v1", "ConfigMap", "other", "c2", nil)
@@ -338,8 +334,7 @@ func TestNamespaceScopedAccess(t *testing.T) {
 	}
 }
 
-// TestNothingListed: an export where every list failed is an error, not an
-// empty repository.
+// check that an export where every list failed is an error, not an empty repository
 func TestNothingListed(t *testing.T) {
 	disc, dyn := fakeCluster([]apiType{configMapType, podType})
 	dyn.PrependReactor("list", "*", func(a clienttesting.Action) (bool, runtime.Object, error) {
@@ -349,3 +344,6 @@ func TestNothingListed(t *testing.T) {
 		t.Error("no error when nothing could be listed")
 	}
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

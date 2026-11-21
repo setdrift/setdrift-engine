@@ -1,7 +1,4 @@
 #!/bin/sh
-# Copyright The SetDrift Authors
-# SPDX-License-Identifier: Apache-2.0
-
 # Installs the setdrift CLI from the latest GitHub release (or SETDRIFT_VERSION):
 #
 #   curl -fsSL https://raw.githubusercontent.com/setdrift/setdrift-engine/main/scripts/install.sh | sh
@@ -77,3 +74,6 @@ case ":$PATH:" in
   *) say "Add $dir to your PATH, e.g.: export PATH=\"$dir:\$PATH\"" ;;
 esac
 say "Next: setdrift export   (reads your current kubeconfig context; changes nothing)"
+
+# Copyright The SetDrift Authors
+# SPDX-License-Identifier: Apache-2.0

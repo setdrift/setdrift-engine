@@ -1,7 +1,4 @@
 #!/usr/bin/env bash
-# Copyright The SetDrift Authors
-# SPDX-License-Identifier: Apache-2.0
-
 # Fills the e2e cluster with what the export has to handle: Argo CD, Flux
 # and External Secrets Operator with real apps, a Helm release, objects
 # written by client-side apply, server-side apply and imperative kubectl,
@@ -83,3 +80,6 @@ fi
 
 "$here/cluster.sh" touch
 echo "Populated $context"
+
+# Copyright The SetDrift Authors
+# SPDX-License-Identifier: Apache-2.0

@@ -115,11 +115,9 @@ kubectl --context "$DST" apply --server-side --field-manager=setdrift-restore -f
 **C. External Secrets Operator.** external-secrets/ has an ExternalSecret
 for each Secret (see its README); those marked *merge* add their keys to
 the Secret the controller creates (`creationPolicy: Merge`). Put the values
-in your secret manager, install the operator and its store, then apply the
-directory. On AWS, `setdrift secrets export` copies the values from the
-source cluster into Secrets Manager or Parameter Store (it shows a plan
-first and never writes or prints a value); elsewhere, create the remote
-secrets the README lists, with their keys:
+in your secret manager (the remote secrets the README lists, with their
+keys; SetDrift never copies them for you), install the operator and its
+store, then apply the directory:
 
 ```sh
 kubectl --context "$DST" apply -k external-secrets/

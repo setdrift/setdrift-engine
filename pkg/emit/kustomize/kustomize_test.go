@@ -1,5 +1,4 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
+// tests for the kustomize emitter, what goes where in an export, what gets applied and what never does
 
 package kustomize
 
@@ -18,6 +17,7 @@ import (
 	snapshotv1alpha1 "setdrift.io/setdrift-engine/pkg/snapshot/v1alpha1"
 )
 
+// resource builds a test resource with a minimal manifest, with a redacted secret value when redacted is set
 func resource(kind, ns, name string, redacted bool) *snapshotv1alpha1.Resource {
 	r := &snapshotv1alpha1.Resource{
 		ApiVersion:   "v1",
@@ -35,8 +35,7 @@ func resource(kind, ns, name string, redacted bool) *snapshotv1alpha1.Resource {
 	return r
 }
 
-// TestRedactedResourcesNotApplied checks that a resource with redacted values
-// is written for reference, but no kustomization.yaml can reach it.
+// check that a resource with redacted values is written for reference, but no kustomization.yaml can reach it
 func TestRedactedResourcesNotApplied(t *testing.T) {
 	dir := t.TempDir()
 	s := &snapshotv1alpha1.Snapshot{
@@ -44,9 +43,9 @@ func TestRedactedResourcesNotApplied(t *testing.T) {
 		Resources: []*snapshotv1alpha1.Resource{
 			resource("ConfigMap", "shop", "settings", false),
 			resource("Secret", "shop", "db-creds", true),
-			// A Secret with nothing redacted (no data) stays in the applied set.
+			// a Secret with nothing redacted (no data) stays in the applied set
 			resource("Secret", "shop", "plain", false),
-			// A namespace holding only redacted resources gets no kustomization.
+			// a namespace holding only redacted resources gets no kustomization
 			resource("Secret", "vault", "token", true),
 		},
 	}
@@ -71,7 +70,7 @@ func TestRedactedResourcesNotApplied(t *testing.T) {
 		}
 	}
 
-	// No kustomization anywhere mentions a redacted resource or directory.
+	// no kustomization anywhere mentions a redacted resource or directory
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.Name() != "kustomization.yaml" {
 			return err
@@ -92,6 +91,7 @@ func TestRedactedResourcesNotApplied(t *testing.T) {
 	}
 }
 
+// check that redacted/ and its README are only written when something was redacted
 func TestReadmeOnlyWhenNeeded(t *testing.T) {
 	dir := t.TempDir()
 	s := &snapshotv1alpha1.Snapshot{Resources: []*snapshotv1alpha1.Resource{resource("ConfigMap", "shop", "settings", false)}}
@@ -103,6 +103,7 @@ func TestReadmeOnlyWhenNeeded(t *testing.T) {
 	}
 }
 
+// check that UnmanagedOnly writes the unmanaged resources, the ones whose manager wasnt found or was only guessed, and leaves out the managed ones
 func TestUnmanagedOnly(t *testing.T) {
 	src := func(r *snapshotv1alpha1.Resource, s snapshotv1alpha1.Source, ev map[string]string, codes ...string) *snapshotv1alpha1.Resource {
 		r.Provenance = &snapshotv1alpha1.Provenance{Source: s, Evidence: ev}
@@ -141,6 +142,7 @@ func TestUnmanagedOnly(t *testing.T) {
 	}
 }
 
+// check that a custom key template shapes the ExternalSecret's remote key, the README store example gets the region from the arn, external-secrets/ isnt applied and an unknown provider is refused
 func TestExternalSecretKeyTemplate(t *testing.T) {
 	es, err := DefaultExternalSecrets("aws-parameter-store")
 	if err != nil {
@@ -157,17 +159,17 @@ func TestExternalSecretKeyTemplate(t *testing.T) {
 		t.Fatal(err)
 	}
 	root := filepath.Join(dir, "clusters", "prod")
-	b, _ := os.ReadFile(filepath.Join(root, "external-secrets", "namespaces", "shop", "externalsecret.external-secrets.io", "db.yaml"))
+	b := mustRead(t, filepath.Join(root, "external-secrets", "namespaces", "shop", "externalsecret.external-secrets.io", "db.yaml"))
 	for _, want := range []string{"key: /prod/apps/db", "name: secret-store", "property: password"} {
 		if !strings.Contains(string(b), want) {
 			t.Errorf("ExternalSecret lacks %q:\n%s", want, b)
 		}
 	}
-	readme, _ := os.ReadFile(filepath.Join(root, "external-secrets", "README.md"))
+	readme := mustRead(t, filepath.Join(root, "external-secrets", "README.md"))
 	if !strings.Contains(string(readme), "region: eu-west-1") || !strings.Contains(string(readme), "service: ParameterStore") {
 		t.Errorf("README store example:\n%s", readme)
 	}
-	rootKustomization, _ := os.ReadFile(filepath.Join(root, "kustomization.yaml"))
+	rootKustomization := mustRead(t, filepath.Join(root, "kustomization.yaml"))
 	if strings.Contains(string(rootKustomization), "external-secrets") {
 		t.Error("external-secrets/ must not be applied by default")
 	}
@@ -176,11 +178,9 @@ func TestExternalSecretKeyTemplate(t *testing.T) {
 	}
 }
 
-// Force replaces the cluster's directory, so files of resources no longer
-// in the cluster go, and keeps everything else in the output directory.
-// A key template that gives two Secrets one remote secret fails the export.
+// check that a key template that gives two Secrets one remote secret fails the export
 func TestExternalSecretKeysUnique(t *testing.T) {
-	es, _ := DefaultExternalSecrets("aws-secrets-manager")
+	es := mustExternalSecrets(t, "aws-secrets-manager")
 	es.KeyTemplate = "{{.Name}}"
 	s := &snapshotv1alpha1.Snapshot{Cluster: &snapshotv1alpha1.Cluster{Name: "prod"}}
 	for _, ns := range []string{"shop", "billing"} {
@@ -194,8 +194,7 @@ func TestExternalSecretKeysUnique(t *testing.T) {
 	}
 }
 
-// A SecretStore is created in each namespace; Parameter Store gets ssm
-// commands in RESTORE.md.
+// check that a SecretStore is created in each namespace, and parameter store gets ssm commands in RESTORE.md
 func TestExternalSecretStores(t *testing.T) {
 	s := &snapshotv1alpha1.Snapshot{Cluster: &snapshotv1alpha1.Cluster{Name: "prod", Platform: "eks"}}
 	for _, ns := range []string{"shop", "billing", "shop"} {
@@ -204,25 +203,26 @@ func TestExternalSecretStores(t *testing.T) {
 		r.ManifestJson = `{"apiVersion":"v1","kind":"Secret","metadata":{"name":"` + name + `","namespace":"` + ns + `"},"data":{"password":"x"}}`
 		s.Resources = append(s.Resources, r)
 	}
-	es, _ := DefaultExternalSecrets("aws-parameter-store")
+	es := mustExternalSecrets(t, "aws-parameter-store")
 	es.StoreKind = "SecretStore"
 	dir := t.TempDir()
 	if err := (Emitter{ExternalSecrets: es}).Emit(s, dir); err != nil {
 		t.Fatal(err)
 	}
 	root := filepath.Join(dir, "clusters", "prod")
-	readme, _ := os.ReadFile(filepath.Join(root, "external-secrets", "README.md"))
+	readme := mustRead(t, filepath.Join(root, "external-secrets", "README.md"))
 	if !strings.Contains(string(readme), "in each of these namespaces\n   (a SecretStore only serves its own): billing, shop.") ||
 		!strings.Contains(string(readme), "namespace: <namespace>") {
 		t.Errorf("README:\n%s", readme)
 	}
-	restore, _ := os.ReadFile(filepath.Join(root, "platform", "aws", "RESTORE.md"))
+	restore := mustRead(t, filepath.Join(root, "platform", "aws", "RESTORE.md"))
 	if !strings.Contains(string(restore), "aws ssm put-parameter --region \"$REGION\" --type SecureString --name /prod/billing/db-1") ||
 		strings.Contains(string(restore), "aws secretsmanager create-secret") {
 		t.Errorf("RESTORE.md remote secret commands:\n%s", restore)
 	}
 }
 
+// check that Force replaces the cluster's directory, so files of resources no longer in the cluster go, and keeps everything else in the output directory
 func TestForceReplacesClusterDir(t *testing.T) {
 	dir := t.TempDir()
 	snap := func(names ...string) *snapshotv1alpha1.Snapshot {
@@ -238,7 +238,10 @@ func TestForceReplacesClusterDir(t *testing.T) {
 	mine := filepath.Join(dir, "README.md")
 	other := filepath.Join(dir, "clusters", "other", "kustomization.yaml")
 	for _, f := range []string{mine, other} {
-		if err := writeFile(f, []byte("keep")); err != nil {
+		if err := os.MkdirAll(filepath.Dir(f), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(f, []byte("keep"), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -258,8 +261,7 @@ func TestForceReplacesClusterDir(t *testing.T) {
 	}
 }
 
-// An export that fails part way leaves the previous export as it was, and no
-// temporary directory behind; one killed earlier has its leftovers removed.
+// check that an export failing partway leaves the previous export as it was and no temporary directory behind, and that one killed earlier has its temporary directory removed
 func TestFailedExportKeepsPrevious(t *testing.T) {
 	dir := t.TempDir()
 	good := &snapshotv1alpha1.Snapshot{Cluster: &snapshotv1alpha1.Cluster{Name: "c"},
@@ -268,7 +270,10 @@ func TestFailedExportKeepsPrevious(t *testing.T) {
 		t.Fatal(err)
 	}
 	stale := filepath.Join(dir, "clusters", ".c.tmp-123")
-	if err := writeFile(filepath.Join(stale, "x.yaml"), []byte("left by a killed export")); err != nil {
+	if err := os.MkdirAll(stale, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stale, "x.yaml"), []byte("left by a killed export"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	bad := resource("ConfigMap", "shop", "b", false)
@@ -281,7 +286,7 @@ func TestFailedExportKeepsPrevious(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, "clusters", "c", "namespaces", "shop", "configmap", "a.yaml")); err != nil {
 		t.Errorf("previous export lost: %v", err)
 	}
-	entries, _ := os.ReadDir(filepath.Join(dir, "clusters"))
+	entries := mustReadDir(t, filepath.Join(dir, "clusters"))
 	if len(entries) != 1 || entries[0].Name() != "c" {
 		var names []string
 		for _, e := range entries {
@@ -294,6 +299,7 @@ func TestFailedExportKeepsPrevious(t *testing.T) {
 	}
 }
 
+// check that ClusterDir always gives one directory right under clusters/, whatever the cluster is named
 func TestClusterDirStaysInside(t *testing.T) {
 	for _, name := range []string{"..", ".", "", "../x", "a/b"} {
 		got := ClusterDir("/out", name)
@@ -303,7 +309,7 @@ func TestClusterDirStaysInside(t *testing.T) {
 	}
 }
 
-// Nothing to apply still gives a root kustomization.yaml Kustomize accepts.
+// check that nothing to apply still gives a root kustomization.yaml kustomize accepts, and the README doesnt point at external-secrets/ without ExternalSecrets
 func TestEmptyRootKustomization(t *testing.T) {
 	dir := t.TempDir()
 	s := &snapshotv1alpha1.Snapshot{Cluster: &snapshotv1alpha1.Cluster{Name: "c"},
@@ -318,14 +324,13 @@ func TestEmptyRootKustomization(t *testing.T) {
 	if !strings.Contains(string(b), "resources: []") {
 		t.Errorf("root kustomization:\n%s", b)
 	}
-	readme, _ := os.ReadFile(filepath.Join(dir, "clusters", "c", "redacted", "README.md"))
+	readme := mustRead(t, filepath.Join(dir, "clusters", "c", "redacted", "README.md"))
 	if strings.Contains(string(readme), "../external-secrets/") {
 		t.Error("README points at external-secrets/ without ExternalSecrets")
 	}
 }
 
-// The export records its source cluster, with the kube-system UID, in a file
-// no manifest tool reads.
+// check that the export records its source cluster, with the kube-system uid, in a file no manifest tool reads, and a missing file reads as nil without an error
 func TestExportInfo(t *testing.T) {
 	ks := resource("Namespace", "", "kube-system", false)
 	ks.SourceUid = "uid-1"
@@ -348,8 +353,7 @@ func TestExportInfo(t *testing.T) {
 	}
 }
 
-// A custom resource of an API the platform provides goes to the platform set,
-// which builds with Kustomize; the generic set leaves it out.
+// check that a custom resource of an api the platform provides goes to the platform set, which builds with kustomize, and the generic set leaves it out
 func TestPlatformSet(t *testing.T) {
 	crd := &snapshotv1alpha1.Resource{ApiVersion: "apiextensions.k8s.io/v1", Kind: "CustomResourceDefinition", Name: "nodeclasses.eks.amazonaws.com",
 		ManifestJson: `{"apiVersion":"apiextensions.k8s.io/v1","kind":"CustomResourceDefinition","metadata":{"name":"nodeclasses.eks.amazonaws.com"},` +
@@ -384,15 +388,15 @@ func TestPlatformSet(t *testing.T) {
 	if !strings.Contains(plat, "kind: NodeClass") || !strings.Contains(plat, "name: settings") {
 		t.Errorf("platform set:\n%s", plat)
 	}
-	md, _ := os.ReadFile(filepath.Join(root, "RESTORE.md"))
+	md := mustRead(t, filepath.Join(root, "RESTORE.md"))
 	if !strings.Contains(string(md), "kubectl --context \"$DST\" apply --server-side -k platform/aws/eks") {
 		t.Errorf("RESTORE.md does not say to apply the platform set:\n%s", md)
 	}
 }
 
-// On AWS the store is written next to the platform's files, as YAML that applies.
+// check that on aws the store is written next to the platform's files, as yaml that applies
 func TestAWSSecretStoreFile(t *testing.T) {
-	es, _ := DefaultExternalSecrets("auto")
+	es := mustExternalSecrets(t, "auto")
 	r := resource("Secret", "shop", "db", true)
 	r.ManifestJson = `{"apiVersion":"v1","kind":"Secret","metadata":{"name":"db","namespace":"shop"},"data":{"password":"x"}}`
 	s := &snapshotv1alpha1.Snapshot{Cluster: &snapshotv1alpha1.Cluster{Name: "prod", Platform: "eks", ProviderId: "arn:aws:eks:us-east-2:1:cluster/prod"},
@@ -413,3 +417,48 @@ func TestAWSSecretStoreFile(t *testing.T) {
 		t.Errorf("store:\n%s", b)
 	}
 }
+
+// check that a kind or group from the cluster or a manifest file cant make a path that leaves the export, KindDir keeps it one directory name and every write goes through an os.Root on the export's directory
+func TestPathsStayInsideExport(t *testing.T) {
+	for _, kind := range []string{"../../../../../../ESCAPED", "..", "a/b", `..\..\x`} {
+		if d := KindDir("v1", kind); strings.ContainsAny(d, `/\`) || strings.Trim(d, ".") == "" {
+			t.Errorf("KindDir(v1, %q) = %q, not one plain directory name", kind, d)
+		}
+	}
+	if d := KindDir("../../x/v1", "ConfigMap"); strings.ContainsAny(d, `/\`) {
+		t.Errorf("KindDir with a group of dots = %q", d)
+	}
+
+	parent := t.TempDir()
+	dir := filepath.Join(parent, "out")
+	r := resource("ConfigMap", "shop", "x", false)
+	r.Kind = "../../../../../../ESCAPED"
+	s := &snapshotv1alpha1.Snapshot{Cluster: &snapshotv1alpha1.Cluster{Name: "c"}, Resources: []*snapshotv1alpha1.Resource{r}}
+	if err := (Emitter{}).Emit(s, dir); err != nil {
+		t.Fatal(err)
+	}
+	err := filepath.WalkDir(parent, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if rel, _ := filepath.Rel(dir, p); p != parent && strings.HasPrefix(rel, "..") {
+			t.Errorf("written outside the export: %s", p)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := openOutDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer out.close()
+	if err := out.write(filepath.Join("..", "escaped.yaml"), []byte("x")); err == nil {
+		t.Error("outDir wrote a path above its directory")
+	}
+}
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

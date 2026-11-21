@@ -1,5 +1,4 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
+// tests the --helm-repos file, what it refuses and the order lookups use
 
 package helmsource
 
@@ -11,6 +10,7 @@ import (
 	"testing"
 )
 
+// writeRepos writes a --helm-repos file with the given content in a temp dir and gives back its path
 func writeRepos(t *testing.T, content string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "helm-repos.yaml")
@@ -20,7 +20,7 @@ func writeRepos(t *testing.T, content string) string {
 	return path
 }
 
-// Bad files fail on load, naming the entry, before anything is read.
+// check that bad files fail on load, naming the entry, before anything is read
 func TestLoadReposRejects(t *testing.T) {
 	for content, want := range map[string]string{
 		"- nginx: https://x.example.com\n":            "want a map",
@@ -43,8 +43,7 @@ func TestLoadReposRejects(t *testing.T) {
 	}
 }
 
-// A release's own entry wins, then the post-renderer's annotation, then an
-// entry for the chart; release entries no release matched are reported.
+// check that a release's own entry wins, then the post-renderer's annotation, then an entry for the chart, and release entries no release matched are reported
 func TestReposLookup(t *testing.T) {
 	r, err := LoadRepos(writeRepos(t, `
 nginx: https://charts.example.com
@@ -68,7 +67,7 @@ only-in-another-cluster: https://charts.example.com
 			t.Errorf("%s/%s (%s): %q, want %q", c.ns, c.release, c.chart, got, c.want)
 		}
 	}
-	// only release entries: an unused chart entry is normal in a shared file
+	// only release entries, an unused chart entry is normal in a shared file
 	if got := r.Unmatched(); !slices.Equal(got, []string{"apps/gone"}) {
 		t.Errorf("unmatched: %v, want [apps/gone]", got)
 	}
@@ -81,3 +80,6 @@ only-in-another-cluster: https://charts.example.com
 		t.Error("nil Repos has unmatched entries")
 	}
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

@@ -1,7 +1,4 @@
 #!/usr/bin/env bash
-# Copyright The SetDrift Authors
-# SPDX-License-Identifier: Apache-2.0
-
 # Writes THIRD_PARTY_NOTICES: the license, NOTICE and PATENTS files of every
 # module compiled into the setdrift binary, for every platform we release.
 #
@@ -64,3 +61,6 @@ trap 'rm -f "$seen"' EXIT
 } >"$out"
 
 echo "wrote $out ($(grep -c . <<<"$modules") modules)"
+
+# Copyright The SetDrift Authors
+# SPDX-License-Identifier: Apache-2.0

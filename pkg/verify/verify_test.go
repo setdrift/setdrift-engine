@@ -1,10 +1,10 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
+// tests the pass or fail test of a report and the percent it prints
 
 package verify
 
 import "testing"
 
+// check that Passed holds at exactly the threshold, fails below it or on an unexplained diff, and that CleanPercent rounds down
 func TestPassed(t *testing.T) {
 	explained := Diff{Ref: "Pod a/p", Explanation: "bare Pod"}
 	for _, c := range []struct {
@@ -33,3 +33,6 @@ func TestPassed(t *testing.T) {
 		}
 	}
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

@@ -1,5 +1,4 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
+// tests the hygiene report, terminated Pods by cause and deletions stuck on finalizers
 
 package hygiene
 
@@ -16,6 +15,7 @@ import (
 	"setdrift.io/setdrift-engine/pkg/resource"
 )
 
+// obj builds an Object of the given type, name and uid in namespace shop, with owner as its controller when given
 func obj(apiVersion, kind, name, uid string, owner *metav1.OwnerReference) *resource.Object {
 	u := &unstructured.Unstructured{}
 	u.SetAPIVersion(apiVersion)
@@ -31,20 +31,24 @@ func obj(apiVersion, kind, name, uid string, owner *metav1.OwnerReference) *reso
 	return resource.New(u)
 }
 
+// pod builds a Pod in the given phase, with owner as its controller when given
 func pod(name, phase string, owner *metav1.OwnerReference) *resource.Object {
 	o := obj("v1", "Pod", name, name, owner)
 	_ = unstructured.SetNestedField(o.Object, phase, "status", "phase")
 	return o
 }
 
+// finished marks a Job Complete
 func finished(o *resource.Object) *resource.Object {
 	_ = unstructured.SetNestedSlice(o.Object, []any{map[string]any{"type": "Complete", "status": "True"}}, "status", "conditions")
 	return o
 }
 
+// check that terminated Pods are counted by what keeps them, CronJob history, Jobs with no TTL, no owner or a workload, and the ones their Job will remove are counted apart
 func TestTerminatedPodsByCause(t *testing.T) {
 	cronJobJob := obj("batch/v1", "Job", "nightly-1", "j1", &metav1.OwnerReference{Kind: "CronJob", Name: "nightly", UID: "cj"})
-	cronJobJob.Partial = true // CronJob children are metadata-only
+	// CronJob children are metadata-only
+	cronJobJob.Partial = true
 	noTTL := finished(obj("batch/v1", "Job", "migrate", "j2", nil))
 	withTTL := finished(obj("batch/v1", "Job", "reindex", "j3", nil))
 	_ = unstructured.SetNestedField(withTTL.Object, int64(60), "spec", "ttlSecondsAfterFinished")
@@ -80,6 +84,7 @@ func TestTerminatedPodsByCause(t *testing.T) {
 	}
 }
 
+// check that only a deletion waiting on finalizers for over an hour is reported stuck, and nothing is reported without a capture time
 func TestStuckDeletions(t *testing.T) {
 	now := time.Date(2026, 1, 10, 0, 0, 0, 0, time.UTC)
 	deleting := func(name string, ago time.Duration, finalizers ...string) *resource.Object {
@@ -104,8 +109,11 @@ func TestStuckDeletions(t *testing.T) {
 	if len(stuck) != 1 || !strings.Contains(stuck[0], "shop/stuck has been deleting for 3 days") {
 		t.Errorf("DELETION_STUCK = %q", stuck)
 	}
-	// Without a capture time there is nothing to compare with.
+	// without a capture time theres nothing to compare with
 	if _, findings, _ := (Reporter{}).Process(context.Background(), objs); len(findings) != 0 {
 		t.Errorf("findings without a capture time: %v", findings)
 	}
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

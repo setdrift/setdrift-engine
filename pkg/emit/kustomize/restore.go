@@ -1,150 +1,192 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
+// writes the restore playbook, RESTORE.md, an ordered checklist for recreating the exported cluster in another cluster with the commands filled in from the snapshot
+// each step is written only when it applies, the step builders live here and in the other restore_*.go files
+// setdrift runs none of the commands, the ones for the source cluster are the only writes to it and the user runs them
 
 package kustomize
 
 import (
 	"bytes"
-	"encoding/base64"
-	"encoding/json"
+	"cmp"
 	"fmt"
+	"maps"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"sort"
-	"strconv"
 	"strings"
 
-	yamlv3 "go.yaml.in/yaml/v3"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"sigs.k8s.io/yaml"
 
+	"setdrift.io/setdrift-engine/internal/text"
 	"setdrift.io/setdrift-engine/pkg/helmsource"
 	"setdrift.io/setdrift-engine/pkg/lifecycle"
 	"setdrift.io/setdrift-engine/pkg/platform"
-	"setdrift.io/setdrift-engine/pkg/redact"
 	snapshotv1alpha1 "setdrift.io/setdrift-engine/pkg/snapshot/v1alpha1"
 )
 
-// The restore playbook, RESTORE.md: an ordered checklist for recreating the
-// exported cluster in another cluster, with the commands filled in from the
-// snapshot. Each step is written only when it applies. SetDrift runs none
-// of the commands; the ones for the source cluster are the only writes to
-// it and the user runs them.
-
+// the names and annotations the playbook writes and looks for
 const (
+	// the playbook's file name, in the cluster's directory and in each platform directory
 	restoreFile = "RESTORE.md"
-	restoreDir  = "restore"
-	// autoModeEBSDriver is EKS Auto Mode's EBS CSI driver, which only
-	// attaches volumes tagged eks:eks-cluster-name=<cluster>.
+	// the directory the playbook's helper files go to, like restore/volumes/
+	restoreDir = "restore"
+	// autoModeEBSDriver is EKS Auto Mode's EBS CSI driver, it only attaches volumes tagged eks:eks-cluster-name=<cluster>
 	autoModeEBSDriver = "ebs.csi.eks.amazonaws.com"
-	irsaAnnotation    = "eks.amazonaws.com/role-arn"
+	// the service account annotation that names an IRSA role
+	irsaAnnotation = "eks.amazonaws.com/role-arn"
 )
 
-// awsID matches AWS resource IDs and ARNs that tie a manifest to resources
-// outside the cluster.
-var awsID = regexp.MustCompile(`\b(?:arn:aws[a-z-]*:[a-z0-9-]+:[a-z0-9-]*:[0-9]*:[^\s"',]+|(?:vol|subnet|sg|vpc|fs|fsap|eni|snap|ami|igw|nat|rtb|pl|vpce)-[0-9a-f]{8,17})\b`)
-
-// playbook accumulates RESTORE.md.
+// playbook collects RESTORE.md, what comes before the first step and then the steps
+// the steps get their numbers only when rendered, so a step can be inserted before others once its content is known
 type playbook struct {
-	b    bytes.Buffer
-	step int
-	// titles are the sections' titles, in order.
-	titles []string
+	// everything before the first step, the title, the intro and the settings
+	head  bytes.Buffer
+	steps []*step
 }
 
-func (p *playbook) printf(format string, args ...any) { fmt.Fprintf(&p.b, format, args...) }
+// step is one numbered section of a playbook
+type step struct {
+	title string
+	body  bytes.Buffer
+}
 
-// section starts a numbered step.
+// printf writes to the current step, or to the head when no step has started yet
+func (p *playbook) printf(format string, args ...any) {
+	w := &p.head
+	// checking if a step has started, if so the text goes in the last one
+	if n := len(p.steps); n > 0 {
+		w = &p.steps[n-1].body
+	}
+	fmt.Fprintf(w, format, args...)
+}
+
+// section starts a numbered step, what printf writes after this goes in it
 func (p *playbook) section(title string) {
-	p.step++
-	p.titles = append(p.titles, title)
-	p.printf("\n## %d. %s\n\n", p.step, title)
+	p.steps = append(p.steps, &step{title: title})
 }
 
-// code writes a shell block.
+// titles gives back the steps' titles in order, for the list that points to a platform playbook
+func (p *playbook) titles() []string {
+	out := make([]string, len(p.steps))
+	// copying out each step's title
+	for i, s := range p.steps {
+		out[i] = s.title
+	}
+	return out
+}
+
+// render gives back the playbook as markdown, with its steps numbered
+func (p *playbook) render() []byte {
+	var b bytes.Buffer
+	b.Write(p.head.Bytes())
+	// writing each step under a numbered heading
+	for i, s := range p.steps {
+		fmt.Fprintf(&b, "\n## %d. %s\n\n", i+1, s.title)
+		b.Write(s.body.Bytes())
+	}
+	return b.Bytes()
+}
+
+// code writes the lines as one shell block
 func (p *playbook) code(lines ...string) {
+	// invoking printf to write the fenced block, its defined above
 	p.printf("```sh\n%s\n```\n\n", strings.Join(lines, "\n"))
 }
 
-// restoreData is what writeRestore gathers before writing.
+// restoreData is what writeRestore gathers before writing, so each step builder reads it from one place
 type restoreData struct {
-	s       *snapshotv1alpha1.Snapshot
+	s *snapshotv1alpha1.Snapshot
+	// the files the export wrote, with the resource each one holds
 	written []writtenFile
+	// the secrets moved to an external store, for the ExternalSecrets steps
 	remotes []remoteSecret
-	region  string
-	// source is the source cluster's name for aws commands.
+	// the aws region the commands use, the snapshot's or a placeholder
+	region string
+	// source is the source cluster's name for aws commands
 	source string
-	eks    bool
+	// tells if the source runs on EKS
+	eks bool
 	// helmRepos is the --helm-repos file, or nil
 	helmRepos *helmsource.Repos
-	// secretService is the ExternalSecrets' AWS service, SecretsManager or ParameterStore
+	// secretService is the ExternalSecrets' aws service, SecretsManager or ParameterStore
 	secretService string
-	// secrets are the export's ExternalSecrets settings, resolved for the platform
-	secretSettings *ExternalSecrets
-	// cls is the source's platform; platDir its directory in the export
-	// (platform/aws/eks), empty when it is not known.
+	// cls is the source's platform, platDir its directory in the export (platform/aws/eks), empty when its not known
 	cls     *platform.Classification
 	platDir string
-	// platformObjects is how many objects only the platform set has.
+	// platformObjects is how many objects only the platform set has
 	platformObjects int
-	// The platform's playbooks, for a new cluster on the same platform:
-	// awsp is platform/aws/RESTORE.md (AWS-wide: volumes, secrets, IDs),
-	// eksp platform/aws/eks/RESTORE.md (EKS settings and identity). Nil
-	// when the source is not on AWS, or not on EKS. RESTORE.md itself has
-	// only the steps that work on any cluster.
+	// manifests are the resources' manifests, decoded once
+	manifests manifests
+	// the platform's playbooks, for a new cluster on the same platform, RESTORE.md itself has only the steps that work on any cluster
+	// awsp is platform/aws/RESTORE.md (aws-wide, volumes, secrets, ids), eksp is platform/aws/eks/RESTORE.md (EKS settings and identity)
+	// theyre nil when the source isnt on aws, or isnt on EKS
 	awsp, eksp *playbook
 }
 
-// classification is the snapshot's platform; a snapshot from before the
-// classifier, or a test's, may only say "eks".
+// classification gives back the snapshot's platform
+// a snapshot from before the classifier, or a test's, may only say "eks", so that is turned into a classification here
 func classification(s *snapshotv1alpha1.Snapshot) *platform.Classification {
 	c := s.GetCluster()
+	// checking if the snapshot carries a classification, if so thats the answer
 	if c.GetClassification() != nil {
+		// invoking platform.FromProto to read it back from the snapshot, its defined in pkg/platform/probe.go
 		return platform.FromProto(c.GetClassification())
 	}
+	// checking if the snapshot only says eks, or has aws inventory, if so its classified as EKS on aws
 	if c.GetPlatform() == string(platform.EKS) || s.GetInventory().GetAws() != nil {
+		// invoking platform.Decide with one strong signal, its defined in pkg/platform/platform.go
 		return platform.Decide([]platform.Signal{{Source: "snapshot", Detail: "platform eks",
 			Distribution: platform.EKS, Infrastructure: platform.AWS, Weight: platform.Strong}})
 	}
 	return &platform.Classification{}
 }
 
-// writeRestore writes RESTORE.md and restore/volumes/ for the export.
-func (e Emitter) writeRestore(root string, s *snapshotv1alpha1.Snapshot, written []writtenFile, remotes []remoteSecret, platformObjects int) error {
-	d := restoreData{s: s, written: written, remotes: remotes, region: region(s), helmRepos: e.HelmRepos, platformObjects: platformObjects}
+// writeRestore takes the snapshot and what the export wrote, and writes RESTORE.md, the platform playbooks and restore/volumes/
+func (e Emitter) writeRestore(out *outDir, s *snapshotv1alpha1.Snapshot, written []writtenFile, remotes []remoteSecret, platformObjects int) error {
+	d := &restoreData{s: s, written: written, remotes: remotes, helmRepos: e.HelmRepos, platformObjects: platformObjects}
+	// checking if secrets go to an external store, if so the playbook needs to know which aws service holds them
 	if e.ExternalSecrets != nil {
-		d.secretSettings = e.ExternalSecrets.resolved(classification(s))
-		d.secretService = d.secretSettings.Service
+		// invoking resolved to fill in the store settings for this platform, its defined in externalsecrets.go
+		d.secretService = e.ExternalSecrets.resolved(classification(s)).Service
 	}
-	if d.region == "<region>" && e.Region != "" {
-		d.region = e.Region
+	// invoking regionOf and checking if the snapshot knows its region, if not the --region flag or a placeholder is used, its defined in externalsecrets.go
+	if r, ok := regionOf(s); ok {
+		d.region = r
+	} else {
+		d.region = cmp.Or(e.Region, regionPlaceholder)
 	}
 	d.source = s.GetInventory().GetAws().GetClusterName()
+	// checking if aws gave no cluster name, if so the snapshot's cluster name stands in
 	if d.source == "" {
 		d.source = s.GetCluster().GetName()
 	}
+	// invoking exportPlatform to get the source's platform and its directory in the export, its defined in platformset.go
 	d.cls, d.platDir = exportPlatform(s)
 	d.eks = d.cls.Is(platform.EKS) || s.GetInventory().GetAws() != nil
 
 	srcContext := e.SourceContext
+	// checking if no source context was given, if so the playbook shows a placeholder to fill in
 	if srcContext == "" {
 		srcContext = "<source-context>"
 	}
 	p := &playbook{}
 	c := s.GetCluster()
-	p.printf("# Restoring %s to another cluster\n\n", c.GetName())
-	p.printf("Generated by SetDrift %s from a snapshot of `%s`", s.GetProducer().GetVersion(), c.GetName())
+	// writing the title and the line saying where the playbook came from, comment and cell are defined in manifest.go
+	p.printf("# Restoring %s to another cluster\n\n", comment(c.GetName()))
+	p.printf("Generated by SetDrift %s from a snapshot of `%s`", s.GetProducer().GetVersion(), cell(c.GetName()))
 	var about []string
+	// checking if the kubernetes version is known, if so its named after the cluster
 	if v := c.GetKubernetesVersion(); v != "" {
 		about = append(about, "Kubernetes "+v)
 	}
+	// checking if the platform is known, if so its summary is named too
 	if d.platDir != "" {
 		about = append(about, d.cls.Summary())
 	}
+	// checking if theres anything to say about the cluster
 	if len(about) > 0 {
 		p.printf(" (%s)", strings.Join(about, ", "))
 	}
+	// checking if the snapshot recorded when it was taken
 	if t := s.GetCapturedAt(); t != nil {
 		p.printf(", taken %s", t.AsTime().UTC().Format("2006-01-02 15:04 UTC"))
 	}
@@ -154,66 +196,79 @@ none of them; the ones marked *source cluster* are the only ones that change
 it. Set these first:
 
 `)
+	// the shell variables every command reads, text.ShellQuote is defined in internal/text/text.go
 	vars := []string{
-		fmt.Sprintf("SRC=%s   # kubeconfig context of %s", shellQuote(srcContext), c.GetName()),
+		fmt.Sprintf("SRC=%s   # kubeconfig context of %s", text.ShellQuote(srcContext), comment(c.GetName())),
 		"DST=<target-context>   # kubeconfig context of the new cluster",
 	}
 	p.code(vars...)
 
-	// The platform's own playbooks, with their own settings.
-	if strings.HasPrefix(d.platDir, "platform/aws/") {
+	// checking if the source is on aws, if so the platform gets its own playbooks with their own settings
+	if strings.HasPrefix(d.platDir, awsDir) {
+		// invoking platformPlaybook to start the aws one, its defined below
 		d.awsp = platformPlaybook(c.GetName(), "AWS", "the AWS side of the restore that applies to any cluster on AWS: "+
 			"volumes copied from EBS snapshots, secrets in AWS's secret managers, and the AWS resources the manifests name",
-			append(vars, "REGION="+d.region))
+			append(vars, "REGION="+text.ShellQuote(d.region)))
+		// checking if its EKS too, if so theres an EKS playbook as well
 		if d.eks {
 			d.eksp = platformPlaybook(c.GetName(), "EKS", "the EKS settings that are not Kubernetes objects: add-ons, access entries, "+
 				"and the IAM roles service accounts use (IRSA and Pod Identity)",
-				append(vars, "DST_CLUSTER=<target-eks-cluster-name>", "REGION="+d.region))
+				append(vars, "DST_CLUSTER=<target-eks-cluster-name>", "REGION="+text.ShellQuote(d.region)))
 		}
 	}
 
+	// invoking each step builder in playbook order, prepare, platform and crds are defined below, controllers in restore_controllers.go
 	d.prepare(p)
 	d.platform(p)
 	d.crds(p)
 	d.controllers(p)
-	// Where the platform's steps go: filled in at the end, once they are known.
-	platformStep := len(p.b.Bytes())
-	stepBefore := p.step
+	// remembering where the platform's step goes, its filled in at the end once its known
+	platformAt := len(p.steps)
+	// invoking identity for the service account roles, its defined in restore_identity.go
 	d.identity(p)
-	if err := d.storageClasses(p, root); err != nil {
+	// invoking storageClasses for the storage classes the claims need, its defined in restore_volumes.go
+	if err := d.storageClasses(p, out); err != nil {
 		return err
 	}
-	volumes, err := d.volumes(p, root)
+	// invoking volumes for the data in persistent volumes, its defined in restore_volumes.go
+	volumes, err := d.volumes(p, out)
 	if err != nil {
 		return err
 	}
+	// invoking apply for the export itself, its defined below
 	d.apply(p, volumes)
-	// After the apply, which creates the namespaces; Pods that need these
-	// values wait for them.
+	// invoking secrets after the apply, which creates the namespaces, pods that need these values wait for them, its defined in restore_secrets.go
 	d.secrets(p)
+	// invoking after and verify for what changes once applied and how to check it, theyre defined below
 	d.after(p)
 	d.verify(p)
-	out := p.b.Bytes()
+	// checking if a manifest didnt parse along the way, if so thats a terminal error, the snapshot wasnt one an export wrote
+	if d.manifests.err != nil {
+		return d.manifests.err
+	}
+	// checking if there are platform playbooks, if so RESTORE.md points to them and theyre written
 	if d.awsp != nil {
-		// A numbered step of its own, so the steps after it move up by one.
-		var step playbook
-		step.step = stepBefore
-		d.platformSteps(&step)
-		rest := renumber(out[platformStep:], stepBefore+1, step.step-stepBefore)
-		out = append(append(append([]byte(nil), out[:platformStep]...), step.b.Bytes()...), rest...)
-		if err := writeFile(filepath.Join(root, filepath.Dir(d.platDir), restoreFile), d.awsp.done()); err != nil {
+		// invoking platformSteps to write the pointer as a numbered step of its own, so the steps after it move up by one, its defined below
+		var pointer playbook
+		d.platformSteps(&pointer)
+		p.steps = slices.Insert(p.steps, platformAt, pointer.steps...)
+		// invoking out.write to write the aws playbook in the cloud's directory, platform/aws, its defined in kustomize.go, done is defined below
+		if err := out.write(filepath.Join(filepath.Dir(d.platDir), restoreFile), d.awsp.done()); err != nil {
 			return err
 		}
+		// checking if theres an EKS playbook too, if so it goes in the EKS directory
 		if d.eksp != nil {
-			if err := writeFile(filepath.Join(root, d.platDir, restoreFile), d.eksp.done()); err != nil {
+			// invoking out.write to write the EKS playbook, its defined in kustomize.go
+			if err := out.write(filepath.Join(d.platDir, restoreFile), d.eksp.done()); err != nil {
 				return err
 			}
 		}
 	}
-	return writeFile(filepath.Join(root, restoreFile), out)
+	// invoking render to number the steps and writing RESTORE.md, its defined above
+	return out.write(restoreFile, p.render())
 }
 
-// builtinGroups are the API groups Kubernetes itself serves.
+// builtinGroups are the api groups kubernetes itself serves, their kinds never need a CRD
 var builtinGroups = map[string]bool{
 	"": true, "apps": true, "batch": true, "autoscaling": true, "policy": true, "networking.k8s.io": true,
 	"rbac.authorization.k8s.io": true, "storage.k8s.io": true, "admissionregistration.k8s.io": true,
@@ -223,45 +278,42 @@ var builtinGroups = map[string]bool{
 	"storagemigration.k8s.io": true,
 }
 
-// missingAPIs returns, by API group, the kinds of written custom resources
-// whose CustomResourceDefinition is nowhere in the snapshot, neither
-// exported nor the platform's.
-func missingAPIs(s *snapshotv1alpha1.Snapshot, written []writtenFile) map[string][]string {
-	defined := map[string]bool{} // group/kind
+// missingAPIs gives back, by api group, the kinds of written custom resources whose CustomResourceDefinition is nowhere in the snapshot
+// thats neither exported nor the platform's, so the user has to install it before applying
+func missingAPIs(s *snapshotv1alpha1.Snapshot, written []writtenFile, man *manifests) map[string][]string {
+	defined := map[string]bool{} // keyed by group/kind
+	// collecting the group and kind each CRD in the snapshot defines
 	for _, r := range s.GetResources() {
-		if !isCRD(r) {
-			continue
-		}
-		var crd struct {
-			Spec struct {
-				Group string `json:"group"`
-				Names struct {
-					Kind string `json:"kind"`
-				} `json:"names"`
-			} `json:"spec"`
-		}
-		if json.Unmarshal([]byte(r.ManifestJson), &crd) == nil {
-			defined[crd.Spec.Group+"/"+crd.Spec.Names.Kind] = true
+		// invoking isCRD and checking if the resource is a CRD, its defined in kustomize.go
+		if isCRD(r) {
+			// invoking of for the decoded manifest and str to read the group and kind, theyre defined in manifest.go
+			m := man.of(r)
+			defined[str(m, "spec", "group")+"/"+str(m, "spec", "names", "kind")] = true
 		}
 	}
 	out := map[string][]string{}
+	// going through what was written for kinds no CRD defines
 	for _, w := range written {
+		// invoking resourceGroupKind for the resource's api group and kind, its defined in platformset.go
 		gk := resourceGroupKind(w.resource)
+		// checking if the group is built in, a CRD defines the kind, or the kind is listed already, if so its skipped
 		if builtinGroups[gk.Group] || defined[gk.Group+"/"+gk.Kind] || slices.Contains(out[gk.Group], gk.Kind) {
 			continue
 		}
 		out[gk.Group] = append(out[gk.Group], gk.Kind)
 	}
+	// sorting each group's kinds so the table comes out the same every time
 	for g := range out {
 		sort.Strings(out[g])
 	}
 	return out
 }
 
-// platformPlaybook starts one of the platform's playbooks.
+// platformPlaybook starts one of the platform's playbooks, with its title, when to follow it and its shell variables
 func platformPlaybook(cluster, name, what string, vars []string) *playbook {
 	p := &playbook{}
-	p.printf("# Restoring %s: %s steps\n\n", cluster, name)
+	// writing the title and intro, comment is defined in manifest.go and SafeName in kustomize.go
+	p.printf("# Restoring %s: %s steps\n\n", comment(cluster), name)
 	p.printf("For a new cluster on %s too: %s. RESTORE.md in the cluster's directory\n"+
 		"says when to follow these; on another platform, skip them. Commands run from\n"+
 		"the cluster's directory (clusters/%s), like RESTORE.md's. Set these first:\n\n", name, what, SafeName(cluster))
@@ -269,33 +321,19 @@ func platformPlaybook(cluster, name, what string, vars []string) *playbook {
 	return p
 }
 
-// done returns the playbook, or a line saying there is nothing to do.
+// done gives back the rendered playbook, with a line saying theres nothing to do when it has no steps
 func (p *playbook) done() []byte {
-	if p.step == 0 {
+	// checking if no step was written, if so the playbook says so instead of ending after its intro
+	if len(p.steps) == 0 {
 		p.printf("Nothing to do here for this cluster.\n")
 	}
-	return p.b.Bytes()
+	return p.render()
 }
 
-var stepHeading = regexp.MustCompile(`(?m)^## (\d+)\. `)
-
-// renumber adds by to every numbered step heading in b from step from on.
-func renumber(b []byte, from, by int) []byte {
-	if by == 0 {
-		return b
-	}
-	return stepHeading.ReplaceAllFunc(b, func(h []byte) []byte {
-		n, _ := strconv.Atoi(string(stepHeading.FindSubmatch(h)[1]))
-		if n >= from {
-			n += by
-		}
-		return []byte(fmt.Sprintf("## %d. ", n))
-	})
-}
-
-// platformSteps: the step of RESTORE.md that points to the platform's playbooks.
-func (d restoreData) platformSteps(p *playbook) {
+// platformSteps writes the step of RESTORE.md that points to the platform's playbooks and says when to follow them
+func (d *restoreData) platformSteps(p *playbook) {
 	name := "AWS"
+	// checking if the source is on EKS, if so the step is named for EKS
 	if d.eks {
 		name = "EKS"
 	}
@@ -303,152 +341,81 @@ func (d restoreData) platformSteps(p *playbook) {
 	p.printf("The source ran on %s. **If the new cluster is %s too**, follow these now; on\n"+
 		"another platform skip them: the steps here cover what Kubernetes needs, and\n"+
 		"its own identity, storage and secret services take their place.\n\n", d.cls.Summary(), name)
-	if d.eksp != nil && len(d.eksp.titles) > 0 {
-		p.printf("- [%s/RESTORE.md](%s/RESTORE.md): %s\n", d.platDir, d.platDir, lowerList(d.eksp.titles))
+	// checking if the EKS playbook has steps, if so its linked with their titles, lowerList is defined below
+	if d.eksp != nil && len(d.eksp.steps) > 0 {
+		p.printf("- [%s/RESTORE.md](%s/RESTORE.md): %s\n", d.platDir, d.platDir, lowerList(d.eksp.titles()))
 	}
 	cloud := filepath.ToSlash(filepath.Dir(d.platDir))
-	if len(d.awsp.titles) > 0 {
-		p.printf("- [%s/RESTORE.md](%s/RESTORE.md): %s\n", cloud, cloud, lowerList(d.awsp.titles))
+	// checking if the aws playbook has steps, if so its linked the same way
+	if len(d.awsp.steps) > 0 {
+		p.printf("- [%s/RESTORE.md](%s/RESTORE.md): %s\n", cloud, cloud, lowerList(d.awsp.titles()))
 	}
 	p.printf("\n")
 	p.printf("Then apply the %s set, `%s/`, instead of the generic one where the steps\n"+
 		"below say so: it is the generic set plus the objects that need %s.\n", name, d.platDir, name)
 }
 
-// lowerList joins section titles into a sentence's list: "a, b and c",
-// lower-cased except for names (EBS, IAM).
+// lowerList joins step titles into a list for a sentence, "a, b and c", lowercased except for names like EBS and IAM
 func lowerList(titles []string) string {
 	out := make([]string, len(titles))
+	// lowercasing each title's first word
 	for i, t := range titles {
 		first, rest, _ := strings.Cut(t, " ")
+		// checking if the first word isnt all caps, if so its not a name and gets lowercased
 		if strings.ToUpper(first) != first {
 			first = strings.ToLower(first)
 		}
 		out[i] = strings.TrimSpace(first + " " + rest)
 	}
+	// checking if theres only one title, if so theres nothing to join
 	if len(out) == 1 {
 		return out[0]
 	}
 	return strings.Join(out[:len(out)-1], ", ") + " and " + out[len(out)-1]
 }
 
-// prepare: checks of the target cluster.
-func (d restoreData) prepare(p *playbook) {
+// prepare writes the step that checks the target cluster answers and runs a fitting kubernetes version
+func (d *restoreData) prepare(p *playbook) {
 	p.section("Check the target cluster")
 	p.code(`kubectl --context "$DST" version`, `kubectl --context "$DST" get nodes`)
+	// checking if the source's kubernetes version is known, if so the step asks for the same minor version or newer
 	if v := d.s.GetCluster().GetKubernetesVersion(); v != "" {
 		p.printf("The source runs Kubernetes %s. Use the same minor version or a newer one;\n"+
 			"`kubectl apply` reports resources whose API a newer version removed.\n", v)
 	}
 }
 
-// platform: what the platform recreates, and AWS-side cluster settings.
-func (d restoreData) platform(p *playbook) {
-	kinds := map[string]int{}
-	var by []string // who of the platform created them: EKS, kubeadm, kind
-	n := 0
-	for _, r := range d.s.GetResources() {
-		if Platform(r) {
-			kinds[r.Kind]++
-			n++
-			if m := PlatformName(r.GetProvenance().GetManager()); !slices.Contains(by, m) {
-				by = append(by, m)
-			}
-		}
-	}
-	sort.Strings(by)
-	aws := d.s.GetInventory().GetAws()
-	if n > 0 {
-		p.section("What the platform creates")
-		var parts []string
-		for _, k := range sortedKeys(kinds) {
-			parts = append(parts, fmt.Sprintf("%d %s", kinds[k], k))
-		}
-		verbs := "creates and manages"
-		if len(by) > 1 {
-			verbs = "create and manage"
-		}
-		p.printf("%s that %s %s in every cluster %s left out of this\n"+
-			"export (%s). The new cluster gets its own; the snapshot keeps the\n"+
-			"originals. Nothing to do.\n\n", pluralize(n, "object", "objects"), strings.Join(by, " and "), verbs,
-			choose(n == 1, "was", "were"), strings.Join(parts, ", "))
-	}
+// platform writes what the platform recreates on its own, and the EKS cluster settings that arent kubernetes objects
+func (d *restoreData) platform(p *playbook) {
+	// invoking platformCreated for the objects the platform creates in every cluster, its defined below
+	d.platformCreated(p)
 	q := d.eksp
+	// checking if theres no EKS playbook, if so theres no EKS setting to write
 	if q == nil {
 		return
 	}
 	q.section("Cluster settings outside Kubernetes")
+	aws := d.s.GetInventory().GetAws()
+	// checking if the export was taken without --aws, if so the step says how to list the settings on the source instead
 	if aws == nil {
 		q.printf("Add-ons and access entries are EKS settings, not Kubernetes objects. Export\n" +
 			"with `--aws` to have them listed here, or list them on the source:\n\n")
 		q.code(
-			fmt.Sprintf(`aws eks list-addons --region "$REGION" --cluster-name %s`, shellQuote(d.source)),
-			fmt.Sprintf(`aws eks list-access-entries --region "$REGION" --cluster-name %s`, shellQuote(d.source)),
+			fmt.Sprintf(`aws eks list-addons --region "$REGION" --cluster-name %s`, text.ShellQuote(d.source)),
+			fmt.Sprintf(`aws eks list-access-entries --region "$REGION" --cluster-name %s`, text.ShellQuote(d.source)),
 		)
 		return
 	}
+	// checking if the source had add-ons, if so addonSteps writes their install commands, its defined below
 	if len(aws.Addons) > 0 {
-		q.printf("**Add-ons.** Install the same versions:\n\n")
-		var lines []string
-		for _, a := range aws.Addons {
-			l := fmt.Sprintf(`aws eks create-addon --region "$REGION" --cluster-name "$DST_CLUSTER" --addon-name %s --addon-version %s`,
-				shellQuote(a.Name), shellQuote(a.Version))
-			if a.ServiceAccountRoleArn != "" {
-				l += " --service-account-role-arn " + shellQuote(a.ServiceAccountRoleArn)
-			}
-			if a.ConfigurationValues != "" {
-				l += " --configuration-values " + shellQuote(a.ConfigurationValues)
-			}
-			lines = append(lines, l)
-		}
-		q.code(lines...)
-		for _, a := range aws.Addons {
-			get := fmt.Sprintf("`aws eks describe-addon --region \"$REGION\" --cluster-name %s --addon-name %s --query addon.configurationValues`",
-				shellQuote(d.source), shellQuote(a.Name))
-			switch {
-			case a.ConfigurationValues == redact.Placeholder:
-				q.printf("The configuration values of `%s` did not parse, so they were not exported\n"+
-					"in case they hold a secret. Copy them from the source into its command:\n%s.\n\n", a.Name, get)
-			case len(a.ConfigurationRedactions) > 0:
-				q.printf("The configuration values of `%s` hold what look like secrets, replaced\n"+
-					"with `%s` in its command: %s. Put the real values in before running it,\n"+
-					"or read them from the source with %s.\n\n",
-					a.Name, redact.Placeholder, "`"+strings.Join(a.ConfigurationRedactions, "`, `")+"`", get)
-			}
-		}
+		d.addonSteps(q, aws.Addons)
 	}
-	var entries []*snapshotv1alpha1.AccessEntry
-	for _, a := range aws.AccessEntries {
-		// EKS creates the node role's entry (EC2 types) and its own
-		// service-linked role's for the new cluster.
-		if (a.Type == "STANDARD" || a.Type == "") && !strings.Contains(a.PrincipalArn, ":role/aws-service-role/") {
-			entries = append(entries, a)
-		}
-	}
-	if len(entries) > 0 {
-		q.printf("**Access entries.** Who could reach the source cluster; give the same\n" +
-			"principals access to the new one (the creator of the new cluster may\n" +
-			"already have an entry):\n\n")
-		var lines []string
-		for _, a := range entries {
-			l := fmt.Sprintf(`aws eks create-access-entry --region "$REGION" --cluster-name "$DST_CLUSTER" --principal-arn %s`, shellQuote(a.PrincipalArn))
-			if len(a.KubernetesGroups) > 0 {
-				l += " --kubernetes-groups " + strings.Join(quoteAll(a.KubernetesGroups), " ")
-			}
-			lines = append(lines, l)
-			for _, pol := range a.Policies {
-				scope := "type=cluster"
-				if pol.Scope == "namespace" {
-					scope = "type=namespace,namespaces=" + strings.Join(pol.Namespaces, ",")
-				}
-				lines = append(lines, fmt.Sprintf(`aws eks associate-access-policy --region "$REGION" --cluster-name "$DST_CLUSTER" --principal-arn %s --policy-arn %s --access-scope %s`,
-					shellQuote(a.PrincipalArn), shellQuote(pol.PolicyArn), shellQuote(scope)))
-			}
-		}
-		q.code(lines...)
-	}
+	// invoking accessEntrySteps to give the same principals access, its defined below
+	accessEntrySteps(q, aws.AccessEntries)
+	// checking if some aws reads failed, if so the step lists them since the playbook may be missing those
 	if len(aws.Errors) > 0 {
 		q.printf("Not read from AWS (the playbook may be missing these):\n\n")
+		// listing each failed read
 		for _, e := range aws.Errors {
 			q.printf("- %s\n", e)
 		}
@@ -456,31 +423,150 @@ func (d restoreData) platform(p *playbook) {
 	}
 }
 
-// crds: definitions to create before anything that uses them, and the APIs
-// whose definitions the export does not have.
-func (d restoreData) crds(p *playbook) {
+// platformCreated says what the platform creates in every cluster, which the export leaves out, so the user knows theres nothing to do for it
+func (d *restoreData) platformCreated(p *playbook) {
+	kinds := map[string]int{}
+	var by []string // who of the platform created them, EKS, kubeadm, kind
+	n := 0
+	// counting the platform's objects by kind and collecting who created them
+	for _, r := range d.s.GetResources() {
+		// invoking Platform and checking if the platform created this object, its defined in kustomize.go
+		if Platform(r) {
+			kinds[r.Kind]++
+			n++
+			// invoking PlatformName for the creator's name and checking if its new to the list, its defined in kustomize.go
+			if m := PlatformName(r.GetProvenance().GetManager()); !slices.Contains(by, m) {
+				by = append(by, m)
+			}
+		}
+	}
+	sort.Strings(by)
+	// checking if the platform created anything, if so it gets a step saying so
+	if n > 0 {
+		p.section("What the platform creates")
+		var parts []string
+		// listing the count of each kind, sortedMapKeys is defined below
+		for _, k := range sortedMapKeys(kinds) {
+			parts = append(parts, fmt.Sprintf("%d %s", kinds[k], k))
+		}
+		verbs := "creates and manages"
+		// checking if more than one creator is named, if so the verbs are plural
+		if len(by) > 1 {
+			verbs = "create and manage"
+		}
+		// text.Plural and text.Choose are defined in internal/text/text.go
+		p.printf("%s that %s %s in every cluster %s left out of this\n"+
+			"export (%s). The new cluster gets its own; the snapshot keeps the\n"+
+			"originals. Nothing to do.\n\n", text.Plural(n, "object", "objects"), strings.Join(by, " and "), verbs,
+			text.Choose(n == 1, "was", "were"), strings.Join(parts, ", "))
+	}
+}
+
+// addonSteps writes the commands that install the same add-on versions on the new cluster
+// configuration values are read from the source add-on when the command runs, never written into the playbook
+// they can hold secrets, like a vendor add-on's api key, that a pattern would miss, and the playbook goes into git
+func (d *restoreData) addonSteps(q *playbook, addons []*snapshotv1alpha1.Addon) {
+	q.printf("**Add-ons.** Install the same versions:\n\n")
+	var lines []string
+	configured := false
+	// building one create-addon command per add-on
+	for _, a := range addons {
+		l := fmt.Sprintf(`aws eks create-addon --region "$REGION" --cluster-name "$DST_CLUSTER" --addon-name %s --addon-version %s`,
+			text.ShellQuote(a.Name), text.ShellQuote(a.Version))
+		// checking if the add-on used an IAM role, if so the command passes the same one
+		if a.ServiceAccountRoleArn != "" {
+			l += " --service-account-role-arn " + text.ShellQuote(a.ServiceAccountRoleArn)
+		}
+		// checking if the add-on had configuration values, if so a line before it reads them from the source into CONFIG
+		if a.HasConfiguration {
+			configured = true
+			lines = append(lines, fmt.Sprintf(`CONFIG=$(aws eks describe-addon --region "$REGION" --cluster-name %s --addon-name %s --query addon.configurationValues --output text)   # source cluster, read-only`,
+				text.ShellQuote(d.source), text.ShellQuote(a.Name)))
+			l += ` --configuration-values "$CONFIG"`
+		}
+		lines = append(lines, l)
+	}
+	q.code(lines...)
+	// checking if any add-on reads its configuration from the source, if so the step explains why and says to run it while the source exists
+	if configured {
+		q.printf("An add-on's configuration values are read from the source add-on into\n" +
+			"CONFIG just before its create-addon (`describe-addon`), so they never go\n" +
+			"into this file: they can hold secrets. Run these while the source cluster\n" +
+			"still exists.\n\n")
+	}
+}
+
+// accessEntrySteps writes the commands that give the source's principals access to the new cluster
+func accessEntrySteps(q *playbook, all []*snapshotv1alpha1.AccessEntry) {
+	var entries []*snapshotv1alpha1.AccessEntry
+	// picking out the entries the new cluster wont get on its own
+	for _, a := range all {
+		// checking if its a standard entry and not a service-linked role
+		// EKS creates the node role's entry (EC2 types) and its own service-linked role's for the new cluster
+		if (a.Type == "STANDARD" || a.Type == "") && !strings.Contains(a.PrincipalArn, ":role/aws-service-role/") {
+			entries = append(entries, a)
+		}
+	}
+	// checking if any entries are left, if so they get their commands
+	if len(entries) > 0 {
+		q.printf("**Access entries.** Who could reach the source cluster; give the same\n" +
+			"principals access to the new one (the creator of the new cluster may\n" +
+			"already have an entry):\n\n")
+		var lines []string
+		// building the create command for each entry, and one associate command per policy
+		for _, a := range entries {
+			l := fmt.Sprintf(`aws eks create-access-entry --region "$REGION" --cluster-name "$DST_CLUSTER" --principal-arn %s`, text.ShellQuote(a.PrincipalArn))
+			// checking if the entry put the principal in kubernetes groups, if so the command does too, text.ShellQuoteAll is defined in internal/text/text.go
+			if len(a.KubernetesGroups) > 0 {
+				l += " --kubernetes-groups " + strings.Join(text.ShellQuoteAll(a.KubernetesGroups), " ")
+			}
+			lines = append(lines, l)
+			// going through the entry's access policies
+			for _, pol := range a.Policies {
+				scope := "type=cluster"
+				// checking if the policy was scoped to namespaces, if so the scope names them
+				if pol.Scope == "namespace" {
+					scope = "type=namespace,namespaces=" + strings.Join(pol.Namespaces, ",")
+				}
+				lines = append(lines, fmt.Sprintf(`aws eks associate-access-policy --region "$REGION" --cluster-name "$DST_CLUSTER" --principal-arn %s --policy-arn %s --access-scope %s`,
+					text.ShellQuote(a.PrincipalArn), text.ShellQuote(pol.PolicyArn), text.ShellQuote(scope)))
+			}
+		}
+		q.code(lines...)
+	}
+}
+
+// crds writes the step for the definitions to create before anything that uses them, and the apis whose definitions the export doesnt have
+func (d *restoreData) crds(p *playbook) {
 	var crds []writtenFile
+	// picking out the written CRDs, isCRD is defined in kustomize.go
 	for _, w := range d.written {
+		// checking if the written resource is a CRD
 		if isCRD(w.resource) {
 			crds = append(crds, w)
 		}
 	}
-	missing := missingAPIs(d.s, d.written)
+	// invoking missingAPIs for the custom resources nothing in the snapshot defines, its defined above
+	missing := missingAPIs(d.s, d.written, &d.manifests)
+	// checking if there are neither CRDs nor missing apis, if so theres no step
 	if len(crds) == 0 && len(missing) == 0 {
 		return
 	}
 	p.section("CustomResourceDefinitions")
+	// checking if some apis are missing, if so the step lists them to install first
 	if len(missing) > 0 {
 		p.printf("**Install these first.** The export has custom resources of APIs whose\n" +
 			"definitions it does not have (they were not read, or something outside the\n" +
 			"cluster's objects installs them, e.g. an operator's own install): install\n" +
 			"what provides each before applying, or applying them fails.\n\n")
 		p.printf("| API group | Kinds |\n|---|---|\n")
-		for _, g := range sortedKeys(missing) {
-			p.printf("| `%s` | %s |\n", g, strings.Join(missing[g], ", "))
+		// writing a table row per api group
+		for _, g := range sortedMapKeys(missing) {
+			p.printf("| `%s` | %s |\n", cell(g), cell(strings.Join(missing[g], ", ")))
 		}
 		p.printf("\n")
 	}
+	// checking if the export has no CRDs of its own, if so the missing ones were all there is to say
 	if len(crds) == 0 {
 		return
 	}
@@ -489,418 +575,35 @@ func (d restoreData) crds(p *playbook) {
 		"cluster does not have it yet. Those a Helm release installs are left to it\n" +
 		"(next step): Helm refuses to install a release whose CRDs exist already.\n\n")
 	p.printf("| CRD | Installed by |\n|---|---|\n")
+	// writing a table row per CRD with who installed it, manager is defined in restore_controllers.go
 	for _, w := range crds {
-		p.printf("| `%s` | %s |\n", w.resource.Name, manager(w.resource))
+		p.printf("| `%s` | %s |\n", cell(w.resource.Name), cell(manager(w.resource)))
 	}
 	p.printf("\n")
 	var lines []string
+	// building the create and wait commands for each CRD
 	for _, w := range crds {
+		// invoking helmRelease and checking if a helm release installs this CRD, if so its left to helm, its defined in restore_controllers.go
 		if helmRelease(w.resource) != "" {
 			continue
 		}
 		lines = append(lines, fmt.Sprintf(`kubectl --context "$DST" get crd %s >/dev/null 2>&1 || kubectl --context "$DST" apply --server-side -f %s`,
-			shellQuote(w.resource.Name), shellQuote(w.path)))
-		// Right after the create, the CRD may have no status yet and kubectl wait fails instead of waiting: once more.
-		wait := fmt.Sprintf(`kubectl --context "$DST" wait --for condition=established --timeout=120s crd/%s`, shellQuote(w.resource.Name))
+			text.ShellQuote(w.resource.Name), text.ShellQuote(w.path)))
+		// right after the create the CRD may have no status yet and kubectl wait fails instead of waiting, so it tries once more
+		wait := fmt.Sprintf(`kubectl --context "$DST" wait --for condition=established --timeout=120s crd/%s`, text.ShellQuote(w.resource.Name))
 		lines = append(lines, wait+" || { sleep 5; "+wait+"; }")
 	}
+	// checking if any CRD is left to create here, if so the commands get a shell block
 	if len(lines) > 0 {
 		p.code(lines...)
 	}
 }
 
-// controllers: Helm releases, GitOps tools and admission webhooks that must
-// be in place before the rest is applied.
-func (d restoreData) controllers(p *playbook) {
-	type release struct {
-		ns, name, chart, version string
-		objects                  int
-		meta                     *snapshotv1alpha1.HelmRelease
-	}
-	releases := map[string]*release{}
-	argo, flux := 0, 0
-	var webhooks []string
-	for _, w := range d.written {
-		r := w.resource
-		switch r.GetProvenance().GetSource() {
-		case snapshotv1alpha1.Source_SOURCE_HELM:
-			m := helmRelease(r)
-			if m == "" {
-				break
-			}
-			rel := releases[m]
-			if rel == nil {
-				ns, name, _ := strings.Cut(m, "/")
-				rel = &release{ns: ns, name: name}
-				releases[m] = rel
-			}
-			rel.objects++
-			if rel.chart == "" {
-				rel.chart, rel.version = chartOf(r)
-			}
-		case snapshotv1alpha1.Source_SOURCE_ARGO_CD:
-			argo++
-		case snapshotv1alpha1.Source_SOURCE_FLUX:
-			flux++
-		}
-		if r.Kind == "MutatingWebhookConfiguration" || r.Kind == "ValidatingWebhookConfiguration" {
-			webhooks = append(webhooks, webhookServices(r)...)
-		}
-	}
-	for _, h := range d.s.GetInventory().GetHelmReleases() {
-		if rel := releases[h.Namespace+"/"+h.Name]; rel != nil {
-			rel.meta = h
-			if h.Chart != "" {
-				rel.chart, rel.version = h.Chart, h.ChartVersion
-			}
-		}
-	}
-	if len(releases) == 0 && argo == 0 && flux == 0 && len(webhooks) == 0 {
-		return
-	}
-	p.section("Controllers to install first")
-	if len(releases) > 0 {
-		p.printf("**Helm releases.** Their objects are in this export, but Helm's release\n" +
-			"records are not, so applying the export would leave them unmanaged by Helm.\n" +
-			"Install each release with Helm before applying the rest; the exported\n" +
-			"copies then match and change nothing. Take the values from the source;\n" +
-			"they can hold secrets, so the commands keep them in a temporary file\n" +
-			"outside the export:\n\n")
-		p.printf("| Release | Namespace | Chart | Objects |\n|---|---|---|---|\n")
-		keys := sortedKeys(releases)
-		for _, k := range keys {
-			r := releases[k]
-			chart := r.chart
-			if chart == "" {
-				chart = "unknown"
-			} else if r.version != "" {
-				chart += " " + r.version
-			}
-			p.printf("| %s | %s | %s | %d |\n", r.name, r.ns, chart, r.objects)
-		}
-		p.printf("\n")
-		var lines []string
-		var unknown, noChart []*release
-		gitops := gitopsChartRepos(d.s.GetResources())
-		var borrowed []string
-		for _, k := range keys {
-			r := releases[k]
-			chartName := orDefault(r.chart, "<chart>")
-			if r.chart == "" {
-				noChart = append(noChart, r)
-			}
-			// helm install <release> <chart ref> [--repo <url>]
-			chart := "<repo>/" + chartName
-			// the --helm-repos file, then the post-renderer's annotation, then Argo CD or Flux installing the same chart
-			repo := d.helmRepos.Lookup(r.ns, r.name, r.chart, r.meta.GetRepository())
-			if g, ok := gitops[r.chart]; ok && repo == "" && r.chart != "" {
-				repo = g.repo
-				borrowed = append(borrowed, fmt.Sprintf("- %s: %s, as %s installs it", r.name, g.repo, g.from))
-			}
-			switch {
-			case strings.HasPrefix(repo, "oci://"):
-				chart = strings.TrimSuffix(repo, "/") + "/" + chartName
-			case repo != "":
-				chart = chartName + " --repo " + shellQuote(repo)
-			default:
-				unknown = append(unknown, r)
-			}
-			// Outside the export, so the values (which can hold secrets) never reach Git.
-			values := `"${TMPDIR:-/tmp}/setdrift-` + SafeName(r.ns) + "-" + SafeName(r.name) + `-values.yaml"`
-			install := fmt.Sprintf(`helm --kube-context "$DST" install %s %s -n %s --create-namespace -f %s`,
-				shellQuote(r.name), chart, shellQuote(r.ns), values)
-			if r.version != "" {
-				install += " --version " + shellQuote(r.version)
-			}
-			lines = append(lines,
-				fmt.Sprintf(`helm --kube-context "$SRC" get values %s -n %s -o yaml > %s   # source cluster, read-only`,
-					shellQuote(r.name), shellQuote(r.ns), values),
-				install)
-		}
-		p.code(lines...)
-		if len(borrowed) > 0 {
-			p.printf("Helm does not record which repository a chart came from; these are\n"+
-				"taken from Argo CD or Flux installing the same chart in this cluster.\n"+
-				"Check them, or name the repository with `--helm-repos`:\n\n%s\n\n", strings.Join(borrowed, "\n"))
-		}
-		if len(noChart) > 0 {
-			p.printf("The export has no Helm release record for these (Helm keeps it in a Secret\n" +
-				"in the release's namespace, which --from-dir input lacks), and their objects\n" +
-				"have no helm.sh/chart label, so `<chart>` is for you to fill in. The CHART\n" +
-				"column on the source shows it:\n\n")
-			var cmds []string
-			for _, r := range noChart {
-				cmds = append(cmds, fmt.Sprintf(`helm --kube-context "$SRC" list -n %s --filter %s`, shellQuote(r.ns), shellQuote("^"+regexp.QuoteMeta(r.name)+"$")))
-			}
-			p.code(cmds...)
-		}
-		if len(unknown) > 0 {
-			p.printf("Helm does not record which repository a chart came from, so `<repo>` is\n" +
-				"for you to fill in. What the charts say about themselves:\n\n")
-			for _, r := range unknown {
-				var hints []string
-				if h := r.meta.GetHome(); h != "" {
-					hints = append(hints, "home "+h)
-				}
-				for _, src := range r.meta.GetSources() {
-					hints = append(hints, "source "+src)
-				}
-				if len(hints) == 0 {
-					hints = append(hints, "nothing")
-				}
-				p.printf("- %s: %s\n", r.name, strings.Join(hints, ", "))
-			}
-			// a ready-to-fill --helm-repos file, one entry per chart
-			var charts []string
-			for _, r := range unknown {
-				key := r.chart
-				if key == "" {
-					key = r.ns + "/" + r.name
-				}
-				if !slices.Contains(charts, key) {
-					charts = append(charts, key)
-				}
-			}
-			sort.Strings(charts)
-			p.printf("\nTo have the next export write the full commands, fill in this file,\n" +
-				"save it at the root of the export repository (outside clusters/, which\n" +
-				"each export replaces), and pass it with `setdrift export --helm-repos\n" +
-				"<file>`. An entry for a chart covers every release of it;\n" +
-				"`<namespace>/<release>` covers one. One file can serve every cluster.\n\n")
-			lines := []string{"# chart (or <namespace>/<release>): repository URL, https:// or oci://"}
-			for _, c := range charts {
-				lines = append(lines, fmt.Sprintf("%s: <url>", c))
-			}
-			p.printf("```yaml\n%s\n```\n\n", strings.Join(lines, "\n"))
-			p.printf("Teams that run Helm from scripts or CI can record the repository at\n" +
-				"install time instead, with the post-renderer in contrib/helm of the\n" +
-				"SetDrift repository.\n\n")
-		}
-	}
-	if argo > 0 || flux > 0 {
-		p.printf("**GitOps.** %s are managed by Argo CD or Flux from Git. The\n"+
-			"Applications and Kustomizations are in this export, so once Argo CD or Flux\n"+
-			"runs in the new cluster (installed from this export or as you installed\n"+
-			"it), it syncs them from Git; the exported copies of what they manage match\n"+
-			"what they apply.\n\n", pluralize(argo+flux, "object", "objects"))
-	}
-	if len(webhooks) > 0 {
-		sort.Strings(webhooks)
-		webhooks = slices.Compact(webhooks)
-		p.printf("**Admission webhooks.** The API server calls these services before it\n" +
-			"accepts some objects. Until they run in the new cluster, applying those\n" +
-			"objects fails with `failed calling webhook`; when that happens, wait for\n" +
-			"them and apply again (the apply is idempotent):\n\n")
-		var lines []string
-		for _, w := range webhooks {
-			ns, svc, _ := strings.Cut(w, "/")
-			lines = append(lines, fmt.Sprintf(`kubectl --context "$DST" -n %s wait --for=jsonpath='{.subsets[0].addresses[0].ip}' endpoints/%s --timeout=300s`,
-				shellQuote(ns), shellQuote(svc)))
-		}
-		p.code(lines...)
-	}
-}
-
-// chartSource is where Argo CD or Flux installs a chart from.
-type chartSource struct{ repo, from string }
-
-// gitopsChartRepos maps chart names to the repository an Argo CD Application or a Flux HelmRelease installs them
-// from, for Helm releases of the same chart installed by hand. A chart installed from two repositories is left out.
-func gitopsChartRepos(resources []*snapshotv1alpha1.Resource) map[string]chartSource {
-	type obj = map[string]any
-	str := func(m obj, path ...string) string {
-		v, _, _ := unstructured.NestedString(m, path...)
-		return v
-	}
-	parse := func(r *snapshotv1alpha1.Resource) obj {
-		var m obj
-		_ = json.Unmarshal([]byte(r.ManifestJson), &m)
-		return m
-	}
-	found := map[string]map[string]string{} // chart > repo > what installs it
-	add := func(chart, repo, from string) {
-		if chart == "" || helmsource.CheckRepoURL(repo) != nil {
-			return
-		}
-		repo = strings.TrimSuffix(repo, "/")
-		if found[chart] == nil {
-			found[chart] = map[string]string{}
-		}
-		if _, ok := found[chart][repo]; !ok {
-			found[chart][repo] = from
-		}
-	}
-	// Flux: HelmRelease > HelmRepository (spec.chart) or OCIRepository (spec.chartRef)
-	sources := map[string]obj{}
-	var helmReleases []*snapshotv1alpha1.Resource
-	for _, r := range resources {
-		g, _, _ := strings.Cut(r.ApiVersion, "/")
-		switch {
-		case g == "source.toolkit.fluxcd.io" && (r.Kind == "HelmRepository" || r.Kind == "OCIRepository"):
-			sources[r.Kind+"/"+r.Namespace+"/"+r.Name] = parse(r)
-		case g == "helm.toolkit.fluxcd.io" && r.Kind == "HelmRelease":
-			helmReleases = append(helmReleases, r)
-		case g == "argoproj.io" && r.Kind == "Application":
-			m := parse(r)
-			from := fmt.Sprintf("Argo CD Application %s/%s", r.Namespace, r.Name)
-			add(str(m, "spec", "source", "chart"), str(m, "spec", "source", "repoURL"), from)
-			list, _, _ := unstructured.NestedSlice(m, "spec", "sources")
-			for _, item := range list {
-				if src, ok := item.(obj); ok {
-					add(str(src, "chart"), str(src, "repoURL"), from)
-				}
-			}
-		}
-	}
-	for _, r := range helmReleases {
-		m := parse(r)
-		from := fmt.Sprintf("Flux HelmRelease %s/%s", r.Namespace, r.Name)
-		ref := func(kind, name, ns string) obj {
-			return sources[kind+"/"+orDefault(ns, r.Namespace)+"/"+name]
-		}
-		if chart := str(m, "spec", "chart", "spec", "chart"); chart != "" {
-			if src := ref(orDefault(str(m, "spec", "chart", "spec", "sourceRef", "kind"), "HelmRepository"),
-				str(m, "spec", "chart", "spec", "sourceRef", "name"), str(m, "spec", "chart", "spec", "sourceRef", "namespace")); src != nil {
-				add(chart, str(src, "spec", "url"), from)
-			}
-		} else if str(m, "spec", "chartRef", "kind") == "OCIRepository" {
-			// The OCIRepository's URL is the chart itself: oci://<registry>/<path>/<chart>
-			if src := ref("OCIRepository", str(m, "spec", "chartRef", "name"), str(m, "spec", "chartRef", "namespace")); src != nil {
-				if url := strings.TrimSuffix(str(src, "spec", "url"), "/"); strings.Contains(url, "/") {
-					i := strings.LastIndex(url, "/")
-					add(url[i+1:], url[:i], from)
-				}
-			}
-		}
-	}
-	out := map[string]chartSource{}
-	for chart, repos := range found {
-		if len(repos) == 1 {
-			for repo, from := range repos {
-				out[chart] = chartSource{repo, from}
-			}
-		}
-	}
-	return out
-}
-
-// identity: AWS IAM roles bound to service accounts, and AWS IDs in the
-// manifests.
-func (d restoreData) identity(p *playbook) {
-	type irsa struct{ ns, sa, role string }
-	var roles []irsa
-	type idRef struct{ id, where string }
-	var ids []idRef
-	seen := map[string]bool{}
-	for _, w := range d.written {
-		r := w.resource
-		if r.Kind == "ServiceAccount" && r.ApiVersion == "v1" {
-			if arn := annotation(r, irsaAnnotation); arn != "" {
-				roles = append(roles, irsa{r.Namespace, r.Name, arn})
-			}
-		}
-		if isCRD(r) {
-			continue // schemas, whose descriptions show example ARNs
-		}
-		for i, line := range strings.Split(string(w.yaml), "\n") {
-			if strings.Contains(line, irsaAnnotation) {
-				continue // listed with the roles
-			}
-			for _, id := range awsID.FindAllString(line, -1) {
-				where := fmt.Sprintf("%s:%d", w.path, i+1)
-				if !seen[id+where] {
-					seen[id+where] = true
-					ids = append(ids, idRef{id, where})
-				}
-			}
-		}
-	}
-	aws := d.s.GetInventory().GetAws()
-	pods := aws.GetPodIdentityAssociations()
-	if q := d.eksp; q != nil && (len(roles) > 0 || len(pods) > 0 || (d.eks && aws == nil)) {
-		q.section("IAM roles for service accounts")
-		if len(roles) > 0 {
-			old := aws.GetOidcIssuer()
-			oldHost := strings.TrimPrefix(old, "https://")
-			if oldHost == "" {
-				oldHost = "<source-oidc-issuer-host>"
-			}
-			q.printf("**IAM roles for service accounts (IRSA).** These service accounts assume IAM\n" +
-				"roles through the cluster's OIDC provider. The new cluster has a different\n" +
-				"one, so each role's trust policy must trust it. The commands below replace\n" +
-				"the old issuer; to keep the source working too, add a statement instead.\n\n")
-			q.printf("| Service account | Role |\n|---|---|\n")
-			for _, r := range roles {
-				q.printf("| %s/%s | `%s` |\n", r.ns, r.sa, r.role)
-			}
-			q.printf("\n")
-			lines := []string{
-				`NEW_OIDC=$(aws eks describe-cluster --region "$REGION" --name "$DST_CLUSTER" --query cluster.identity.oidc.issuer --output text | sed 's#^https://##')`,
-				`aws iam list-open-id-connect-providers | grep -q "$NEW_OIDC" || aws iam create-open-id-connect-provider --url "https://$NEW_OIDC" --client-id-list sts.amazonaws.com`,
-			}
-			done := map[string]bool{}
-			for _, r := range roles {
-				name := r.role[strings.LastIndex(r.role, "/")+1:]
-				if done[name] {
-					continue
-				}
-				done[name] = true
-				lines = append(lines,
-					fmt.Sprintf(`aws iam get-role --role-name %s --query Role.AssumeRolePolicyDocument > %s`, shellQuote(name), shellQuote(name+"-trust.json")),
-					fmt.Sprintf(`perl -pi -e "s#\\Q%s\\E#$NEW_OIDC#g" %s`, oldHost, shellQuote(name+"-trust.json")),
-					fmt.Sprintf(`aws iam update-assume-role-policy --role-name %s --policy-document file://%s`, shellQuote(name), shellQuote(name+"-trust.json")))
-			}
-			q.code(lines...)
-		}
-		switch {
-		case len(pods) > 0:
-			q.printf("**EKS Pod Identity.** Associations are EKS settings, not Kubernetes objects;\n" +
-				"create them for the new cluster (the roles already trust Pod Identity):\n\n")
-			var lines []string
-			for _, a := range pods {
-				lines = append(lines, fmt.Sprintf(`aws eks create-pod-identity-association --region "$REGION" --cluster-name "$DST_CLUSTER" --namespace %s --service-account %s --role-arn %s`,
-					shellQuote(a.Namespace), shellQuote(a.ServiceAccount), shellQuote(a.RoleArn)))
-			}
-			q.code(lines...)
-		case d.eks && aws == nil:
-			q.printf("**EKS Pod Identity.** Associations are EKS settings, not Kubernetes objects.\n" +
-				"Export with `--aws` to have them listed here, or list them on the source\n" +
-				"and create each for the new cluster:\n\n")
-			q.code(fmt.Sprintf(`aws eks list-pod-identity-associations --region "$REGION" --cluster-name %s`, shellQuote(d.source)))
-		}
-	} else if len(roles) > 0 {
-		// Not on EKS: the annotation needs EKS's webhook, so no commands here.
-		p.section("Service accounts with AWS roles")
-		p.printf("These service accounts name AWS IAM roles (IRSA), which only EKS acts on.\n" +
-			"On EKS, the roles must trust the new cluster's OIDC provider; elsewhere,\n" +
-			"give the workloads the new platform's own identity instead (Azure or GKE\n" +
-			"Workload Identity, a Secret), or leave the annotation, which does nothing:\n\n")
-		p.printf("| Service account | Role |\n|---|---|\n")
-		for _, r := range roles {
-			p.printf("| %s/%s | `%s` |\n", r.ns, r.sa, r.role)
-		}
-		p.printf("\n")
-	}
-	if len(ids) > 0 {
-		q := d.awsp
-		if q == nil {
-			q = p
-		}
-		q.section("AWS resources the manifests name")
-		q.printf("**AWS resources the manifests name.** Check that the new cluster can reach\n" +
-			"each (same account and region, security groups, subnets); change the ones\n" +
-			"that differ before applying:\n\n")
-		q.printf("| ID | Where |\n|---|---|\n")
-		for _, id := range ids {
-			q.printf("| `%s` | %s |\n", id.id, id.where)
-		}
-		q.printf("\n")
-	}
-}
-
-// hasFinding reports whether r has a finding with code.
+// hasFinding tells if r has a finding with the given code
 func hasFinding(r *snapshotv1alpha1.Resource, code string) bool {
+	// looking through r's findings for the code
 	for _, f := range r.GetFindings() {
+		// checking if this finding has the code
 		if f.GetCode() == code {
 			return true
 		}
@@ -908,575 +611,39 @@ func hasFinding(r *snapshotv1alpha1.Resource, code string) bool {
 	return false
 }
 
-// secrets: the values to supply, by file and line.
-func (d restoreData) secrets(p *playbook) {
-	var redacted, generated []writtenFile
-	var tokens []string
-	for _, w := range d.written {
-		switch {
-		case w.referenceOnly && NeedsValues(w.resource):
-			redacted = append(redacted, w)
-		case w.referenceOnly && len(Generated(w.resource)) > 0:
-			generated = append(generated, w)
-		}
-		if w.resource.Kind == "Secret" && w.resource.ApiVersion == "v1" && secretType(w.resource) == "kubernetes.io/service-account-token" {
-			tokens = append(tokens, w.resource.Namespace+"/"+w.resource.Name)
-		}
-	}
-	if len(redacted)+len(generated)+len(tokens) == 0 {
-		return
-	}
-	p.section("Secrets")
-	// A tool created some of them empty and the controller only fills them in: they must exist first.
-	var fill, nothing []writtenFile
-	for _, w := range generated {
-		if hasFinding(w.resource, "SECRET_FILLED_BY_CONTROLLER") {
-			fill = append(fill, w)
-		} else {
-			nothing = append(nothing, w)
-		}
-	}
-	if len(fill) > 0 {
-		p.printf("**Create these empty.** Only their controller wrote their values, and it\n" +
-			"writes them again in the new cluster, but it does not create the Secret:\n" +
-			"the installation did, empty. Until it exists the controller fails to\n" +
-			"start. The files have no values; apply them, then restart the namespace:\n\n")
-		var lines, nss []string
-		for _, w := range fill {
-			lines = append(lines, fmt.Sprintf(`kubectl --context "$DST" apply --server-side --field-manager=setdrift-restore -f %s   # filled in by %s`,
-				shellQuote(w.path), controllersOf(w.resource)))
-			if !slices.Contains(nss, w.resource.Namespace) {
-				nss = append(nss, w.resource.Namespace)
-			}
-		}
-		sort.Strings(nss)
-		for _, ns := range nss {
-			lines = append(lines, fmt.Sprintf(`kubectl --context "$DST" -n %s rollout restart deployment,statefulset`, shellQuote(ns)))
-		}
-		p.code(lines...)
-	}
-	if len(nothing) > 0 {
-		p.printf("**Nothing to do** for these: only their controller wrote their values (a\n" +
-			"generated password or key, a certificate it issues), and it creates and\n" +
-			"writes them again in the new cluster. Restoring the old values would fight it.\n\n")
-		for _, w := range nothing {
-			p.printf("- %s %s/%s, by %s\n", w.resource.Kind, w.resource.Namespace, w.resource.Name, controllersOf(w.resource))
-		}
-		p.printf("\n")
-	}
-	if len(redacted) > 0 {
-		p.printf("These files hold `%s` instead of secret values and were not applied with\n"+
-			"the rest; Pods that use them wait until they exist. Supply the values one\n"+
-			"of these ways. In a Secret marked *merge*, a controller writes the other\n"+
-			"keys: only the keys listed are restored, and the controller's are left to\n"+
-			"it.\n\n", "SETDRIFT_REDACTED")
-		p.printf("**A. Copy them from the source cluster**, while it still exists. The values\n" +
-			"go straight from one cluster to the other and are never written to disk:\n\n")
-		var lines []string
-		for _, w := range redacted {
-			r := w.resource
-			if len(Generated(r)) > 0 {
-				// Only the keys a person wrote, under their own field manager.
-				var keys []string
-				for _, red := range r.Redactions {
-					if red.Reason == snapshotv1alpha1.RedactionReason_REDACTION_REASON_SECRET_VALUE {
-						field, key, _ := strings.Cut(red.Path, ".")
-						if field == "data" || field == "stringData" {
-							keys = append(keys, fmt.Sprintf(`%q: .data[%q]`, key, key))
-						}
-					}
-				}
-				lines = append(lines, fmt.Sprintf(`kubectl --context "$SRC" -n %s get secret %s -o json | jq '{apiVersion: "v1", kind: "Secret", metadata: {name: .metadata.name, namespace: .metadata.namespace}, data: {%s}}' | kubectl --context "$DST" apply --server-side --field-manager=setdrift-restore -f -   # merge`,
-					shellQuote(r.Namespace), shellQuote(r.Name), strings.Join(keys, ", ")))
-				continue
-			}
-			lines = append(lines, fmt.Sprintf(`kubectl --context "$SRC" -n %s get %s %s -o json | jq 'del(.metadata.uid, .metadata.resourceVersion, .metadata.creationTimestamp, .metadata.managedFields, .metadata.ownerReferences, .metadata.annotations["kubectl.kubernetes.io/last-applied-configuration"], .status)' | kubectl --context "$DST" apply --server-side --field-manager=setdrift-restore -f -`,
-				shellQuote(r.Namespace), strings.ToLower(KindDir(r.ApiVersion, r.Kind)), shellQuote(r.Name)))
-		}
-		p.code(lines...)
-		p.printf("**B. Fill in the files** from wherever the values are kept, then apply each\n" +
-			"file. Values under `data:` are base64 (`printf %%s 'value' | base64`). Keys\n" +
-			"a controller writes are not in the files.\n\n")
-		for _, w := range redacted {
-			r := w.resource
-			merge := ""
-			if len(Generated(r)) > 0 {
-				merge = ", merge: " + controllersOf(r) + " writes the other keys"
-			}
-			p.printf("- `%s` (%s %s/%s%s)\n", w.path, r.Kind, r.Namespace, r.Name, merge)
-			for _, red := range r.Redactions {
-				if red.Reason != snapshotv1alpha1.RedactionReason_REDACTION_REASON_SECRET_VALUE {
-					continue
-				}
-				if line := lineOf(w.yaml, red.Path); line > 0 {
-					p.printf("  - line %d: `%s`\n", line, red.Path)
-				} else {
-					p.printf("  - `%s`\n", red.Path)
-				}
-			}
-		}
-		p.printf("\n")
-		var apply []string
-		for _, w := range redacted {
-			apply = append(apply, fmt.Sprintf(`kubectl --context "$DST" apply --server-side --field-manager=setdrift-restore -f %s`, shellQuote(w.path)))
-		}
-		p.code(apply...)
-		if len(d.remotes) > 0 {
-			p.printf("**C. External Secrets Operator.** external-secrets/ has an ExternalSecret\n" +
-				"for each Secret (see its README); those marked *merge* add their keys to\n" +
-				"the Secret the controller creates (`creationPolicy: Merge`). Put the values\n" +
-				"in your secret manager, install the operator and its store, then apply the\n" +
-				"directory. On AWS, `setdrift secrets export` copies the values from the\n" +
-				"source cluster into Secrets Manager or Parameter Store (it shows a plan\n" +
-				"first and never writes or prints a value); elsewhere, create the remote\n" +
-				"secrets the README lists, with their keys:\n\n")
-			if d.secretService == "SecretsManager" || d.secretService == "ParameterStore" {
-				// source cluster, read-only; checks everything, then writes to AWS and rewrites external-secrets/ to match
-				p.code(d.secretsExportCommand(d.region)...)
-			}
-			p.code(`kubectl --context "$DST" apply -k external-secrets/`)
-			// The AWS commands that create the remote secrets, for a new cluster on AWS.
-			if q := d.awsp; q != nil && (d.secretService == "SecretsManager" || d.secretService == "ParameterStore") {
-				q.section("Secrets in " + choose(d.secretService == "ParameterStore", "Parameter Store", "Secrets Manager"))
-				q.printf("Before applying external-secrets/ (RESTORE.md's secrets step), create each\n" +
-					"remote secret with the values. `setdrift secrets export` copies them from\n" +
-					"the source cluster, never writing or printing them. It checks the settings,\n" +
-					"the source cluster and the AWS permissions first, skips remote secrets that\n" +
-					"exist already (`--overwrite` replaces them), reads each one back, and\n" +
-					"rewrites external-secrets/ to match; `--check` runs the checks only. From\n" +
-					"the cluster's directory:\n\n")
-				q.code(d.secretsExportCommand(`"$REGION"`)...)
-				q.printf("Or by hand, as JSON with one property per key:\n\n")
-				var lines []string
-				for _, r := range d.remotes {
-					props := make([]string, len(r.properties))
-					for i, k := range r.properties {
-						props[i] = fmt.Sprintf(`%q:"<value>"`, k)
-					}
-					value := shellQuote("{" + strings.Join(props, ",") + "}")
-					if d.secretService == "ParameterStore" {
-						lines = append(lines, fmt.Sprintf(`aws ssm put-parameter --region "$REGION" --type SecureString --name %s --value %s   # replaces %s`,
-							shellQuote(r.key), value, r.secret))
-					} else {
-						lines = append(lines, fmt.Sprintf(`aws secretsmanager create-secret --region "$REGION" --name %s --secret-string %s   # replaces %s`,
-							shellQuote(r.key), value, r.secret))
-					}
-				}
-				q.code(lines...)
-			}
-		}
-		var nss []string
-		for _, w := range redacted {
-			if !slices.Contains(nss, w.resource.Namespace) {
-				nss = append(nss, w.resource.Namespace)
-			}
-		}
-		sort.Strings(nss)
-		p.printf("Workloads read these values when they start. Restart the workloads in\n" +
-			"these namespaces so every component uses the restored values:\n\n")
-		var restart []string
-		for _, ns := range nss {
-			restart = append(restart, fmt.Sprintf(`kubectl --context "$DST" -n %s rollout restart deployment,statefulset,daemonset`, shellQuote(ns)))
-		}
-		p.code(restart...)
-		// About the registry, wherever the cluster runs: ECR tokens expire.
-		ecrNote(p, redacted)
-		if n := countNonSecrets(redacted); n > 0 {
-			p.printf("%s other than Secrets hold secret values (see the files above). Moving\n"+
-				"those values into Secrets and referencing them makes the next export apply\n"+
-				"without this step.\n\n", pluralize(n, "object", "objects"))
-		}
-	}
-	if len(tokens) > 0 {
-		p.printf("Service account tokens (%s) are created again with new values, and\n"+
-			"tokens copied out of the source cluster stop working in the new one.\n",
-			strings.Join(tokens, ", "))
-	}
-}
-
-// volumes: bring data back. It writes restore/volumes/ and reports whether
-// it did.
-func (d restoreData) volumes(p *playbook, root string) (bool, error) {
-	vols := d.s.GetInventory().GetVolumes()
-	if len(vols) == 0 {
-		return false, nil
-	}
-	p.section("Volumes")
-	p.printf("Applying the export gives each claim a new, empty volume.")
-	if slices.ContainsFunc(vols, func(v *snapshotv1alpha1.Volume) bool { return v.VolumeHandle != "" && v.Driver != "" }) {
-		p.printf(" To keep the data,\n" +
-			"bring each volume over before applying: restore/volumes/ has a\n" +
-			"PersistentVolume for each that another cluster can reach, bound in advance\n" +
-			"to its claim, so the claim (or the StatefulSet that creates it) gets the\n" +
-			"volume with the data.")
-	}
-	p.printf("\n\n")
-	p.printf("| Claim | Size | Class | Volume | Zone | Reclaim |\n|---|---|---|---|---|---|\n")
-	for _, v := range vols {
-		claim := v.Namespace + "/" + v.Claim
-		if v.StatefulSet != "" {
-			claim += " (StatefulSet " + v.StatefulSet + ")"
-		}
-		p.printf("| %s | %s | %s | `%s` | %s | %s |\n", claim, v.Capacity, v.StorageClass, orDash(v.VolumeHandle), orDash(v.Zone), v.ReclaimPolicy)
-	}
-	p.printf("\n")
-
-	var ebs []*snapshotv1alpha1.Volume
-	var local []string // claims whose volume is not a CSI volume (hostPath, local): its data stays on a node
-	wrote := 0
-	for _, v := range vols {
-		if v.VolumeHandle == "" || v.Driver == "" {
-			// The PersistentVolume was read (its reclaim policy comes only from it) and has no driver: hostPath or local.
-			if v.PersistentVolume != "" && v.ReclaimPolicy != "" && v.Driver == "" {
-				local = append(local, v.Namespace+"/"+v.Claim)
-			}
-			continue
-		}
-		pv, err := restoreVolume(v)
-		if err != nil {
-			return false, err
-		}
-		if err := writeFile(filepath.Join(root, restoreDir, "volumes", SafeName(v.Namespace), SafeName(v.Claim)+".yaml"), pv); err != nil {
-			return false, err
-		}
-		wrote++
-		if strings.HasPrefix(v.VolumeHandle, "vol-") {
-			ebs = append(ebs, v)
-		}
-	}
-
-	var deleting []string
-	for _, v := range vols {
-		if v.ReclaimPolicy == "Delete" && v.PersistentVolume != "" {
-			deleting = append(deleting, v.PersistentVolume)
-		}
-	}
-	if len(deleting) > 0 {
-		p.printf("**First, on the source cluster, before deleting it or its claims.**\n" +
-			"These volumes are deleted with their claims (reclaim policy Delete); keep\n" +
-			"them:\n\n")
-		var lines []string
-		for _, pv := range deleting {
-			lines = append(lines, fmt.Sprintf(`kubectl --context "$SRC" patch pv %s -p '{"spec":{"persistentVolumeReclaimPolicy":"Retain"}}'   # source cluster`, shellQuote(pv)))
-		}
-		p.code(lines...)
-	}
-	if len(local) > 0 {
-		p.printf("%s on a node's own disk (a local or hostPath volume, e.g. kind's\n"+
-			"local-path storage), which no other cluster can reach: no volume is written\n"+
-			"for %s, and its claim gets a new, empty volume. Copy the data at the\n"+
-			"application level if you need it (a backup and restore, or kubectl cp).\n\n",
-			"The data of "+strings.Join(local, ", ")+choose(len(local) == 1, " is", " are"),
-			choose(len(local) == 1, "it", "them"))
-	}
-	if len(ebs) > 0 {
-		// The EBS snapshots and copies are AWS's; on another cloud the data is copied its own way.
-		q := d.awsp
-		if q == nil {
-			q = p
-		} else {
-			p.printf("On AWS, %s/RESTORE.md copies the EBS volumes from snapshots and puts\n"+
-				"the copies' IDs in restore/volumes/; do it before the next command.\n\n", filepath.ToSlash(filepath.Dir(d.platDir)))
-		}
-		if q != p {
-			q.section("EBS volumes")
-		}
-		q.printf("**First, on the source cluster.** Snapshot the EBS volumes; each snapshot's\n" +
-			"ID is saved next to its volume file for the copy below.\n\n")
-		var snaps []string
-		for _, v := range ebs {
-			snaps = append(snaps, fmt.Sprintf(`aws ec2 create-snapshot --region "$REGION" --volume-id %s --description %s --query SnapshotId --output text > %s`,
-				v.VolumeHandle, shellQuote("setdrift restore "+v.Namespace+"/"+v.Claim), shellQuote(snapshotFile(v))))
-		}
-		q.code(snaps...)
-		q.printf("**EBS volumes.** Either reuse each volume (same account and region, once\n" +
-			"the source no longer uses it) or create a copy from its snapshot. Copying,\n" +
-			"per volume:\n\n")
-		var lines []string
-		for _, v := range ebs {
-			file := filepath.ToSlash(filepath.Join(restoreDir, "volumes", SafeName(v.Namespace), SafeName(v.Claim)+".yaml"))
-			az := v.Zone
-			if a := v.GetAws().GetAvailabilityZone(); a != "" {
-				az = a
-			}
-			if az == "" {
-				az = "<zone>"
-			}
-			create := fmt.Sprintf(`NEW=$(aws ec2 create-volume --region "$REGION" --snapshot-id "$SNAP" --availability-zone %s --volume-type %s`, az, orDefault(v.GetAws().GetVolumeType(), "gp3"))
-			if a := v.GetAws(); a != nil {
-				if a.Iops > 0 && (a.VolumeType == "gp3" || strings.HasPrefix(a.VolumeType, "io")) {
-					create += fmt.Sprintf(" --iops %d", a.Iops)
-				}
-				if a.Throughput > 0 && a.VolumeType == "gp3" {
-					create += fmt.Sprintf(" --throughput %d", a.Throughput)
-				}
-				if a.Encrypted {
-					create += " --encrypted"
-					if a.KmsKeyId != "" {
-						create += " --kms-key-id " + shellQuote(a.KmsKeyId)
-					}
-				}
-			}
-			if v.Driver == autoModeEBSDriver {
-				create += ` --tag-specifications 'ResourceType=volume,Tags=[{Key=eks:eks-cluster-name,Value='"$DST_CLUSTER"'}]'`
-			}
-			create += " --query VolumeId --output text)"
-			lines = append(lines,
-				"# "+v.Namespace+"/"+v.Claim,
-				fmt.Sprintf(`SNAP=$(cat %s)`, shellQuote(snapshotFile(v))),
-				`aws ec2 wait snapshot-completed --region "$REGION" --snapshot-ids "$SNAP"`,
-				create,
-				fmt.Sprintf(`perl -pi -e "s/%s/$NEW/" %s`, v.VolumeHandle, shellQuote(file)))
-		}
-		q.code(lines...)
-		var autoMode []string
-		for _, v := range ebs {
-			if v.Driver == autoModeEBSDriver {
-				autoMode = append(autoMode, v.VolumeHandle)
-			}
-		}
-		if len(autoMode) > 0 {
-			q.printf("EKS Auto Mode only attaches volumes tagged with its cluster's name. The\n" +
-				"copies above are tagged; when reusing a volume instead, tag it:\n\n")
-			q.code(fmt.Sprintf(`aws ec2 create-tags --region "$REGION" --resources %s --tags Key=eks:eks-cluster-name,Value="$DST_CLUSTER"`, strings.Join(autoMode, " ")))
-			q.printf("If the new cluster uses another EBS CSI driver than the source (Auto Mode's\n" +
-				"`ebs.csi.eks.amazonaws.com` or the add-on's `ebs.csi.aws.com`), change\n" +
-				"`driver:` in the files.\n\n")
-		}
-	}
-	if wrote > 0 {
-		p.printf("Then create each volume and its claim, bound to each other, before\n" +
-			"applying the export: a claim created by the export or by a StatefulSet\n" +
-			"would otherwise get a new, empty volume. Their own field manager keeps the\n" +
-			"export's apply from changing them.\n\n")
-		var lines []string
-		for _, ns := range namespacesOf(vols) {
-			lines = append(lines, fmt.Sprintf(`kubectl --context "$DST" create namespace %s --dry-run=client -o yaml | kubectl --context "$DST" apply -f -`, shellQuote(ns)))
-		}
-		lines = append(lines, `kubectl --context "$DST" apply --server-side --field-manager=setdrift-restore -f restore/volumes/ --recursive`)
-		p.code(lines...)
-	}
-	return wrote > 0, nil
-}
-
-// snapshotFile is where the playbook saves the ID of v's EBS snapshot.
-func snapshotFile(v *snapshotv1alpha1.Volume) string {
-	return filepath.ToSlash(filepath.Join(restoreDir, "volumes", SafeName(v.Namespace), SafeName(v.Claim)+".snapshot"))
-}
-
-func namespacesOf(vols []*snapshotv1alpha1.Volume) []string {
-	seen := map[string]bool{}
-	var out []string
-	for _, v := range vols {
-		if v.VolumeHandle != "" && !seen[v.Namespace] {
-			seen[v.Namespace] = true
-			out = append(out, v.Namespace)
-		}
-	}
-	sort.Strings(out)
-	return out
-}
-
-// storageClasses: the classes claims ask for, which the target must have.
-// It writes restore/storageclasses/ with the source's definition of each,
-// including those the platform created (EKS's gp2).
-func (d restoreData) storageClasses(p *playbook, root string) error {
-	used := map[string]bool{}
-	for _, v := range d.s.GetInventory().GetVolumes() {
-		if v.StorageClass != "" {
-			used[v.StorageClass] = true
-		}
-	}
-	for _, w := range d.written {
-		for _, c := range claimClasses(w.resource) {
-			used[c] = true
-		}
-	}
-	if len(used) == 0 {
-		return nil
-	}
-	defs := map[string]*snapshotv1alpha1.Resource{}
-	for _, r := range d.s.GetResources() {
-		if r.Kind == "StorageClass" && strings.HasPrefix(r.ApiVersion, "storage.k8s.io/") && used[r.Name] {
-			defs[r.Name] = r
-		}
-	}
-	p.section("Storage classes")
-	p.printf("Claims ask for these classes by name; a claim whose class the target lacks\n" +
-		"stays Pending. restore/storageclasses/ has the source's definition of each,\n" +
-		"without the default-class annotation (the target keeps its own default).\n" +
-		"Each line creates one only if the target lacks it:\n\n")
-	var lines, missing []string
-	for _, name := range sortedKeys(used) {
-		r := defs[name]
-		if r == nil {
-			missing = append(missing, name)
-			continue
-		}
-		var m map[string]any
-		if err := json.Unmarshal([]byte(r.ManifestJson), &m); err != nil {
-			return err
-		}
-		if meta, _ := m["metadata"].(map[string]any); meta != nil {
-			if ann, _ := meta["annotations"].(map[string]any); ann != nil {
-				delete(ann, "storageclass.kubernetes.io/is-default-class")
-				delete(ann, "storageclass.beta.kubernetes.io/is-default-class")
-				if len(ann) == 0 {
-					delete(meta, "annotations")
-				}
-			}
-		}
-		out, err := yaml.Marshal(m)
-		if err != nil {
-			return err
-		}
-		file := filepath.ToSlash(filepath.Join(restoreDir, "storageclasses", SafeName(name)+".yaml"))
-		if err := writeFile(filepath.Join(root, file), out); err != nil {
-			return err
-		}
-		lines = append(lines, fmt.Sprintf(`kubectl --context "$DST" get storageclass %s >/dev/null 2>&1 || kubectl --context "$DST" apply -f %s   # provisioner %v`,
-			shellQuote(name), shellQuote(file), m["provisioner"]))
-	}
-	if len(lines) > 0 {
-		p.code(lines...)
-	}
-	if len(missing) > 0 {
-		p.printf("Not in the snapshot (export without -n to include them): %s.\n\n", strings.Join(missing, ", "))
-	}
-	p.printf("On another platform, the class can keep its name with the target's\n" +
-		"provisioner, so the claims need no change: edit `provisioner:` and\n" +
-		"`parameters:` in the file (e.g. GKE `pd.csi.storage.gke.io` with `type:\n" +
-		"pd-balanced`; AKS `disk.csi.azure.com` with `skuName: Premium_LRS`; EKS\n" +
-		"`ebs.csi.aws.com` or Auto Mode `ebs.csi.eks.amazonaws.com` with `type: gp3`).\n" +
-		"Volume data does not move between platforms this way; only the claims.\n")
-	return nil
-}
-
-// claimClasses returns the storage classes a resource's claims name
-// explicitly: a PersistentVolumeClaim's, or a StatefulSet's templates'.
-func claimClasses(r *snapshotv1alpha1.Resource) []string {
-	var m struct {
-		Spec struct {
-			StorageClassName     string `json:"storageClassName"`
-			VolumeClaimTemplates []struct {
-				Spec struct {
-					StorageClassName string `json:"storageClassName"`
-				} `json:"spec"`
-			} `json:"volumeClaimTemplates"`
-		} `json:"spec"`
-	}
-	switch r.Kind {
-	case "PersistentVolumeClaim", "StatefulSet":
-	default:
-		return nil
-	}
-	if json.Unmarshal([]byte(r.ManifestJson), &m) != nil {
-		return nil
-	}
-	var out []string
-	if m.Spec.StorageClassName != "" {
-		out = append(out, m.Spec.StorageClassName)
-	}
-	for _, t := range m.Spec.VolumeClaimTemplates {
-		if t.Spec.StorageClassName != "" {
-			out = append(out, t.Spec.StorageClassName)
-		}
-	}
-	return out
-}
-
-// restoreVolume returns a PersistentVolume for v, bound in advance to its
-// claim.
-func restoreVolume(v *snapshotv1alpha1.Volume) ([]byte, error) {
-	driver := v.Driver
-	if driver == "kubernetes.io/aws-ebs" {
-		driver = "ebs.csi.aws.com"
-	}
-	csi := map[string]any{"driver": driver, "volumeHandle": v.VolumeHandle}
-	if v.FsType != "" {
-		csi["fsType"] = v.FsType
-	}
-	spec := map[string]any{
-		"capacity":                      map[string]any{"storage": orDefault(v.Capacity, "1Gi")},
-		"accessModes":                   orDefaultSlice(v.AccessModes, []string{"ReadWriteOnce"}),
-		"persistentVolumeReclaimPolicy": "Retain",
-		"storageClassName":              v.StorageClass,
-		"csi":                           csi,
-		"claimRef":                      map[string]any{"namespace": v.Namespace, "name": v.Claim},
-	}
-	if v.VolumeMode != "" {
-		spec["volumeMode"] = v.VolumeMode
-	}
-	if v.Zone != "" {
-		spec["nodeAffinity"] = map[string]any{"required": map[string]any{"nodeSelectorTerms": []any{map[string]any{
-			"matchExpressions": []any{map[string]any{"key": "topology.kubernetes.io/zone", "operator": "In", "values": []any{v.Zone}}},
-		}}}}
-	}
-	name := v.PersistentVolume
-	if name == "" {
-		name = "restore-" + v.Namespace + "-" + v.Claim
-	}
-	out, err := yaml.Marshal(map[string]any{
-		"apiVersion": "v1",
-		"kind":       "PersistentVolume",
-		"metadata":   map[string]any{"name": name},
-		"spec":       spec,
-	})
-	if err != nil {
-		return nil, err
-	}
-	// The claim, bound to the volume by name and with the volume's class, so
-	// it binds whatever the target's default class is. A StatefulSet uses an
-	// existing claim of the name it would create.
-	claimSpec := map[string]any{
-		"accessModes":      spec["accessModes"],
-		"storageClassName": v.StorageClass,
-		"volumeName":       name,
-		"resources":        map[string]any{"requests": map[string]any{"storage": orDefault(v.Capacity, "1Gi")}},
-	}
-	if v.VolumeMode != "" {
-		claimSpec["volumeMode"] = v.VolumeMode
-	}
-	claim, err := yaml.Marshal(map[string]any{
-		"apiVersion": "v1",
-		"kind":       "PersistentVolumeClaim",
-		"metadata":   map[string]any{"name": v.Claim, "namespace": v.Namespace},
-		"spec":       claimSpec,
-	})
-	if err != nil {
-		return nil, err
-	}
-	header := fmt.Sprintf("# Restores %s/%s with the data of volume %s (see RESTORE.md).\n"+
-		"# To use a copy, replace the volume ID with the copy's.\n", v.Namespace, v.Claim, v.VolumeHandle)
-	return []byte(header + string(out) + "---\n" + string(claim)), nil
-}
-
-// apply: the export itself.
-func (d restoreData) apply(p *playbook, volumes bool) {
+// apply writes the step that applies the export itself, and the platform set instead when the new cluster is on the same platform
+func (d *restoreData) apply(p *playbook, volumes bool) {
 	p.section("Apply the export")
 	what := "Everything that can be applied"
+	// checking if volumes were restored first, if so the step says it comes after them
 	if volumes {
 		what += ", after the volumes above"
 	}
 	p.printf("%s: CRDs, cluster-scoped objects, then each namespace.\n\n", what)
 	p.code(`kubectl --context "$DST" apply --server-side -k .`)
+	// checking if the platform set has objects of its own, if so the step says to apply it on the same platform
 	if d.platformObjects > 0 {
+		// invoking PlatformName for the distribution's name, its defined in kustomize.go
 		name := PlatformName(string(d.cls.Distribution))
+		// checking if the distribution is unknown, if so the infrastructure's name is used instead
 		if d.cls.Distribution == platform.Unknown {
 			name = d.cls.Infrastructure.Name()
 		}
 		p.printf("**If the new cluster is %s too**, apply the %s set instead: the same, plus\n"+
 			"%s that only work there (custom resources of APIs %s provides):\n\n",
-			name, name, pluralize(d.platformObjects, "object", "objects"), name)
+			name, name, text.Plural(d.platformObjects, "object", "objects"), name)
 		p.code(fmt.Sprintf(`kubectl --context "$DST" apply --server-side -k %s`, d.platDir))
 	}
 }
 
-// after: what differs from the source once applied.
-func (d restoreData) after(p *playbook) {
+// after writes what differs from the source once applied, new load balancer addresses, things that run again and jobs that ran once
+func (d *restoreData) after(p *playbook) {
 	runOnce := map[string][]string{}
+	// collecting the written resources that run again once applied
 	for _, w := range d.written {
+		// going through each resource's findings
 		for _, f := range w.resource.Findings {
+			// checking if the finding says it ran once or is a bare pod
 			switch f.Code {
 			case "RUN_ONCE_EXPORTED", "BARE_POD":
 				ref := w.resource.Kind + " " + w.resource.Namespace + "/" + w.resource.Name
@@ -1485,110 +652,101 @@ func (d restoreData) after(p *playbook) {
 		}
 	}
 	var ranOnce []*snapshotv1alpha1.Resource
+	// collecting the finished jobs the export left out
 	for _, r := range d.s.GetResources() {
+		// invoking RanOnce and checking if its a finished job the export left out, its defined in kustomize.go
 		if RanOnce(r) {
 			ranOnce = append(ranOnce, r)
 		}
 	}
 	lbs := d.s.GetInventory().GetLoadBalancers()
+	// checking if theres nothing at all to say, if so theres no step
 	if len(runOnce) == 0 && len(lbs) == 0 && len(ranOnce) == 0 {
 		return
 	}
 	p.section("After applying")
+	// checking if the source had load balancers, if so the step tells how to find their new addresses
 	if len(lbs) > 0 {
 		p.printf("**Load balancers.** The new cluster's load balancers get new addresses.\n" +
 			"Point DNS records (unless external-dns manages them) and clients at the new\n" +
 			"ones:\n\n")
 		p.printf("| Object | Old address | New address |\n|---|---|---|\n")
+		// writing a row per load balancer with its old address and the command for the new one
 		for _, lb := range lbs {
 			addr := strings.Join(append(slices.Clone(lb.Hostnames), lb.Ips...), ", ")
 			res := "svc"
+			// checking if its an ingress, if so kubectl gets it as one, otherwise as a service
 			if lb.Kind == "Ingress" {
 				res = "ingress"
 			}
 			p.printf("| %s %s/%s | `%s` | `kubectl --context \"$DST\" -n %s get %s %s -o jsonpath='{.status.loadBalancer.ingress[0].hostname}{.status.loadBalancer.ingress[0].ip}'` |\n",
-				lb.Kind, lb.Namespace, lb.Name, addr, lb.Namespace, res, lb.Name)
+				cell(lb.Kind), cell(lb.Namespace), cell(lb.Name), cell(addr), cell(text.ShellQuote(lb.Namespace)), res, cell(text.ShellQuote(lb.Name)))
 		}
 		p.printf("\n")
 	}
+	// checking if anything runs again, if so the step lists it
 	if len(runOnce) > 0 {
 		p.printf("**Run again.** These ran, or were running, in the source and start again\n" +
 			"in the new cluster. Delete them from the export first if they must not\n" +
 			"(e.g. a migration):\n\n")
-		for _, ref := range sortedKeys(runOnce) {
+		// listing each one by kind and name
+		for _, ref := range sortedMapKeys(runOnce) {
 			p.printf("- %s\n", ref)
 		}
 		p.printf("\n")
 	}
+	// checking if any jobs ran once and were left out, if so the step lists them with what they ran
 	if len(ranOnce) > 0 {
 		p.printf("**Ran once in the source.** These Jobs had finished, so the export leaves\n" +
 			"them out: applying one runs it again. If the new cluster needs one (a schema\n" +
 			"or a seed it has not got), run it by hand from its manifest in the snapshot\n" +
 			"(`setdrift snapshot json`); the others need nothing:\n\n")
 		p.printf("| Job | Result | Image | Command |\n|---|---|---|---|\n")
+		// writing a row per job, jobSummary is defined below and of in manifest.go
 		for _, r := range ranOnce {
-			result, image, command := jobSummary(r)
-			p.printf("| %s/%s | %s | `%s` | `%s` |\n", r.Namespace, r.Name, result, image, command)
+			result, image, command := jobSummary(r, d.manifests.of(r))
+			p.printf("| %s/%s | %s | `%s` | `%s` |\n", cell(r.Namespace), cell(r.Name), cell(result), image, command)
 		}
 		p.printf("\n")
 	}
 }
 
-// secretsExportCommand is the setdrift secrets export command for the
-// export's own settings, every one given, as the command requires.
-func (d restoreData) secretsExportCommand(region string) []string {
-	x := d.secretSettings
-	return []string{
-		`setdrift secrets export --aws redacted \`,
-		`  --context "$SRC" --region ` + region + ` \`,
-		`  --secret-manager ` + x.ID + ` --secret-key-template ` + shellQuote(x.KeyTemplate) + ` \`,
-		`  --store-kind ` + x.StoreKind + ` --store-name ` + x.StoreName + ` \`,
-		`  --external-secrets-out external-secrets --force`,
-	}
-}
-
-// jobSummary is a finished Job's result (Complete or Failed), image and
-// command, for RESTORE.md.
-func jobSummary(r *snapshotv1alpha1.Resource) (result, image, command string) {
-	var m struct {
-		Spec struct {
-			Template struct {
-				Spec struct {
-					Containers []struct {
-						Image   string   `json:"image"`
-						Command []string `json:"command"`
-						Args    []string `json:"args"`
-					} `json:"containers"`
-				} `json:"spec"`
-			} `json:"template"`
-		} `json:"spec"`
-	}
-	_ = json.Unmarshal([]byte(r.ManifestJson), &m)
-	// the manifest has no status by now: lifecycle recorded the outcome in its finding, "finished Job (Complete): ..."
+// jobSummary takes a finished job and its manifest and gives back its result (Complete or Failed), image and command, for RESTORE.md's table
+func jobSummary(r *snapshotv1alpha1.Resource, m map[string]any) (result, image, command string) {
+	// the manifest has no status by now, lifecycle recorded the outcome in its finding, like "finished Job (Complete)"
 	result = "finished"
+	// looking for the ran-once finding
 	for _, f := range r.GetFindings() {
+		// checking if its the ran-once finding, lifecycle.RanOnce is defined in pkg/lifecycle/lifecycle.go
 		if f.GetCode() == lifecycle.RanOnce {
+			// checking if the message has the result in parentheses, if so thats the result
 			if _, rest, ok := strings.Cut(f.GetMessage(), "("); ok {
 				result, _, _ = strings.Cut(rest, ")")
 			}
 		}
 	}
 	var images, commands []string
-	for _, c := range m.Spec.Template.Spec.Containers {
-		images = append(images, c.Image)
-		if cmd := strings.Join(append(c.Command, c.Args...), " "); cmd != "" {
+	containers, _, _ := unstructured.NestedSlice(m, "spec", "template", "spec", "containers")
+	// collecting each container's image and command, str and strSlice are defined in manifest.go
+	for _, item := range containers {
+		c, _ := item.(map[string]any)
+		images = append(images, str(c, "image"))
+		// checking if the container sets a command or args, if so they make its command
+		if cmd := strings.Join(append(strSlice(c, "command"), strSlice(c, "args")...), " "); cmd != "" {
 			commands = append(commands, cmd)
 		}
 	}
 	command = strings.Join(commands, "; ")
+	// checking if no container sets a command, if so the table says the image's own runs
 	if command == "" {
 		command = "(the image's own)"
 	}
+	// escaping the pipes, theyd break the markdown table
 	return result, strings.ReplaceAll(strings.Join(images, ", "), "|", `\|`), strings.ReplaceAll(command, "|", `\|`)
 }
 
-// verify: compare the new cluster with the export.
-func (d restoreData) verify(p *playbook) {
+// verify writes the step that compares the new cluster with the export, with setdrift verify and a look for pods that arent running
+func (d *restoreData) verify(p *playbook) {
 	p.section("Check the result")
 	p.printf("`setdrift verify` dry-runs the export against the new cluster and reports\n" +
 		"what differs; nothing should be left except explained differences.\n\n")
@@ -1596,328 +754,11 @@ func (d restoreData) verify(p *playbook) {
 		`kubectl --context "$DST" get pods -A --field-selector=status.phase!=Running,status.phase!=Succeeded`)
 }
 
-// lineOf returns the line in doc of the field at path, a redaction path
-// (data.password, spec.template.spec.containers[web].env[TOKEN].value), or
-// 0 if it is not found.
-func lineOf(doc []byte, path string) int {
-	var root yamlv3.Node
-	if err := yamlv3.Unmarshal(doc, &root); err != nil || len(root.Content) == 0 {
-		return 0
-	}
-	return find(root.Content[0], strings.TrimPrefix(path, "."))
-}
+// sortedMapKeys gives back m's keys, sorted, so the playbook comes out the same every time
+func sortedMapKeys[V any](m map[string]V) []string { return slices.Sorted(maps.Keys(m)) }
 
-// find resolves path from node. Map keys may contain dots (tls.crt,
-// .dockerconfigjson), so each key is matched against the start of path
-// rather than splitting it.
-func find(node *yamlv3.Node, path string) int {
-	switch node.Kind {
-	case yamlv3.MappingNode:
-		best, line := -1, 0
-		for i := 0; i+1 < len(node.Content); i += 2 {
-			k, v := node.Content[i], node.Content[i+1]
-			switch {
-			case path == k.Value:
-				return k.Line
-			case strings.HasPrefix(path, k.Value+"."), strings.HasPrefix(path, k.Value+"["):
-				// Prefer the longest key: "a.b" over "a" for "a.b.c".
-				if len(k.Value) > best {
-					rest := strings.TrimPrefix(path[len(k.Value):], ".")
-					if l := find(v, rest); l > 0 {
-						best, line = len(k.Value), l
-					}
-				}
-			}
-		}
-		return line
-	case yamlv3.SequenceNode:
-		if !strings.HasPrefix(path, "[") {
-			return 0
-		}
-		end := strings.Index(path, "]")
-		if end < 0 {
-			return 0
-		}
-		label, rest := path[1:end], strings.TrimPrefix(path[end+1:], ".")
-		for i, item := range node.Content {
-			if itemName(item) == label || strconv.Itoa(i) == label {
-				if rest == "" {
-					return item.Line
-				}
-				return find(item, rest)
-			}
-		}
-	}
-	return 0
-}
+// sortedCopy gives back a sorted copy of ss, leaving ss as it was
+func sortedCopy(ss []string) []string { return slices.Sorted(slices.Values(ss)) }
 
-func itemName(n *yamlv3.Node) string {
-	if n.Kind != yamlv3.MappingNode {
-		return ""
-	}
-	for i := 0; i+1 < len(n.Content); i += 2 {
-		if n.Content[i].Value == "name" {
-			return n.Content[i+1].Value
-		}
-	}
-	return ""
-}
-
-// chartOf returns the chart and version from the helm.sh/chart label
-// (<chart>-<version>).
-func chartOf(r *snapshotv1alpha1.Resource) (string, string) {
-	label := labels(r)["helm.sh/chart"]
-	for i := strings.LastIndex(label, "-"); i > 0; i = strings.LastIndex(label[:i], "-") {
-		if i+1 < len(label) && label[i+1] >= '0' && label[i+1] <= '9' {
-			return label[:i], label[i+1:]
-		}
-	}
-	return label, ""
-}
-
-// controllersOf names the field managers that wrote r's generated values.
-func controllersOf(r *snapshotv1alpha1.Resource) string {
-	var names []string
-	for _, red := range Generated(r) {
-		for _, c := range strings.Split(red.Controller, ",") {
-			if c != "" && !slices.Contains(names, c) {
-				names = append(names, c)
-			}
-		}
-	}
-	sort.Strings(names)
-	return strings.Join(names, ", ")
-}
-
-// helmRelease returns "<namespace>/<release>" of the Helm release that
-// installed r, or "" if Helm did not (or only the low-confidence label says
-// so).
-func helmRelease(r *snapshotv1alpha1.Resource) string {
-	p := r.GetProvenance()
-	if p.GetSource() != snapshotv1alpha1.Source_SOURCE_HELM || p.GetEvidence()["confidence"] == "low" {
-		return ""
-	}
-	return p.GetManager()
-}
-
-// webhookServices returns "<namespace>/<service>" of the services a webhook
-// configuration calls.
-func webhookServices(r *snapshotv1alpha1.Resource) []string {
-	var m struct {
-		Webhooks []struct {
-			ClientConfig struct {
-				Service *struct {
-					Namespace string `json:"namespace"`
-					Name      string `json:"name"`
-				} `json:"service"`
-			} `json:"clientConfig"`
-		} `json:"webhooks"`
-	}
-	_ = json.Unmarshal([]byte(r.ManifestJson), &m)
-	var out []string
-	for _, w := range m.Webhooks {
-		if s := w.ClientConfig.Service; s != nil && s.Name != "" {
-			out = append(out, s.Namespace+"/"+s.Name)
-		}
-	}
-	return out
-}
-
-func manager(r *snapshotv1alpha1.Resource) string {
-	p := r.GetProvenance()
-	src := strings.ToLower(strings.TrimPrefix(p.GetSource().String(), "SOURCE_"))
-	switch p.GetSource() {
-	case snapshotv1alpha1.Source_SOURCE_HELM:
-		src = "Helm"
-	case snapshotv1alpha1.Source_SOURCE_ARGO_CD:
-		src = "Argo CD"
-	case snapshotv1alpha1.Source_SOURCE_FLUX:
-		src = "Flux"
-	case snapshotv1alpha1.Source_SOURCE_CI_CD:
-		src = "CI/CD"
-	case snapshotv1alpha1.Source_SOURCE_UNMANAGED, snapshotv1alpha1.Source_SOURCE_UNSPECIFIED:
-		return "applied by hand"
-	}
-	if m := p.GetManager(); m != "" {
-		return src + " " + m
-	}
-	return src
-}
-
-func labels(r *snapshotv1alpha1.Resource) map[string]string {
-	var m struct {
-		Metadata struct {
-			Labels map[string]string `json:"labels"`
-		} `json:"metadata"`
-	}
-	_ = json.Unmarshal([]byte(r.ManifestJson), &m)
-	return m.Metadata.Labels
-}
-
-func annotation(r *snapshotv1alpha1.Resource, key string) string {
-	var m struct {
-		Metadata struct {
-			Annotations map[string]string `json:"annotations"`
-		} `json:"metadata"`
-	}
-	_ = json.Unmarshal([]byte(r.ManifestJson), &m)
-	return m.Metadata.Annotations[key]
-}
-
-func secretType(r *snapshotv1alpha1.Resource) string {
-	var m struct {
-		Type string `json:"type"`
-	}
-	_ = json.Unmarshal([]byte(r.ManifestJson), &m)
-	return m.Type
-}
-
-// ecrHost matches an Amazon ECR registry host in a docker config, with an
-// optional scheme or path: <account>.dkr.ecr[-fips].<region>.amazonaws.com[.cn].
-var ecrHost = regexp.MustCompile(`^(https?://)?[0-9]{12}\.dkr\.ecr(-fips)?\.[a-z0-9-]+\.amazonaws\.com(\.cn)?(/.*)?$`)
-
-// ecrRegistries returns the ECR hosts in a pull Secret's docker config. The
-// redacted placeholder keeps the host names, so this works on the export.
-func ecrRegistries(r *snapshotv1alpha1.Resource) []string {
-	if r.Kind != "Secret" || r.ApiVersion != "v1" {
-		return nil
-	}
-	var m struct {
-		Data       map[string]string `json:"data"`
-		StringData map[string]string `json:"stringData"`
-	}
-	if json.Unmarshal([]byte(r.ManifestJson), &m) != nil {
-		return nil
-	}
-	var hosts []string
-	add := func(raw []byte, auths bool) {
-		var entries map[string]json.RawMessage
-		if auths {
-			var cfg struct {
-				Auths map[string]json.RawMessage `json:"auths"`
-			}
-			if json.Unmarshal(raw, &cfg) != nil {
-				return
-			}
-			entries = cfg.Auths
-		} else if json.Unmarshal(raw, &entries) != nil {
-			return
-		}
-		for h := range entries {
-			if ecrHost.MatchString(h) && !slices.Contains(hosts, h) {
-				hosts = append(hosts, h)
-			}
-		}
-	}
-	for key, auths := range map[string]bool{".dockerconfigjson": true, ".dockercfg": false} {
-		if v, ok := m.Data[key]; ok {
-			if raw, err := base64.StdEncoding.DecodeString(v); err == nil {
-				add(raw, auths)
-			}
-		}
-		if v, ok := m.StringData[key]; ok {
-			add([]byte(v), auths)
-		}
-	}
-	sort.Strings(hosts)
-	return hosts
-}
-
-// ecrNote warns about pull Secrets for Amazon ECR: their token lasts 12
-// hours, so a copied or stored value stops working soon after the restore
-// unless whatever refreshed it in the source cluster comes along.
-func ecrNote(p *playbook, redacted []writtenFile) {
-	var names, hosts []string
-	for _, w := range redacted {
-		h := ecrRegistries(w.resource)
-		if len(h) == 0 {
-			continue
-		}
-		names = append(names, w.resource.Namespace+"/"+w.resource.Name)
-		for _, x := range h {
-			if !slices.Contains(hosts, x) {
-				hosts = append(hosts, x)
-			}
-		}
-	}
-	if len(names) == 0 {
-		return
-	}
-	sort.Strings(hosts)
-	p.printf("**Amazon ECR tokens expire.** %s %s an ECR token (`%s`)\n"+
-		"that lasts 12 hours: a copied, filled-in or stored value stops working\n"+
-		"within a day. Restore what refreshes it in the source cluster (often a\n"+
-		"CronJob, or a controller that rewrites the Secret), or drop the Secret and\n"+
-		"let nodes pull with their IAM role: on EKS, a node role with ECR read access\n"+
-		"(AmazonEC2ContainerRegistryReadOnly) pulls from its own account, and from\n"+
-		"other accounts whose repository policy allows it.\n\n",
-		strings.Join(names, ", "), choose(len(names) == 1, "holds", "hold"), strings.Join(hosts, "`, `"))
-}
-
-func countNonSecrets(ws []writtenFile) int {
-	n := 0
-	for _, w := range ws {
-		if !(w.resource.Kind == "Secret" && w.resource.ApiVersion == "v1") {
-			n++
-		}
-	}
-	return n
-}
-
-// shellQuote quotes s for a POSIX shell when it needs it.
-func shellQuote(s string) string {
-	if s != "" && strings.IndexFunc(s, func(r rune) bool {
-		return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("-_./:=@,+", r))
-	}) < 0 {
-		return s
-	}
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
-}
-
-func quoteAll(ss []string) []string {
-	out := make([]string, len(ss))
-	for i, s := range ss {
-		out[i] = shellQuote(s)
-	}
-	return out
-}
-
-func pluralize(n int, singular, plural string) string {
-	if n == 1 {
-		return fmt.Sprintf("%d %s", n, singular)
-	}
-	return fmt.Sprintf("%d %s", n, plural)
-}
-
-// choose returns a if cond, else b.
-func choose(cond bool, a, b string) string {
-	if cond {
-		return a
-	}
-	return b
-}
-
-func orDash(s string) string { return orDefault(s, "-") }
-
-func orDefault(s, def string) string {
-	if s == "" {
-		return def
-	}
-	return s
-}
-
-func orDefaultSlice(s, def []string) []string {
-	if len(s) == 0 {
-		return def
-	}
-	return s
-}
-
-func sortedKeys[V any](m map[string]V) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
-}
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

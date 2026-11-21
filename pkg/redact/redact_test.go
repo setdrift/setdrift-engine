@@ -1,5 +1,4 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
+// tests the redaction of core Secrets, that no value survives in any form and the placeholders keep the shape the API server needs
 
 package redact_test
 
@@ -16,6 +15,7 @@ import (
 	"setdrift.io/setdrift-engine/pkg/resource"
 )
 
+// check that a Secret's value is gone from data, stringData and the last-applied annotation, in plain text and in base64
 func TestSecretValuesNeverSurvive(t *testing.T) {
 	const secret = "hunter2"
 	obj := resource.New(&unstructured.Unstructured{Object: map[string]any{
@@ -49,6 +49,7 @@ func TestSecretValuesNeverSurvive(t *testing.T) {
 	}
 }
 
+// check that a ConfigMap value that isnt a secret is left as it was
 func TestNonSecretDataKept(t *testing.T) {
 	obj := resource.New(&unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "v1",
@@ -65,6 +66,7 @@ func TestNonSecretDataKept(t *testing.T) {
 	}
 }
 
+// secretObj builds a Secret of the given type with the given data, for the tests below
 func secretObj(typ string, data map[string]any) *resource.Object {
 	return resource.New(&unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "v1",
@@ -75,9 +77,7 @@ func secretObj(typ string, data map[string]any) *resource.Object {
 	}})
 }
 
-// TestImagePullSecretPlaceholders: the API server requires valid JSON in
-// image pull secrets. The placeholder keeps the registry hosts and nothing
-// else.
+// check that image pull secrets get a valid JSON placeholder, as the API server requires, keeping nothing of the value, not even the registry hosts
 func TestImagePullSecretPlaceholders(t *testing.T) {
 	const creds = `"username":"ci","password":"hunter2","auth":"Y2k6aHVudGVyMg=="`
 	enc := func(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
@@ -86,11 +86,11 @@ func TestImagePullSecretPlaceholders(t *testing.T) {
 	}{
 		{"kubernetes.io/dockerconfigjson", ".dockerconfigjson",
 			`{"auths":{"111122223333.dkr.ecr.us-east-1.amazonaws.com":{` + creds + `},"ghcr.io":{` + creds + `}}}`,
-			`{"auths":{"111122223333.dkr.ecr.us-east-1.amazonaws.com":{"auth":"U0VURFJJRlRfUkVEQUNURUQ="},"ghcr.io":{"auth":"U0VURFJJRlRfUkVEQUNURUQ="}}}`},
+			redact.DockerConfigJSONPlaceholder},
 		{"kubernetes.io/dockercfg", ".dockercfg",
 			`{"ghcr.io":{` + creds + `}}`,
-			`{"ghcr.io":{"auth":"U0VURFJJRlRfUkVEQUNURUQ="}}`},
-		{"kubernetes.io/dockerconfigjson", ".dockerconfigjson", "not json", `{"auths":{}}`},
+			redact.DockerCfgPlaceholder},
+		{"kubernetes.io/dockerconfigjson", ".dockerconfigjson", "not json", redact.DockerConfigJSONPlaceholder},
 	} {
 		o := secretObj(tc.typ, map[string]any{tc.key: enc(tc.value)})
 		if _, _, err := (redact.SecretRedactor{}).Process(context.Background(), []*resource.Object{o}); err != nil {
@@ -103,6 +103,9 @@ func TestImagePullSecretPlaceholders(t *testing.T) {
 		if string(got) != tc.want {
 			t.Errorf("%s: got %s, want %s", tc.typ, got, tc.want)
 		}
+		if strings.Contains(string(got), "ghcr.io") || strings.Contains(string(got), "dkr.ecr") {
+			t.Errorf("%s: the placeholder keeps a registry host: %s", tc.typ, got)
+		}
 		if !json.Valid(got) {
 			t.Errorf("%s: placeholder is not valid JSON: %s", tc.typ, got)
 		}
@@ -112,8 +115,7 @@ func TestImagePullSecretPlaceholders(t *testing.T) {
 	}
 }
 
-// TestServiceAccountTokenData: the token controller writes all of the data,
-// so it is removed rather than redacted, and the Secret stays applicable.
+// check that a service account token's data is removed rather than redacted, since the token controller writes all of it, so the Secret stays applicable
 func TestServiceAccountTokenData(t *testing.T) {
 	o := secretObj("kubernetes.io/service-account-token", map[string]any{"token": "ZXlKaGJHY2lPaUpT", "ca.crt": "LS0t"})
 	if _, _, err := (redact.SecretRedactor{}).Process(context.Background(), []*resource.Object{o}); err != nil {
@@ -123,3 +125,6 @@ func TestServiceAccountTokenData(t *testing.T) {
 		t.Errorf("data %v, redactions %v: want no data and no redactions", o.Object["data"], o.Redactions)
 	}
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

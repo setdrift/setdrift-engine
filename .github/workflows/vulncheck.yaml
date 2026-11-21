@@ -1,0 +1,34 @@
+# Scans the CLI for known vulnerabilities in Go and its dependencies, with
+# govulncheck: only those the code can reach are reported. Runs on every pull
+# request and push to main, and weekly, so a vulnerability published while
+# nothing is pushed still fails within a week. A standard-library finding is
+# fixed by raising the toolchain line in go.mod (Dependabot doesn't); a
+# module finding, by updating the module.
+name: vulncheck
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 6 * * 1" # Mondays 06:17 UTC
+  workflow_dispatch:
+  # release.yaml calls it, so a release with a known vulnerability is not published
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  govulncheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          # go.mod's toolchain line: the Go release builds and releases use
+          go-version-file: go.mod
+      - run: make vulncheck
+
+# Copyright The SetDrift Authors
+# SPDX-License-Identifier: Apache-2.0

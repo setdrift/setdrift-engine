@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 syntax = "proto3";
 
 package setdrift.snapshot.v1alpha1;
@@ -363,10 +360,15 @@ message Addon {
   string name = 1;
   string version = 2;
   string service_account_role_arn = 3;
-  // the add-on's configuration values (JSON or YAML), if set, with secret
-  // values replaced by SETDRIFT_REDACTED; the whole string is
-  // SETDRIFT_REDACTED when it did not parse
-  string configuration_values = 4;
-  // the paths in configuration_values that were replaced, e.g. agent.apiKey
-  repeated string configuration_redactions = 5;
+  // whether the add-on has configuration values; the values themselves are
+  // never kept, as they can hold secrets (RESTORE.md reads them from AWS when
+  // it is followed)
+  bool has_configuration = 6;
+  // configuration_values and configuration_redactions held the values with
+  // detected secrets redacted, until 2026-11-21
+  reserved 4, 5;
+  reserved "configuration_values", "configuration_redactions";
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

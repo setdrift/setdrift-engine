@@ -1,5 +1,4 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
+// tests for the overview of what an export found
 
 package kustomize
 
@@ -10,6 +9,7 @@ import (
 	snapshotv1alpha1 "setdrift.io/setdrift-engine/pkg/snapshot/v1alpha1"
 )
 
+// check that the overview counts what was applied by hand without the built-in namespaces, lists what was held back and the cleanup suggestions, and writes no section when theres nothing to say
 func TestOverview(t *testing.T) {
 	unmanaged := &snapshotv1alpha1.Provenance{Source: snapshotv1alpha1.Source_SOURCE_UNMANAGED}
 	helm := &snapshotv1alpha1.Provenance{Source: snapshotv1alpha1.Source_SOURCE_HELM, Manager: "web/podinfo"}
@@ -46,3 +46,6 @@ func TestOverview(t *testing.T) {
 		t.Error("empty overview writes a section")
 	}
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

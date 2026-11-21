@@ -1,7 +1,6 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
+// checks an export against a live cluster with a server-side dry-run, nothing in the cluster changes
+// the dry-run and the comparison live in pkg/verify, this file handles the flags, the connection and the report
 
-// checks export against a live cluster, prove 95% of resources would not change & <5% of changes have explanation
 package main
 
 import (
@@ -15,11 +14,10 @@ import (
 	"github.com/spf13/cobra"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/client-go/discovery"
-	"k8s.io/client-go/discovery/cached/memory"
 	"k8s.io/client-go/dynamic"
-	"k8s.io/client-go/restmapper"
 
+	"setdrift.io/setdrift-engine/internal/discover"
+	"setdrift.io/setdrift-engine/internal/text"
 	"setdrift.io/setdrift-engine/pkg/collect"
 	"setdrift.io/setdrift-engine/pkg/emit/kustomize"
 	"setdrift.io/setdrift-engine/pkg/platform"
@@ -27,22 +25,23 @@ import (
 	"setdrift.io/setdrift-engine/pkg/verify"
 )
 
-// only flags related to verify functions
+// verifyOptions holds the flags verify was given, so run and the helpers below read them from one place
 type verifyOptions struct {
 	kubeconfig string
 	context    string
-	// set: auto, generic or platform
+	// which part of the export to check, auto, generic or platform
 	set string
-	// reports: the directory the report is written to (default DIR/verify), or none
-	output   string
+	// the directory the report goes to, DIR/verify when its empty
+	output string
+	// skips writing the report, the result is only printed
 	noReport bool
-	// percent of resources that must not change
+	// the percent of resources that must not change for verify to pass
 	threshold int
-	// limit the check to these namespaces, as export -n
+	// limits the check to these namespaces, the same way export -n does
 	namespaces []string
 }
 
-// server side apply with dryRun=All comparing DIR to live object
+// newVerifyCmd builds the verify command with its help text and flags, main.go adds it to the command tree
 func newVerifyCmd() *cobra.Command {
 	o := &verifyOptions{}
 	cmd := &cobra.Command{
@@ -74,8 +73,10 @@ is applied to a new cluster.`,
   setdrift verify setdrift-export --context restored-prod   # after restoring it elsewhere
   setdrift verify setdrift-export -o ./verify-reports --threshold 100`,
 		Args: cobra.ExactArgs(1),
+		// invoking run with the export directory, its defined below
 		RunE: func(cmd *cobra.Command, args []string) error { return o.run(cmd, args[0]) },
 	}
+	// registering the flags, each one fills a field of verifyOptions above
 	cmd.Flags().StringVar(&o.kubeconfig, "kubeconfig", "", "path to kubeconfig (default: KUBECONFIG or ~/.kube/config)")
 	cmd.Flags().StringVar(&o.context, "context", "", "kubeconfig context (default: current context)")
 	cmd.Flags().StringVar(&o.set, "set", "auto", "what to check: generic (the cluster's directory), platform (its platform set, e.g. platform/aws/eks), "+
@@ -87,150 +88,195 @@ is applied to a new cluster.`,
 	return cmd
 }
 
-// loadconfig, build clients, executes check, generates result
+// connect loads the kubeconfig and checks the cluster answers, then gives back the discovery and dynamic clients verify needs
+func (o *verifyOptions) connect(cmd *cobra.Command) (*kubeContext, *discover.Client, dynamic.Interface, error) {
+	// invoking loadConfig to read the kubeconfig for the chosen context, its defined in kubeconfig.go
+	kc, err := loadConfig(o.kubeconfig, o.context)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	// invoking warnInsecure to warn when the context skips the certificate check, its defined in kubeconfig.go
+	warnInsecure(cmd.ErrOrStderr(), kc)
+	// invoking checkReachable to make one quick request, so an unreachable cluster or expired credentials fail right away, its defined in kubeconfig.go
+	if err := checkReachable(cmd.Context(), kc); err != nil {
+		return nil, nil, nil, err
+	}
+	// invoking discover.New for the client that lists the cluster's API types, its defined in internal/discover/discover.go
+	dc, err := discover.New(kc.config)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	// building the dynamic client that reads and dry-run applies objects of any kind
+	dyn, err := dynamic.NewForConfig(kc.config)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return kc, dc, dyn, nil
+}
+
+// run takes the export directory, checks it against the cluster, prints the result and writes the report
+// the directory is checked before the kubeconfig, so a wrong directory is reported as that and not as a cluster problem
 func (o *verifyOptions) run(cmd *cobra.Command, dir string) error {
-	// resolve DIR to one cluster folder, fails if no kustomization or more then one cluster
-	// checked before the kubeconfig, so a wrong DIR is reported as such
+	// checking if the threshold is outside 0 to 100, if so the flag was given wrong
 	if o.threshold < 0 || o.threshold > 100 {
 		return fmt.Errorf("--threshold %d: give a percent from 0 to 100", o.threshold)
 	}
+	// checking if both -o and --no-report were given, they contradict each other
 	if o.noReport && o.output != "" {
 		return errors.New("-o names where to write the report, so it cannot be used with --no-report")
 	}
+	// invoking verify.ClusterRoot to find the cluster's directory inside dir, its defined in pkg/verify/dryrun.go
 	root, err := verify.ClusterRoot(dir)
 	if err != nil {
 		return err
 	}
+	// invoking kustomize.ReadExportInfo to read which cluster the export came from, its defined in pkg/emit/kustomize/exportinfo.go
 	info, err := kustomize.ReadExportInfo(root)
 	if err != nil {
 		return err
 	}
-	kc, err := loadConfig(o.kubeconfig, o.context)
+	// invoking connect to reach the cluster, its defined above
+	kc, dc, dyn, err := o.connect(cmd)
 	if err != nil {
 		return err
 	}
-	if err := checkReachable(cmd.Context(), kc); err != nil {
-		return err
-	}
-	cfg := kc.config
-	dc, err := discovery.NewDiscoveryClientForConfig(cfg)
-	if err != nil {
-		return err
-	}
-	dyn, err := dynamic.NewForConfig(cfg)
-	if err != nil {
-		return err
-	}
-	// namespaces asked for must be readable, as for export and diff; they
-	// need not exist: verify reports their resources as not in the cluster
+	// checking if namespaces were asked for, if so each must be readable like in export and diff
+	// they dont have to exist, verify reports their resources as missing from the cluster
 	if len(o.namespaces) > 0 {
+		// invoking collect.CheckNamespaces to confirm they can be read, its defined in pkg/collect/access.go
 		if err := collect.CheckNamespaces(cmd.Context(), dyn, o.namespaces, false, false); err != nil {
 			return err
 		}
 	}
+	// invoking discover.RESTMapper to map each kind in the export to its API resource, its defined in internal/discover/preferred.go
+	mapper, err := discover.RESTMapper(cmd.Context(), dc)
+	if err != nil {
+		return err
+	}
+	// setting up the dry-run verifier with the cluster, the mapper and the flags
 	v := verify.DryRunVerifier{
 		Cluster:    verify.DynamicCluster{Client: dyn},
-		Mapper:     restmapper.NewDeferredDiscoveryRESTMapper(memory.NewMemCacheClient(dc)),
+		Mapper:     mapper,
 		Threshold:  o.threshold,
 		Namespaces: o.namespaces,
 	}
+	// checking if the export recorded when it was taken, if so the verifier uses it to tell changes made since apart
 	if info != nil {
+		// checking if that time parses, an export without a readable time leaves it out
 		if t, err := time.Parse(time.RFC3339, info.ExportedAt); err == nil {
 			v.ExportedAt = t
 		}
 	}
 	started := time.Now().UTC()
-	set, why, err := o.chooseSet(cmd.Context(), root, kc, dc, dyn)
+	// invoking chooseSet to pick the part of the export to check and say why, its defined below
+	set, why, err := o.chooseSet(cmd.Context(), info, kc, dc, dyn)
 	if err != nil {
 		return err
 	}
 	v.Set = set
 	w := cmd.OutOrStdout()
 	target := root
+	// checking if a platform set was chosen, if so its directory inside the export is what gets checked
 	if set != "" {
 		target = filepath.Join(root, set)
 	}
 	fmt.Fprintf(w, "Verifying %s against context %s (%s)\n", target, kc.name, why)
+	// invoking sameCluster to tell if this is the cluster the export came from, its defined below
 	same := sameCluster(cmd.Context(), dyn, info)
+	// invoking otherClusterNote and checking if it has something to say, if so it gets printed before the result
 	if note := otherClusterNote(info, same); note != "" {
 		fmt.Fprintln(w, note)
 	}
+	// invoking Verify to dry-run every resource and compare it with the live object, its defined in pkg/verify/dryrun.go
 	report, err := v.Verify(cmd.Context(), root)
 	if err != nil {
 		return err
 	}
 
 	identity := ""
+	// checking if some resources couldnt be checked, if so we look up who the credentials belong to so the error can name them
 	if len(report.NotChecked) > 0 {
+		// invoking collect.Identity to ask the cluster who we are, its defined in pkg/collect/access.go
 		identity = collect.Identity(cmd.Context(), dyn)
 	}
+	// checking if nothing at all could be checked, if so thats a terminal error explained by notCheckedError, its defined below
 	if report.Total == 0 && len(report.NotChecked) > 0 {
 		return notCheckedError(report, identity)
 	}
+	// checking if the export built no resources to check, if so thats a terminal error saying why
 	if report.Total == 0 {
 		msg := "nothing to verify: the kustomization builds no resources"
+		// checking if namespaces were asked for, if so the message names them since they hold nothing
 		if len(o.namespaces) > 0 {
 			msg = "nothing to verify: the export has no resources in " + strings.Join(o.namespaces, ", ")
 		}
+		// invoking skippedTotal and checking if any redacted files were skipped, if so the message says how many, its defined below
 		if n := skippedTotal(report); n > 0 {
-			msg += fmt.Sprintf(" (%s skipped)", plural(n, "redacted file", "redacted files"))
+			msg += fmt.Sprintf(" (%s skipped)", text.Plural(n, "redacted file", "redacted files"))
 		}
 		return errors.New(msg)
 	}
 	cluster := &snapshotv1alpha1.Cluster{}
+	// invoking applyContext to fill in the cluster's name from the kubeconfig context, its defined in kubeconfig.go
 	applyContext(cluster, kc)
+	// putting together everything the printed result and the report show, verifyDocument is defined in verifyreport.go
 	doc := verifyDocument{
 		VerifiedAt: started.Format(time.RFC3339), Context: kc.name, Cluster: cluster.Name,
 		Directory: target, Set: why, SameCluster: same, Report: *report,
 		Passed: report.Passed(), Analysis: report.Analyze(), Identity: identity,
 	}
+	// checking if the export recorded its source, if so the report names it
 	if info != nil {
 		doc.ExportCluster, doc.ExportedAt = info.Cluster, info.ExportedAt
 	}
+	// checking if the run failed, if so failReason says which part of the test it missed, its defined below
 	if !doc.Passed {
 		doc.FailReason = failReason(report)
 	}
+	// invoking likelyCause to sum up why things differ, its defined in verifyreport.go
 	doc.LikelyCause = likelyCause(doc)
 
+	// invoking printVerify to print the result, its defined in verifyreport.go
 	printVerify(w, doc, root, kc.name)
+	// checking if a report was wanted, if so its written next to the export or where -o says
 	if !o.noReport {
-		out := o.output
+		out, ignore := o.output, false
+		// checking if -o was left out, if so the report goes to DIR/verify, which git is told to ignore
 		if out == "" {
-			out = filepath.Join(dir, "verify")
+			out, ignore = filepath.Join(dir, "verify"), true
 		}
-		md, err := writeVerifyReport(out, doc, started)
+		// invoking writeVerifyReport to write the markdown and json report, its defined in verifyreport.go
+		md, err := writeVerifyReport(out, doc, started, ignore)
 		if err != nil {
 			return fmt.Errorf("writing the report: %w", err)
 		}
 		fmt.Fprintf(w, "\nReport: %s (and .json)\n", md)
 	}
+	// checking if the run failed, if so the reason goes on the last line, the one ci logs show first
 	if !doc.Passed {
-		// say why on the last line, the one CI logs show first
 		return fmt.Errorf("verification failed: %s", doc.FailReason)
 	}
 	fmt.Fprintln(w, "Passed.")
 	return nil
 }
 
+// namespacesGVR is how the dynamic client finds namespaces, sameCluster reads kube-system through it
 var namespacesGVR = schema.GroupVersionResource{Version: "v1", Resource: "namespaces"}
 
-// chooseSet decides which set to check, and says why: with auto, the
-// platform set when the target is classified as the export's platform (the
-// same directory, platform/aws/eks), else the generic set, which applies to
-// any cluster.
-func (o *verifyOptions) chooseSet(ctx context.Context, root string, kc *kubeContext, dc discovery.DiscoveryInterface, dyn dynamic.Interface) (string, string, error) {
-	info, err := kustomize.ReadExportInfo(root)
-	if err != nil {
-		return "", "", err
-	}
+// chooseSet takes the --set flag and the cluster and decides which part of the export to check, and says why
+// with auto its the platform set when this cluster is classified as the export's platform, like platform/aws/eks, otherwise the generic set that fits any cluster
+func (o *verifyOptions) chooseSet(ctx context.Context, info *kustomize.ExportInfo, kc *kubeContext, dc discover.Interface, dyn dynamic.Interface) (set, why string, err error) {
 	platDir := ""
+	// checking if the export recorded its platform set, if so thats the one auto and platform can pick
 	if info != nil {
 		platDir = info.PlatformDir
 	}
+	// checking which --set was given, generic and platform are taken as asked, auto carries on below
 	switch o.set {
 	case "generic":
 		return "", "the generic set, as --set generic asks", nil
 	case "platform":
+		// checking if the export has no platform set, if so --set platform cant be honored
 		if platDir == "" {
 			return "", "", errors.New("--set platform: this export has no platform set (its platform was not identified)")
 		}
@@ -239,25 +285,33 @@ func (o *verifyOptions) chooseSet(ctx context.Context, root string, kc *kubeCont
 	default:
 		return "", "", fmt.Errorf("--set must be auto, generic or platform, not %q", o.set)
 	}
+	// checking if the export has no platform set, if so auto falls back to the generic set
 	if platDir == "" {
 		return "", "the generic set; the export has no platform set", nil
 	}
+	// invoking platform.FromKubeconfig to read the hints the kubeconfig gives, its defined in pkg/platform/signals.go
 	signals := platform.FromKubeconfig(kc.platform)
+	// invoking platform.Probe to ask the cluster itself, its defined in pkg/platform/probe.go
 	probed, _ := platform.Probe(ctx, dc, dyn)
+	// invoking platform.Decide to weigh both into one classification, its defined in pkg/platform/platform.go
 	cls := platform.Decide(append(signals, probed...))
+	// checking if this cluster is on the export's platform, if so its platform set is the one to check
 	if cls.Dir() == platDir {
 		return platDir, "the " + platDir + " set: this cluster is " + cls.Summary(), nil
 	}
 	return "", "the generic set: the export's platform set is " + platDir + ", and this cluster is " + cls.Summary(), nil
 }
 
-// sameCluster reports whether the cluster verified is the one the export
-// came from, by their kube-system Namespace UIDs; nil when either is unknown.
+// sameCluster tells if the cluster being verified is the one the export came from, by comparing their kube-system namespace uids
+// it gives back nil when either uid is unknown, since then theres no way to tell
 func sameCluster(ctx context.Context, dyn dynamic.Interface, info *kustomize.ExportInfo) *bool {
+	// checking if the export recorded its kube-system uid, if not theres nothing to compare
 	if info == nil || info.KubeSystemUID == "" {
 		return nil
 	}
+	// reading this cluster's kube-system namespace for its uid
 	ns, err := dyn.Resource(namespacesGVR).Get(ctx, "kube-system", metav1.GetOptions{})
+	// checking if it couldnt be read, if so the answer is unknown rather than an error
 	if err != nil {
 		return nil
 	}
@@ -265,17 +319,20 @@ func sameCluster(ctx context.Context, dyn dynamic.Interface, info *kustomize.Exp
 	return &same
 }
 
-// otherClusterNote says when the cluster verified is not the one the export came from: expected after restoring
-// the export elsewhere, a mistake otherwise (e.g. staging instead of prod), where a nearly clean result means
-// nothing. Informational, never a failure; empty when they match or either is unknown.
+// otherClusterNote takes what sameCluster found and gives back a note when this isnt the export's cluster, empty otherwise
+// thats expected after restoring the export somewhere else, and a mistake otherwise, like checking staging instead of prod
+// its only ever informational, never a failure
 func otherClusterNote(info *kustomize.ExportInfo, same *bool) string {
+	// checking if its the same cluster or unknown, if so theres nothing to say
 	if same == nil || *same {
 		return ""
 	}
 	from := info.Cluster
+	// checking if the export recorded the cluster's provider id, if so the note includes it
 	if info.ProviderID != "" {
 		from += " (" + info.ProviderID + ")"
 	}
+	// checking if the export recorded when it was taken, if so the note includes that too
 	if info.ExportedAt != "" {
 		from += ", exported " + info.ExportedAt
 	}
@@ -283,60 +340,73 @@ func otherClusterNote(info *kustomize.ExportInfo, same *bool) string {
 		"That is expected after restoring it here; otherwise check --context."
 }
 
-// failReason says which part of the acceptance test a run missed, the share of resources that would not change, unexplained differences, or both.
+// failReason takes a failed report and says which part of the test it missed
+// that can be too few resources unchanged, resources that couldnt be checked, unexplained differences, or several of those
 func failReason(r *verify.Report) string {
 	var why []string
+	// checking if too many resources would change, if so the percent goes in the reason
 	if !r.MeetsThreshold() {
 		why = append(why, fmt.Sprintf("%.1f%% would not change, %d%% required", r.CleanPercent(), r.RequiredPercent()))
 	}
+	// checking if some resources couldnt be checked for lack of permission
 	if n := len(r.NotChecked); n > 0 {
-		why = append(why, plural(n, "resource", "resources")+" not checked (no permission)")
+		why = append(why, text.Plural(n, "resource", "resources")+" not checked (no permission)")
 	}
+	// checking if any difference has no known explanation
 	if unexplained := r.Unexplained(); unexplained > 0 {
-		why = append(why, plural(unexplained, "unexplained difference", "unexplained differences"))
+		why = append(why, text.Plural(unexplained, "unexplained difference", "unexplained differences"))
 	}
 	return strings.Join(why, "; ")
 }
 
-// notCheckedError is a run where the credentials could check nothing: they
-// may not get the resources, or may not patch them for the dry-run.
+// notCheckedError builds the error for a run where the credentials could check nothing, they cant read the resources or cant patch them for the dry-run
 func notCheckedError(r *verify.Report, identity string) error {
 	who := "These credentials"
+	// checking if we know who the credentials belong to, if so the error names them
 	if identity != "" {
 		who += " (" + identity + ")"
 	}
-	return fmt.Errorf("%s could check none of the %s: %s", who, plural(len(r.NotChecked), "resource", "resources"), refusals(r.NotChecked, identity))
+	// invoking refusals to say what was refused and how to fix it, its defined below
+	return fmt.Errorf("%s could check none of the %s: %s", who, text.Plural(len(r.NotChecked), "resource", "resources"), refusals(r.NotChecked, identity))
 }
 
-// refusals says why resources could not be checked, by what was refused.
+// refusals takes the resources that couldnt be checked and says why, grouped by whether patch or get was refused, with the fix for each
 func refusals(notChecked []verify.Diff, identity string) string {
 	patch, get := 0, 0
+	// counting how many were refused patch and how many were refused get
 	for _, d := range notChecked {
-		if len(d.Paths) > 0 && strings.Contains(d.Paths[0], "may not patch") {
+		// checking if it was patch that was refused, otherwise it was get
+		if d.Refused == verify.RefusedPatch {
 			patch++
 		} else {
 			get++
 		}
 	}
 	var parts []string
+	// checking if any were refused patch, if so the fix is a role that allows it, like the built-in edit role
 	if patch > 0 {
 		parts = append(parts, fmt.Sprintf("%s may be read but not patched, and verify's dry-run apply needs patch "+
 			"(dryRun=All: the cluster changes nothing); the built-in edit role is enough, e.g. "+
-			"kubectl create rolebinding setdrift-verify -n <namespace> --clusterrole=edit %s", plural(patch, "resource", "resources"), collect.Subject(identity)))
+			"kubectl create rolebinding setdrift-verify -n <namespace> --clusterrole=edit %s", text.Plural(patch, "resource", "resources"), collect.Subject(identity)))
 	}
+	// checking if any were refused get, if so the fix is fewer namespaces or credentials with more access
 	if get > 0 {
 		parts = append(parts, fmt.Sprintf("%s may not be read at all (verify needs get; the view role leaves out RBAC objects, "+
 			"and namespace-scoped access leaves out cluster-scoped resources): check fewer with -n <namespace>, or use credentials with access",
-			plural(get, "resource", "resources")))
+			text.Plural(get, "resource", "resources")))
 	}
 	return strings.Join(parts, "; ")
 }
 
-// adds up the skipped counts for the "nothing to verify" message
+// skippedTotal adds up how many files were skipped, for the nothing to verify message
 func skippedTotal(r *verify.Report) int {
 	n := 0
+	// adding up each kind of skip, like redacted files
 	for _, c := range r.Skipped {
 		n += c
 	}
 	return n
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

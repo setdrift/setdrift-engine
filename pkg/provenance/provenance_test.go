@@ -1,5 +1,4 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
+// tests how the classifier picks a manager from the markers, checks the managers exist, and reads a CI/CD pipeline's evidence
 
 package provenance
 
@@ -14,6 +13,7 @@ import (
 	snapshotv1alpha1 "setdrift.io/setdrift-engine/pkg/snapshot/v1alpha1"
 )
 
+// object builds a resource object with the given kind, namespace, name, labels and annotations
 func object(apiVersion, kind, ns, name string, labels, ann map[string]string) *resource.Object {
 	u := &unstructured.Unstructured{}
 	u.SetAPIVersion(apiVersion)
@@ -25,6 +25,7 @@ func object(apiVersion, kind, ns, name string, labels, ann map[string]string) *r
 	return resource.New(u)
 }
 
+// check that the strongest marker wins when an object carries several, Flux and Argo CD over Helm, and the weak ones get low confidence
 func TestClassifyPrecedence(t *testing.T) {
 	const (
 		argo  = snapshotv1alpha1.Source_SOURCE_ARGO_CD
@@ -83,6 +84,7 @@ func TestClassifyPrecedence(t *testing.T) {
 	}
 }
 
+// check that a tracking id matches only the object it names, and malformed ids match nothing
 func TestTrackingIDMatches(t *testing.T) {
 	for _, tc := range []struct {
 		id            string
@@ -105,8 +107,7 @@ func TestTrackingIDMatches(t *testing.T) {
 	}
 }
 
-// TestManagerChecks covers the cases where a missing manager must not be
-// reported because it could not be seen.
+// check that a missing manager is reported only when its kind of manager could be seen at all
 func TestManagerChecks(t *testing.T) {
 	tracked := func(app string) *resource.Object {
 		return object("v1", "ConfigMap", "shop", "web", nil, map[string]string{argoTrackingID: app + ":/ConfigMap:shop/web"})
@@ -122,7 +123,7 @@ func TestManagerChecks(t *testing.T) {
 		}
 		return c
 	}
-	// No Applications at all: Argo CD may run in another cluster.
+	// no Applications at all, Argo CD may run in another cluster
 	if c := codes(tracked("gone")); len(c) != 0 {
 		t.Errorf("Argo CD not in this cluster: got %v, want no findings", c)
 	}
@@ -130,13 +131,14 @@ func TestManagerChecks(t *testing.T) {
 	if c := codes(tracked("gone"), app); len(c) != 1 || c[0] != "MANAGER_NOT_FOUND" {
 		t.Errorf("Argo CD here, app missing: got %v, want MANAGER_NOT_FOUND", c)
 	}
-	// Helm release with no readable Secrets in its namespace: unknown.
+	// a Helm release with no readable Secrets in its namespace, so its unknown
 	helmObj := object("v1", "ConfigMap", "shop", "web", nil, map[string]string{helmReleaseName: "web"})
 	if c := codes(helmObj); len(c) != 0 {
 		t.Errorf("no Secrets visible: got %v, want no findings", c)
 	}
 }
 
+// check that an owner in a custom resource group makes an object an operator's, and Kubernetes' own groups dont
 func TestOperatorOwner(t *testing.T) {
 	yes := true
 	for _, tc := range []struct {
@@ -156,9 +158,7 @@ func TestOperatorOwner(t *testing.T) {
 	}
 }
 
-// A CI/CD pipeline's annotations, or its field manager when asked for, make
-// an object CI/CD's; GitOps markers stay stronger, with the annotations kept
-// as evidence.
+// check that a CI/CD pipeline's annotations, or its field manager when asked for, make an object CI/CD's, and GitOps markers stay stronger with the annotations kept as evidence
 func TestCIPipeline(t *testing.T) {
 	src := map[string]string{
 		SourceRepoAnnotation:     "https://github.com/acme/shop",
@@ -176,13 +176,13 @@ func TestCIPipeline(t *testing.T) {
 		t.Errorf("annotated: %+v", p)
 	}
 
-	// helm template | kubectl apply leaves Helm's label only: the pipeline wins
+	// helm template | kubectl apply leaves only Helm's label, so the pipeline wins
 	p = c.Classify(object("v1", "ConfigMap", "shop", "b", map[string]string{"app.kubernetes.io/managed-by": "Helm"}, src))
 	if p.Source != snapshotv1alpha1.Source_SOURCE_CI_CD {
 		t.Errorf("Helm label and annotations: %+v", p)
 	}
 
-	// Argo CD's tracking id is stronger; the annotations stay as evidence
+	// Argo CD's tracking id is stronger, the annotations stay as evidence
 	argo := map[string]string{"argocd.argoproj.io/tracking-id": "shop:/ConfigMap:shop/c"}
 	for k, v := range src {
 		argo[k] = v
@@ -207,6 +207,7 @@ func TestCIPipeline(t *testing.T) {
 	}
 }
 
+// check that each way of naming a repository becomes one url without credentials, and a value naming no host is kept
 func TestCanonicalRepo(t *testing.T) {
 	for in, want := range map[string]string{
 		"https://github.com/foo/bar":                        "https://github.com/foo/bar",
@@ -218,6 +219,9 @@ func TestCanonicalRepo(t *testing.T) {
 		"git@github.com:foo/bar.git":                        "https://github.com/foo/bar",
 		"ssh://git@github.com/foo/bar":                      "https://github.com/foo/bar",
 		"https://x-access-token:ghs_abc@github.com/foo/bar": "https://github.com/foo/bar",
+		"https://u:ghs_abc@github.com/foo/@scope":           "https://github.com/foo/@scope",
+		"https://u:ghs_abc@localhost/foo":                   "https://localhost/foo",
+		"https://u:ghs_abc@github.com":                      "https://github.com",
 		"gitlab/group/sub/project":                          "https://gitlab.com/group/sub/project",
 		"https://git.example.com:8443/team/app":             "https://git.example.com:8443/team/app",
 		"foo/bar":                                           "foo/bar",
@@ -234,3 +238,6 @@ func TestCanonicalRepo(t *testing.T) {
 		t.Errorf("classified: %+v", p)
 	}
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

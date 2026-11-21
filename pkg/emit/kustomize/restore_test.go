@@ -1,19 +1,18 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
+// tests RESTORE.md and its platform playbooks, built from small snapshots, and the helpers that find lines, charts and pull secrets
 
 package kustomize
 
 import (
-	"encoding/base64"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 
+	"setdrift.io/setdrift-engine/internal/text"
 	snapshotv1alpha1 "setdrift.io/setdrift-engine/pkg/snapshot/v1alpha1"
 )
 
+// check that a redaction path finds its line in the yaml, through keys with dots and list items by name or index
 func TestLineOf(t *testing.T) {
 	doc := []byte(`apiVersion: v1
 data:
@@ -44,27 +43,29 @@ spec:
 	}
 }
 
+// check that a helm.sh/chart label splits into the chart and its version, even when the chart name has dashes
 func TestChartOf(t *testing.T) {
 	for label, want := range map[string][2]string{
 		"external-secrets-2.15.0": {"external-secrets", "2.15.0"},
 		"chart-0.1.0":             {"chart", "0.1.0"},
 		"nginx":                   {"nginx", ""},
 	} {
-		r := &snapshotv1alpha1.Resource{ManifestJson: `{"metadata":{"labels":{"helm.sh/chart":"` + label + `"}}}`}
-		if c, v := chartOf(r); c != want[0] || v != want[1] {
+		if c, v := chartOf(label); c != want[0] || v != want[1] {
 			t.Errorf("%s: %s %s", label, c, v)
 		}
 	}
 }
 
+// check that shell quoting leaves safe words alone and quotes spaces, quotes and the empty string
 func TestShellQuote(t *testing.T) {
 	for in, want := range map[string]string{"web": "web", "a b": "'a b'", "it's": `'it'\''s'`, "": "''", "arn:aws:iam::1:role/x": "arn:aws:iam::1:role/x"} {
-		if got := shellQuote(in); got != want {
+		if got := text.ShellQuote(in); got != want {
 			t.Errorf("%q: %s, want %s", in, got, want)
 		}
 	}
 }
 
+// check that an EKS export gets a generic RESTORE.md without aws commands, and platform playbooks with the roles, ids, volumes, storage classes and helm installs
 func TestRestorePlaybook(t *testing.T) {
 	s := &snapshotv1alpha1.Snapshot{
 		Cluster:  &snapshotv1alpha1.Cluster{Name: "prod", Platform: "eks", ProviderId: "arn:aws:eks:us-east-2:111122223333:cluster/prod"},
@@ -106,7 +107,7 @@ func TestRestorePlaybook(t *testing.T) {
 	}
 	root := ClusterDir(dir, "prod")
 	generic := readFile(t, root, "RESTORE.md")
-	// The AWS steps are in the platform's playbooks; RESTORE.md points to them.
+	// the aws steps are in the platform's playbooks, RESTORE.md points to them
 	md := generic + readFile(t, root, "platform/aws/RESTORE.md") + readFile(t, root, "platform/aws/eks/RESTORE.md")
 	for _, aws := range []string{"aws eks ", "aws ec2 ", "aws iam ", "$REGION", "$DST_CLUSTER"} {
 		if strings.Contains(generic, aws) {
@@ -151,6 +152,7 @@ func TestRestorePlaybook(t *testing.T) {
 	}
 }
 
+// check that a Secret only a controller generates is left to it, and one with some user keys is merged with only those keys
 func TestGeneratedSecrets(t *testing.T) {
 	gen := func(path string) *snapshotv1alpha1.Redaction {
 		return &snapshotv1alpha1.Redaction{Path: path, Reason: snapshotv1alpha1.RedactionReason_REDACTION_REASON_GENERATED_VALUE, Controller: "argocd-server"}
@@ -170,13 +172,13 @@ func TestGeneratedSecrets(t *testing.T) {
 				Redactions:   []*snapshotv1alpha1.Redaction{gen("data.server.secretkey"), val("data.webhook.github.secret")}},
 		},
 	}
-	es, _ := DefaultExternalSecrets("aws-secrets-manager")
+	es := mustExternalSecrets(t, "aws-secrets-manager")
 	dir := t.TempDir()
 	if err := (Emitter{ExternalSecrets: es}).Emit(s, dir); err != nil {
 		t.Fatal(err)
 	}
 	root := ClusterDir(dir, "prod")
-	md, _ := os.ReadFile(filepath.Join(root, "RESTORE.md"))
+	md := mustRead(t, filepath.Join(root, "RESTORE.md"))
 	for _, want := range []string{
 		"- Secret argocd/argocd-redis, by argocd-server",
 		"(Secret argocd/argocd-secret, merge: argocd-server writes the other keys)",
@@ -202,44 +204,29 @@ func TestGeneratedSecrets(t *testing.T) {
 	}
 }
 
-// ECR hosts are found in both docker config forms, in data (base64) and
-// stringData, with or without a scheme, in China and FIPS endpoints; other
-// registries are not ECR.
-func TestECRRegistries(t *testing.T) {
-	b64 := func(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
-	for _, c := range []struct {
-		name, manifest string
-		want           []string
-	}{
-		{"dockerconfigjson in data",
-			`{"data":{".dockerconfigjson":"` + b64(`{"auths":{"https://111122223333.dkr.ecr.us-east-1.amazonaws.com":{},"ghcr.io":{}}}`) + `"}}`,
-			[]string{"https://111122223333.dkr.ecr.us-east-1.amazonaws.com"}},
-		{"dockercfg in stringData",
-			`{"stringData":{".dockercfg":"{\"111122223333.dkr.ecr.cn-north-1.amazonaws.com.cn\":{}}"}}`,
-			[]string{"111122223333.dkr.ecr.cn-north-1.amazonaws.com.cn"}},
-		{"FIPS endpoint",
-			`{"data":{".dockerconfigjson":"` + b64(`{"auths":{"111122223333.dkr.ecr-fips.us-gov-west-1.amazonaws.com":{}}}`) + `"}}`,
-			[]string{"111122223333.dkr.ecr-fips.us-gov-west-1.amazonaws.com"}},
-		{"other registries", `{"data":{".dockerconfigjson":"` + b64(`{"auths":{"docker.io":{},"public.ecr.aws":{}}}`) + `"}}`, nil},
-		{"not a docker config", `{"data":{"password":"` + b64("x") + `"}}`, nil},
+// check that pull Secrets are told apart by their type, the one thing the redacted manifest keeps about them
+func TestPullSecret(t *testing.T) {
+	for manifest, want := range map[string]bool{
+		`{"type":"kubernetes.io/dockerconfigjson","data":{".dockerconfigjson":"x"}}`: true,
+		`{"type":"kubernetes.io/dockercfg"}`:                                         true,
+		`{"type":"Opaque","data":{"password":"x"}}`:                                  false,
+		`not json`: false,
 	} {
-		r := &snapshotv1alpha1.Resource{ApiVersion: "v1", Kind: "Secret", ManifestJson: c.manifest}
-		if got := ecrRegistries(r); !slices.Equal(got, c.want) {
-			t.Errorf("%s: %v, want %v", c.name, got, c.want)
+		if got := pullSecret(&snapshotv1alpha1.Resource{ApiVersion: "v1", Kind: "Secret", ManifestJson: manifest}); got != want {
+			t.Errorf("%s: %v, want %v", manifest, got, want)
 		}
 	}
 }
 
-// Redacted add-on configuration is named under the add-on commands, with the
-// command that reads the real values from the source.
-func TestAddonConfigRedactions(t *testing.T) {
+// check that add-on configuration values never go into RESTORE.md, redacted or not, each command reads them from the source add-on as it runs
+func TestAddonConfigNotWritten(t *testing.T) {
 	s := &snapshotv1alpha1.Snapshot{
 		Cluster:  &snapshotv1alpha1.Cluster{Name: "prod", Platform: "eks", ProviderId: "arn:aws:eks:us-east-2:111122223333:cluster/prod"},
 		Producer: &snapshotv1alpha1.Producer{Version: "test"},
 		Inventory: &snapshotv1alpha1.Inventory{Aws: &snapshotv1alpha1.AwsInventory{ClusterName: "prod", Region: "us-east-2", Addons: []*snapshotv1alpha1.Addon{
-			{Name: "agent", Version: "v1", ConfigurationValues: `{"apiKey":"SETDRIFT_REDACTED","site":"eu"}`, ConfigurationRedactions: []string{"apiKey"}},
-			{Name: "broken", Version: "v1", ConfigurationValues: "SETDRIFT_REDACTED"},
-			{Name: "plain", Version: "v1", ConfigurationValues: `{"replicas":2}`},
+			{Name: "agent", Version: "v1", HasConfiguration: true},
+			{Name: "plain", Version: "v1", HasConfiguration: true},
+			{Name: "none", Version: "v1"},
 		}}},
 	}
 	dir := t.TempDir()
@@ -247,25 +234,24 @@ func TestAddonConfigRedactions(t *testing.T) {
 		t.Fatal(err)
 	}
 	root := ClusterDir(dir, "prod")
-	b := []byte(readFile(t, root, "RESTORE.md") + readFile(t, root, "platform/aws/eks/RESTORE.md"))
-	md := string(b)
-	for _, want := range []string{
-		"configuration values of `agent` hold what look like secrets", "`apiKey`",
-		"--addon-name agent --query addon.configurationValues",
-		"configuration values of `broken` did not parse",
-	} {
-		if !strings.Contains(md, want) {
-			t.Errorf("RESTORE.md lacks %q", want)
+	md := readFile(t, root, "RESTORE.md") + readFile(t, root, "platform/aws/eks/RESTORE.md")
+	// every configuration value in RESTORE.md is read from AWS as the command runs, never written in, the snapshot never holds them anyway
+	if all, looked := strings.Count(md, "--configuration-values"), strings.Count(md, `--configuration-values "$CONFIG"`); all != looked || all != 2 {
+		t.Errorf("RESTORE.md has %d --configuration-values, %d of them from the lookup, want 2 and 2:\n%s", all, looked, md)
+	}
+	for _, name := range []string{"agent", "plain"} {
+		lookup := `CONFIG=$(aws eks describe-addon --region "$REGION" --cluster-name prod --addon-name ` + name + ` --query addon.configurationValues --output text)`
+		create := `--addon-name ` + name + ` --addon-version v1 --configuration-values "$CONFIG"`
+		if !strings.Contains(md, lookup) || !strings.Contains(md, create) {
+			t.Errorf("RESTORE.md lacks the lookup for %s:\n%s", name, md)
 		}
 	}
-	if strings.Contains(md, "values of `plain`") {
-		t.Error("note for an add-on with nothing redacted")
+	if strings.Contains(md, "--addon-name none --query") {
+		t.Error("a configuration lookup for an add-on with none")
 	}
 }
 
-// A chart installed by hand gets the repository Argo CD or Flux installs the
-// same chart from; a chart from two repositories, or a release with no
-// recorded chart, gets none, with the command that shows the chart.
+// check that a chart installed by hand gets the repository argo cd or flux installs the same chart from, and a chart from two repositories or a release with no recorded chart gets none, with the command that shows the chart
 func TestHelmRepoFromGitOps(t *testing.T) {
 	obj := func(apiVersion, kind, ns, name, spec string) *snapshotv1alpha1.Resource {
 		return &snapshotv1alpha1.Resource{ApiVersion: apiVersion, Kind: kind, Namespace: ns, Name: name,
@@ -292,7 +278,7 @@ func TestHelmRepoFromGitOps(t *testing.T) {
 				`{"chart":{"spec":{"chart":"ingress-nginx","sourceRef":{"kind":"HelmRepository","name":"ingress","namespace":"flux-system"}}}}`),
 			obj("source.toolkit.fluxcd.io/v1", "OCIRepository", "apps", "podinfo", `{"url":"oci://ghcr.io/stefanprodan/charts/podinfo"}`),
 			obj("helm.toolkit.fluxcd.io/v2", "HelmRelease", "apps", "podinfo", `{"chartRef":{"kind":"OCIRepository","name":"podinfo"}}`),
-			// two repositories for one chart: no guess
+			// two repositories for one chart, so no guess
 			obj("argoproj.io/v1alpha1", "Application", "argocd", "a", `{"sources":[{"repoURL":"https://one.example.com","chart":"web"}]}`),
 			obj("argoproj.io/v1alpha1", "Application", "argocd", "b", `{"source":{"repoURL":"https://two.example.com","chart":"web"}}`),
 			helmObj("monitoring", "prom", "kube-prometheus-stack-60.0.0"),
@@ -306,7 +292,7 @@ func TestHelmRepoFromGitOps(t *testing.T) {
 	if err := (Emitter{}).Emit(s, dir); err != nil {
 		t.Fatal(err)
 	}
-	b, _ := os.ReadFile(filepath.Join(ClusterDir(dir, "prod"), "RESTORE.md"))
+	b := mustRead(t, filepath.Join(ClusterDir(dir, "prod"), "RESTORE.md"))
 	md := string(b)
 	for _, want := range []string{
 		"install prom kube-prometheus-stack --repo https://prometheus-community.github.io/helm-charts",
@@ -323,8 +309,7 @@ func TestHelmRepoFromGitOps(t *testing.T) {
 	}
 }
 
-// A Secret its controller only fills in is created empty, then its namespace
-// restarted; one the controller creates whole stays "nothing to do".
+// check that a Secret its controller only fills in is created empty and its namespace restarted, while one the controller creates with all its keys stays "nothing to do"
 func TestSecretsFilledByController(t *testing.T) {
 	secret := func(name string, finding bool) *snapshotv1alpha1.Resource {
 		r := &snapshotv1alpha1.Resource{ApiVersion: "v1", Kind: "Secret", Namespace: "argocd", Name: name,
@@ -341,7 +326,7 @@ func TestSecretsFilledByController(t *testing.T) {
 	if err := (Emitter{}).Emit(s, dir); err != nil {
 		t.Fatal(err)
 	}
-	b, _ := os.ReadFile(filepath.Join(ClusterDir(dir, "prod"), "RESTORE.md"))
+	b := mustRead(t, filepath.Join(ClusterDir(dir, "prod"), "RESTORE.md"))
 	md := string(b)
 	for _, want := range []string{
 		"**Create these empty.**",
@@ -358,7 +343,7 @@ func TestSecretsFilledByController(t *testing.T) {
 	}
 }
 
-// readFile reads a file under root, or "" if there is none.
+// readFile reads a file under root, or gives back "" if theres none, for the playbooks that are only written for some platforms
 func readFile(t *testing.T, root, rel string) string {
 	t.Helper()
 	b, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
@@ -368,15 +353,35 @@ func readFile(t *testing.T, root, rel string) string {
 	return string(b)
 }
 
-// RESTORE.md's secrets export command gives every setting, from the export's own.
-func TestSecretsExportCommand(t *testing.T) {
-	x, _ := DefaultExternalSecrets("aws-parameter-store")
-	got := strings.Join(restoreData{secretSettings: x}.secretsExportCommand("us-east-2"), "\n")
-	for _, want := range []string{"setdrift secrets export --aws redacted", `--context "$SRC" --region us-east-2`,
-		"--secret-manager aws-parameter-store --secret-key-template '/{{.Cluster}}/{{.Namespace}}/{{.Name}}'",
-		"--store-kind ClusterSecretStore --store-name secret-store", "--external-secrets-out external-secrets --force"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("lacks %q:\n%s", want, got)
-		}
+// mustRead reads a file, failing the test if it cant be read
+func mustRead(t *testing.T, path string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
 	}
+	return b
 }
+
+// mustReadDir gives back the entries of dir, failing the test if it cant be read
+func mustReadDir(t *testing.T, dir string) []os.DirEntry {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return entries
+}
+
+// mustExternalSecrets calls DefaultExternalSecrets for the provider, failing the test on an error
+func mustExternalSecrets(t *testing.T, provider string) *ExternalSecrets {
+	t.Helper()
+	x, err := DefaultExternalSecrets(provider)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return x
+}
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

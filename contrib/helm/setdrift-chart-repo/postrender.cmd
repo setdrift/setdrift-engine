@@ -1,8 +1,5 @@
 @echo off
 setlocal
-rem Copyright The SetDrift Authors
-rem SPDX-License-Identifier: Apache-2.0
-
 rem Runs setdrift helm-postrender under whichever name SetDrift was installed
 rem as: setdrift.exe (a release binary) or kubectl-setdrift.exe (a kubectl
 rem plugin, e.g. through krew). Arguments are Helm's --post-renderer-args.
@@ -18,3 +15,6 @@ if not defined SETDRIFT (
 )
 "%SETDRIFT%" helm-postrender %*
 exit /b %errorlevel%
+
+rem Copyright The SetDrift Authors
+rem SPDX-License-Identifier: Apache-2.0

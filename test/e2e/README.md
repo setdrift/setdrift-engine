@@ -38,11 +38,19 @@ that `setdrift verify` passes and notes the different cluster. It fails on
 any command that fails, other than "already exists" for settings the
 target's own stack made.
 
+Right after the export it checks the least-privilege IAM policy in
+[docs/permissions.md](../../docs/permissions.md): IAM's policy simulator must
+allow every call `export --aws` makes on the source cluster's real resources
+(the cluster, its access entries, Pod Identity associations, add-ons and their
+roles), and must not allow `iam:GetRole` on another account's role. Nothing is
+created; the credentials running the test need `iam:SimulateCustomPolicy`.
+
 Where the playbook offers a choice it follows the platform's playbooks
 (platform/aws/eks, platform/aws) and applies the EKS set, restores Secrets
-through External Secrets Operator (option C: `setdrift secrets export`
-copies the values into Secrets Manager, and the restored Secrets must match
-the source's by hash), copies other objects holding secret values from the
+through External Secrets Operator (option C: the test runs the playbook's
+create-secret commands by hand, filling each value from the source's fixture
+Secret without writing it to disk, as SetDrift never copies values itself, and
+the restored Secrets must match the source's by hash), copies other objects holding secret values from the
 source (option A), and copies volumes from snapshots. It skips the IRSA
 trust update (the fixture's role is in an account no one can read), and the
 options that need real secret values typed in. The fixture's local Helm chart has

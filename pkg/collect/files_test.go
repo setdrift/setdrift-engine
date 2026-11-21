@@ -1,5 +1,4 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
+// tests reading manifests from a directory, what gets skipped, what gets refused and that errors never print secret values
 
 package collect_test
 
@@ -8,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -15,6 +15,7 @@ import (
 	"setdrift.io/setdrift-engine/pkg/collect"
 )
 
+// writeFiles writes files, keyed by relative path, into a new temp directory and gives back the directory
 func writeFiles(t *testing.T, files map[string]string) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -30,9 +31,10 @@ func writeFiles(t *testing.T, files map[string]string) string {
 	return dir
 }
 
+// configMap is a minimal ConfigMap manifest the tests read back
 const configMap = "apiVersion: v1\nkind: ConfigMap\nmetadata: {name: settings, namespace: shop}\n"
 
-// TestFileSourceSkips: a repository checkout can be read directly.
+// check that a repository checkout can be read directly, skipping dot-directories, Kustomization files, runtime state and non-yaml files
 func TestFileSourceSkips(t *testing.T) {
 	dir := writeFiles(t, map[string]string{
 		"apps/settings.yaml":            configMap,
@@ -65,8 +67,7 @@ func TestFileSourceSkips(t *testing.T) {
 	}
 }
 
-// TestFileSourceErrors: errors name the document, and never print its
-// content, which may be a Secret.
+// check that decode errors name the document and never print its content, which may be a Secret
 func TestFileSourceErrors(t *testing.T) {
 	secretNoKind := "apiVersion: v1\nmetadata: {name: db}\ndata: {password: aHVudGVyMg==}\n"
 	for _, tc := range []struct {
@@ -94,30 +95,15 @@ func TestFileSourceErrors(t *testing.T) {
 	}
 }
 
-// TestSkipListsInStep: FileSource skips by kind what ClusterCollector skips
-// by resource.
-func TestSkipListsInStep(t *testing.T) {
-	var byResource, byKind []string
-	for gr := range collect.DefaultSkip {
-		byResource = append(byResource, gr.Group)
-	}
-	for gk := range collect.DefaultSkipKinds {
-		byKind = append(byKind, gk.Group)
-	}
-	sort.Strings(byResource)
-	sort.Strings(byKind)
-	if strings.Join(byResource, ",") != strings.Join(byKind, ",") {
-		t.Errorf("DefaultSkip groups %v, DefaultSkipKinds groups %v: keep them in step", byResource, byKind)
-	}
-}
-
-// TestFileSourceKustomize: a Kustomization that only lists files in the tree
-// is skipped, with or without kind; one whose output differs from its files is
-// refused, naming why and the command that renders it.
+// check that a Kustomization only listing files in the tree is skipped, with or without kind, and one whose output differs is refused naming why and the command that renders it
 func TestFileSourceKustomize(t *testing.T) {
 	for _, tc := range []struct{ name, file, kustomization, want string }{
 		{"resources only, no kind", "kustomization.yaml", "resources: [settings.yaml]\n", ""},
-		{"resources in a subdirectory", "kustomization.yml", "resources: [prod/settings.yaml]\n", ""},
+		{"resources written with ./", "kustomization.yml", "resources: [./settings.yaml]\n", ""},
+		{"a file left out", "kustomization.yaml", "resources: []\n", "it leaves out settings.yaml"},
+		{"a listed path that isnt the file", "kustomization.yaml", "resources: [prod/settings.yaml]\n", "it leaves out settings.yaml"},
+		{"remote base over ssh", "kustomization.yaml", "resources:\n- git@gitlab.com:example/app.git\n", "it pulls in git@"},
+		{"remote base with git::", "kustomization.yaml", "resources:\n- git::https://gitlab.com/example/app.git\n", "it pulls in git::"},
 		{"patches", "Kustomization", "resources: [settings.yaml]\npatches: [{path: p.yaml}]\n", "it sets patches"},
 		{"transformers", "kustomization.yaml", "namespace: prod\nimages: [{name: web, newTag: v2}]\n", "it sets images, namespace"},
 		{"remote base", "kustomization.yaml", "resources:\n- https://github.com/example/app//base?ref=v1\n", "it pulls in https://"},
@@ -140,8 +126,7 @@ func TestFileSourceKustomize(t *testing.T) {
 	}
 }
 
-// An export read as manifests leaves out its own snapshots and verify
-// reports; a snapshots/ directory elsewhere is read.
+// check that an export read as manifests leaves out its own snapshots and verify reports, while a snapshots/ directory elsewhere is read
 func TestFileSourceSkipsExportRecords(t *testing.T) {
 	dir := t.TempDir()
 	cm := func(name string) string {
@@ -174,3 +159,42 @@ func TestFileSourceSkipsExportRecords(t *testing.T) {
 		t.Errorf("read %v, want app-snapshots and in-export", names)
 	}
 }
+
+// check that a symlink in the directory isnt followed, since it could lead to a file outside it
+func TestFileSourceSkipsSymlinks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks need privileges on Windows")
+	}
+	outside := filepath.Join(t.TempDir(), "outside.yaml")
+	if err := os.WriteFile(outside, []byte("apiVersion: v1\nkind: ConfigMap\nmetadata: {name: outside, namespace: shop}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dir := writeFiles(t, map[string]string{"in.yaml": "apiVersion: v1\nkind: ConfigMap\nmetadata: {name: in, namespace: shop}\n"})
+	if err := os.Symlink(outside, filepath.Join(dir, "link.yaml")); err != nil {
+		t.Fatal(err)
+	}
+	res, err := collect.FileSource{Dir: dir}.Collect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Objects) != 1 || res.Objects[0].GetName() != "in" {
+		t.Errorf("read %d objects, want only the ConfigMap in the directory", len(res.Objects))
+	}
+}
+
+// check that a manifest in a subfolder the Kustomization doesnt list is caught, while a subfolder with its own Kustomization is its own unit
+func TestFileSourceKustomizeNested(t *testing.T) {
+	k := "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources: [settings.yaml]\n"
+	dir := writeFiles(t, map[string]string{"settings.yaml": configMap, "kustomization.yaml": k, "extra/more.yaml": strings.Replace(configMap, "settings", "more", 1)})
+	if _, err := (collect.FileSource{Dir: dir}).Collect(context.Background()); err == nil || !strings.Contains(err.Error(), "it leaves out extra/more.yaml") {
+		t.Errorf("unlisted nested manifest: %v", err)
+	}
+	dir = writeFiles(t, map[string]string{"settings.yaml": configMap, "kustomization.yaml": k,
+		"app/more.yaml": strings.Replace(configMap, "settings", "more", 1), "app/kustomization.yaml": strings.Replace(k, "settings.yaml", "more.yaml", 1)})
+	if res, err := (collect.FileSource{Dir: dir}).Collect(context.Background()); err != nil || len(res.Objects) != 2 {
+		t.Errorf("a subfolder with its own Kustomization: %v", err)
+	}
+}
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

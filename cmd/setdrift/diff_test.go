@@ -1,5 +1,4 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
+// tests the diff command end to end, on directories of manifests, snapshots over time, namespace mapping and argument checks
 
 package main
 
@@ -16,27 +15,24 @@ import (
 	"setdrift.io/setdrift-engine/pkg/diff"
 )
 
-// copyCorpus copies a corpus case's input into a new directory named name.
+// copyCorpus copies the corpus input into a new temp directory with the given name, so a test can change it and name its side
 func copyCorpus(t *testing.T, name string) string {
 	t.Helper()
 	dst := filepath.Join(t.TempDir(), name)
-	if err := os.CopyFS(dst, os.DirFS(filepath.Join("..", "..", "testdata", "corpus", "basic", "input"))); err != nil {
+	if err := os.CopyFS(dst, os.DirFS(corpusInput)); err != nil {
 		t.Fatal(err)
 	}
 	return dst
 }
 
+// runDiff runs setdrift diff with the given arguments and gives back what it printed and its error
 func runDiff(t *testing.T, args ...string) (string, error) {
 	t.Helper()
-	var out bytes.Buffer
-	root := newRootCmd()
-	root.SetArgs(append([]string{"diff"}, args...))
-	root.SetOut(&out)
-	root.SetErr(&bytes.Buffer{})
-	err := root.Execute()
-	return out.String(), err
+	out, _, err := runCmd(t, append([]string{"diff"}, args...)...)
+	return out, err
 }
 
+// check that two directories of manifests diff clean when identical, and show changed fields, redacted secrets and the --exit-code status when not
 func TestDiffDirectories(t *testing.T) {
 	a, b := copyCorpus(t, "staging"), copyCorpus(t, "prod")
 
@@ -58,7 +54,9 @@ func TestDiffDirectories(t *testing.T) {
 		t.Fatal(err)
 	}
 	secret := filepath.Join(b, "secret.yaml")
-	raw, _ = os.ReadFile(secret)
+	if raw, err = os.ReadFile(secret); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(secret, []byte(strings.Replace(string(raw), "  username: YXBw", "  username: YXBw\n  password_ro: eA==", 1)), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +81,7 @@ func TestDiffDirectories(t *testing.T) {
 		t.Errorf("a secret value reached the output:\n%s", out)
 	}
 
-	// without --exit-code, differences are not an error
+	// without --exit-code differences arent an error
 	if _, err := runDiff(t, a, b); err != nil {
 		t.Errorf("without --exit-code: %v", err)
 	}
@@ -107,11 +105,12 @@ func TestDiffDirectories(t *testing.T) {
 	}
 }
 
+// check that two snapshots of the same cluster are labeled by when they were taken and show no differences
 func TestDiffSnapshotOverTime(t *testing.T) {
 	dir := t.TempDir()
 	export := func(pb string) {
 		root := newRootCmd()
-		root.SetArgs([]string{"export", "--from-dir", filepath.Join("..", "..", "testdata", "corpus", "basic", "input"),
+		root.SetArgs([]string{"export", "--from-dir", corpusInput,
 			"--cluster-name", "prod", "-o", filepath.Join(dir, filepath.Base(pb)+".out"), "--snapshot", pb})
 		root.SetOut(&bytes.Buffer{})
 		if err := root.Execute(); err != nil {
@@ -130,10 +129,10 @@ func TestDiffSnapshotOverTime(t *testing.T) {
 	}
 }
 
-// Two namespaces of one source: each side reads only its mapped namespaces.
+// check that comparing a source with itself needs --map-namespace, and then each side reads only its mapped namespace
 func TestDiffNamespacesOfOneCluster(t *testing.T) {
 	a := copyCorpus(t, "c")
-	// a second namespace, prod, holding a changed copy of shop's ConfigMap and nothing else
+	// a second namespace, prod, holding only a ConfigMap shop doesnt have
 	extra := "---\napiVersion: v1\nkind: Namespace\nmetadata: {name: prod}\n---\napiVersion: v1\nkind: ConfigMap\nmetadata: {name: only-prod, namespace: prod}\ndata: {x: \"1\"}\n"
 	if err := os.WriteFile(filepath.Join(a, "prod.yaml"), []byte(extra), 0o644); err != nil {
 		t.Fatal(err)
@@ -152,6 +151,7 @@ func TestDiffNamespacesOfOneCluster(t *testing.T) {
 	}
 }
 
+// check that bad flags, missing files, unknown contexts and an unreadable snapshot fail with a clear message, and exit 2 under --exit-code
 func TestDiffArgs(t *testing.T) {
 	a := copyCorpus(t, "a")
 	for _, tc := range []struct {
@@ -170,7 +170,9 @@ func TestDiffArgs(t *testing.T) {
 		}
 	}
 	notSnapshot := filepath.Join(t.TempDir(), "x.pb")
-	_ = os.WriteFile(notSnapshot, []byte("hello"), 0o644)
+	if err := os.WriteFile(notSnapshot, []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	_, err := runDiff(t, a, notSnapshot, "--exit-code")
 	var ee *exitError
 	if !errors.As(err, &ee) || ee.code != 2 || !strings.Contains(err.Error(), "not a snapshot") {
@@ -178,8 +180,7 @@ func TestDiffArgs(t *testing.T) {
 	}
 }
 
-// Both arguments are checked before either is read; a JSON snapshot reads like
-// the .pb; a --map-namespace pair must name namespaces each side has.
+// check that both arguments are checked before either is read, a json snapshot reads like its .pb, a mapped namespace must exist on its side, and an unreadable file says permission denied
 func TestDiffArgumentChecks(t *testing.T) {
 	dir := t.TempDir()
 	_, err := runDiff(t, filepath.Join(dir, "foo.pb"), filepath.Join(dir, "prod.json"))
@@ -189,13 +190,19 @@ func TestDiffArgumentChecks(t *testing.T) {
 
 	root := newRootCmd()
 	out := filepath.Join(dir, "out")
-	root.SetArgs([]string{"export", "--from-dir", filepath.Join("..", "..", "testdata", "corpus", "basic", "input"), "--cluster-name", "prod", "-o", out})
+	root.SetArgs([]string{"export", "--from-dir", corpusInput, "--cluster-name", "prod", "-o", out})
 	root.SetOut(&bytes.Buffer{})
 	if err := root.Execute(); err != nil {
 		t.Fatal(err)
 	}
-	pb, _ := filepath.Glob(filepath.Join(out, "snapshots", "*.pb"))
-	js, _ := filepath.Glob(filepath.Join(out, "snapshots", "*.json"))
+	pb, err := filepath.Glob(filepath.Join(out, "snapshots", "*.pb"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	js, err := filepath.Glob(filepath.Join(out, "snapshots", "*.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(pb) != 1 || len(js) != 1 {
 		t.Fatalf("snapshots: %v %v", pb, js)
 	}
@@ -220,8 +227,7 @@ func TestDiffArgumentChecks(t *testing.T) {
 	}
 }
 
-// A bare name that is both a directory here and a kubeconfig context is an
-// error; ./name is the directory, context:name the context.
+// check that a bare name thats both a directory and a kubeconfig context is an error, while ./name is the directory and context:name the context
 func TestDiffResolveAmbiguity(t *testing.T) {
 	dir := t.TempDir()
 	kubeconfig := filepath.Join(dir, "kubeconfig")
@@ -275,3 +281,6 @@ current-context: prod
 		t.Error("same: the same directory by two paths is one side; a directory and a context are not")
 	}
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

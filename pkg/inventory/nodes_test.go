@@ -1,5 +1,4 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
+// tests the node summary, the counts and the allocatable totals
 
 package inventory
 
@@ -9,6 +8,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
+// node builds a node with the given instance type, zone, node group and allocatable cpu and memory
 func node(instanceType, zone, pool, cpu, memory string) unstructured.Unstructured {
 	return unstructured.Unstructured{Object: map[string]any{
 		"metadata": map[string]any{"name": "n", "labels": map[string]any{
@@ -20,6 +20,7 @@ func node(instanceType, zone, pool, cpu, memory string) unstructured.Unstructure
 	}}
 }
 
+// check that nodes are counted per type, zone, pool, platform and kubelet version, their allocatable adds up, and no nodes leave cpu empty
 func TestSummarizeNodes(t *testing.T) {
 	s := SummarizeNodes([]unstructured.Unstructured{
 		node("m7g.large", "us-east-1a", "general", "1930m", "7Gi"),
@@ -37,3 +38,6 @@ func TestSummarizeNodes(t *testing.T) {
 		t.Errorf("no nodes = %+v", e)
 	}
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

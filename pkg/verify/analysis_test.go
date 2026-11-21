@@ -1,5 +1,4 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
+// tests the field ownership lookup, the threshold and the analysis of a report's differences
 
 package verify
 
@@ -8,6 +7,7 @@ import (
 	"testing"
 )
 
+// check that owns follows map keys and named list items, and counts an atomic list as owned in full
 func TestOwns(t *testing.T) {
 	var f map[string]any
 	if err := json.Unmarshal([]byte(`{"f:spec":{"f:replicas":{},"f:template":{"f:spec":{"f:containers":{"k:{\"name\":\"web\"}":{"f:image":{}}},"f:args":{}}}}}`), &f); err != nil {
@@ -20,7 +20,7 @@ func TestOwns(t *testing.T) {
 		{[]string{"f:spec", "f:replicas"}, true},
 		{[]string{"f:spec", "f:template", "f:spec", "f:containers", "n:web", "f:image"}, true},
 		{[]string{"f:spec", "f:template", "f:spec", "f:containers", "n:api", "f:image"}, false},
-		// an atomic list: owned as a whole
+		// an atomic list, owned in full
 		{[]string{"f:spec", "f:template", "f:spec", "f:args", "i:0"}, true},
 		{[]string{"f:metadata", "f:labels"}, false},
 	} {
@@ -30,6 +30,7 @@ func TestOwns(t *testing.T) {
 	}
 }
 
+// check that the default and a set threshold decide MeetsThreshold, and that an unexplained difference or an empty run fails
 func TestThreshold(t *testing.T) {
 	r := Report{Total: 20, Clean: 18}
 	if r.MeetsThreshold() || r.RequiredPercent() != 95 {
@@ -52,6 +53,7 @@ func TestThreshold(t *testing.T) {
 	}
 }
 
+// check that Analyze counts by kind, counts kubectl by hand but not an apply as a change, and finds the common field
 func TestAnalyze(t *testing.T) {
 	hand := []Owner{{Manager: "kubectl-edit", Operation: "Update"}}
 	applied := []Owner{{Manager: "kubectl-client-side-apply", Operation: "Update"}}
@@ -75,3 +77,6 @@ func TestAnalyze(t *testing.T) {
 		t.Error("server-side apply is not by hand; kubectl scale is")
 	}
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

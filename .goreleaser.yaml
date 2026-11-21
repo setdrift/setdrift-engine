@@ -1,6 +1,3 @@
-# Copyright The SetDrift Authors
-# SPDX-License-Identifier: Apache-2.0
-
 # Release build: a tag v* starts .github/workflows/release.yaml, which runs
 # GoReleaser with this file. It builds the CLI for each platform, publishes
 # the archives and checksums.txt as a GitHub release, and updates the
@@ -70,6 +67,8 @@ brews:
         url: git@github.com:setdrift/homebrew-tap.git
         private_key: "{{ .Env.HOMEBREW_TAP_DEPLOY_KEY }}"
     directory: Formula
+    # a pre-release (v0.2.0-rc.1) leaves the formula on the last stable release
+    skip_upload: auto
     commit_author:
       name: setdrift-release
       email: release@setdrift.io
@@ -104,3 +103,6 @@ release:
     `irm https://raw.githubusercontent.com/setdrift/setdrift-engine/main/scripts/install.ps1 | iex`.
     Each archive's SHA-256 is in checksums.txt, and GitHub attests where each was built:
     `gh attestation verify <archive> --repo setdrift/setdrift-engine`.
+
+# Copyright The SetDrift Authors
+# SPDX-License-Identifier: Apache-2.0

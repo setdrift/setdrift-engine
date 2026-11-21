@@ -1,5 +1,4 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
+// tests the access checks, which namespaces the credentials may read and what happens when they cant read some
 
 package collect_test
 
@@ -20,8 +19,7 @@ import (
 	"setdrift.io/setdrift-engine/pkg/pipeline"
 )
 
-// grant answers access reviews: the credentials may list in the namespaces
-// given (and across the cluster only if "" is one), and are identity.
+// grant makes the fake cluster answer access reviews as if the credentials are identity and may list only in the namespaces given, across the cluster only if empty is one of them
 func grant(dyn *dynamicfake.FakeDynamicClient, identity string, namespaces ...string) {
 	allowed := map[string]bool{}
 	for _, ns := range namespaces {
@@ -40,7 +38,7 @@ func grant(dyn *dynamicfake.FakeDynamicClient, identity string, namespaces ...st
 			"status": map[string]any{"userInfo": map[string]any{"username": identity}},
 		}}, nil
 	})
-	// lists in namespaces not allowed are refused, as RBAC refuses them
+	// lists in namespaces not allowed are refused, the way RBAC refuses them
 	dyn.PrependReactor("list", "*", func(a clienttesting.Action) (bool, runtime.Object, error) {
 		if a.GetResource().Resource == "namespaces" || allowed[a.GetNamespace()] {
 			return false, nil, nil
@@ -49,11 +47,13 @@ func grant(dyn *dynamicfake.FakeDynamicClient, identity string, namespaces ...st
 	})
 }
 
+// inNamespace moves u into namespace ns and gives it back, for building objects inline
 func inNamespace(u *unstructured.Unstructured, ns string) *unstructured.Unstructured {
 	u.SetNamespace(ns)
 	return u
 }
 
+// check that CheckNamespaces passes a readable namespace and names the missing and unreadable ones with the fix
 func TestCheckNamespaces(t *testing.T) {
 	_, dyn := fakeCluster([]apiType{namespaceType, configMapType},
 		owned("v1", "Namespace", "shop", "n1", nil), owned("v1", "Namespace", "prod", "n2", nil))
@@ -80,8 +80,7 @@ func TestCheckNamespaces(t *testing.T) {
 	}
 }
 
-// Credentials that can list namespaces but not read across them read the
-// namespaces they can, and the snapshot says which they could not.
+// check that credentials able to list namespaces but not read across them read the ones they can, and the snapshot says which they couldnt
 func TestReadableNamespacesOnly(t *testing.T) {
 	disc, dyn := fakeCluster([]apiType{namespaceType, configMapType},
 		owned("v1", "Namespace", "shop", "n1", nil), owned("v1", "Namespace", "prod", "n2", nil),
@@ -110,7 +109,7 @@ func TestReadableNamespacesOnly(t *testing.T) {
 	}
 }
 
-// A namespace that refuses a type is skipped for it, not the type everywhere.
+// check that a namespace refusing a type is skipped for that type only, not the type everywhere
 func TestListDeniedInOneNamespace(t *testing.T) {
 	disc, dyn := fakeCluster([]apiType{namespaceType, configMapType},
 		owned("v1", "Namespace", "shop", "n1", nil), owned("v1", "Namespace", "stage", "n2", nil),
@@ -137,3 +136,6 @@ func TestListDeniedInOneNamespace(t *testing.T) {
 		t.Errorf("unread = %v", u)
 	}
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

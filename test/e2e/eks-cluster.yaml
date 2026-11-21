@@ -1,6 +1,3 @@
-# Copyright The SetDrift Authors
-# SPDX-License-Identifier: Apache-2.0
-
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >-
   SetDrift end-to-end test cluster: EKS Auto Mode with its own VPC, correct
@@ -319,3 +316,6 @@ Outputs:
   SecretNamePrefix:
     Description: Create the test secrets under this prefix (matches the default --secret-key-template)
     Value: !Sub ${ClusterName}/
+
+# Copyright The SetDrift Authors
+# SPDX-License-Identifier: Apache-2.0

@@ -1,6 +1,3 @@
-# Copyright The SetDrift Authors
-# SPDX-License-Identifier: Apache-2.0
-
 # Weekly pull requests that update dependencies
 version: 2
 updates:
@@ -15,7 +12,16 @@ updates:
       # The AWS SDK modules depend on each other's versions.
       aws:
         patterns: ["github.com/aws/*"]
+    ignore:
+      # kustomize 0.21.3 needs structured-merge-diff v7, which only the
+      # Kubernetes 0.38 libraries use; until k8s.io 0.38.0 is released, its
+      # pull request cannot build. Remove this when it is.
+      - dependency-name: "sigs.k8s.io/kustomize/*"
+        versions: [">= 0.21.3"]
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+
+# Copyright The SetDrift Authors
+# SPDX-License-Identifier: Apache-2.0

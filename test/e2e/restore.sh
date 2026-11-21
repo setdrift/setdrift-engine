@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-# Copyright The SetDrift Authors
-# SPDX-License-Identifier: Apache-2.0
 #
 # The restore experiment, end to end: export the e2e cluster, follow the
 # RESTORE.md it writes into a second, empty e2e cluster, and check the result.
@@ -10,10 +8,11 @@
 #   test/e2e/restore.sh          (or make e2e-restore)
 #
 # Where the playbook offers a choice, this takes one:
-#   - Secrets: option C, External Secrets Operator. `setdrift secrets export`
-#     copies the values from the source into Secrets Manager, and the target's
-#     operator (Pod Identity) restores them; the check compares them with the
-#     source's. Other objects holding secret values: option A, copied from the
+#   - Secrets: option C, External Secrets Operator. The test does by hand what
+#     a user does: it runs the playbook's create-secret commands, filling each
+#     <value> from the source's fixture Secret (never via disk), and the
+#     target's operator (Pod Identity) restores them; the check compares them
+#     with the source's. SetDrift itself never copies a value. Other objects holding secret values: option A, copied from the
 #     source (the values never touch disk).
 #   - volumes: copied from snapshots, not reused, so the source keeps its own
 # and it skips what a test can't do:
@@ -70,6 +69,51 @@ setdrift export --context "$SRC" --cluster-name "$source_cluster" --aws -o "$wor
   { cat "$work/export.log"; exit 1; }
 root=$work/export/clusters/$source_cluster
 
+# checks the least-privilege IAM policy in docs/permissions.md against the source cluster's real resources
+# it asks IAM's policy simulator whether the policy allows each call export --aws makes, on each resource it makes it on, nothing is created
+# the actions themselves are kept in step with the code by pkg/awsinventory's TestPermissionsDocMatchesCalls
+check_least_privilege() {
+  local account policy cluster_arn decision pairs=() p action resource arn
+  account=$(aws sts get-caller-identity --query Account --output text)
+  # the policy from the doc, with this cluster's region, account and name filled in
+  policy=$(awk '/^```json$/ { f = 1; next } /^```$/ { f = 0 } f' "$repo/docs/permissions.md" |
+    sed "s/REGION/$region/g; s/ACCOUNT/$account/g; s/CLUSTER/$source_cluster/g")
+  cluster_arn=$(aws eks describe-cluster --region "$region" --name "$source_cluster" --query cluster.arn --output text)
+  for action in DescribeCluster ListPodIdentityAssociations ListAccessEntries ListAddons; do
+    pairs+=("eks:$action $cluster_arn")
+  done
+  # each Pod Identity association, and the role it names
+  for arn in $(aws eks list-pod-identity-associations --region "$region" --cluster-name "$source_cluster" --query 'associations[].associationArn' --output text); do
+    pairs+=("eks:DescribePodIdentityAssociation $arn")
+  done
+  for arn in $(aws eks list-pod-identity-associations --region "$region" --cluster-name "$source_cluster" --query 'associations[].associationId' --output text); do
+    pairs+=("iam:GetRole $(aws eks describe-pod-identity-association --region "$region" --cluster-name "$source_cluster" --association-id "$arn" --query association.roleArn --output text)")
+  done
+  # each access entry
+  for p in $(aws eks list-access-entries --region "$region" --cluster-name "$source_cluster" --query 'accessEntries[]' --output text); do
+    arn=$(aws eks describe-access-entry --region "$region" --cluster-name "$source_cluster" --principal-arn "$p" --query accessEntry.accessEntryArn --output text)
+    pairs+=("eks:DescribeAccessEntry $arn" "eks:ListAssociatedAccessPolicies $arn")
+  done
+  # each add-on
+  for p in $(aws eks list-addons --region "$region" --cluster-name "$source_cluster" --query 'addons[]' --output text); do
+    pairs+=("eks:DescribeAddon $(aws eks describe-addon --region "$region" --cluster-name "$source_cluster" --addon-name "$p" --query addon.addonArn --output text)")
+  done
+  pairs+=("ec2:DescribeVolumes *")
+  for p in "${pairs[@]}"; do
+    action=${p%% *} resource=${p#* }
+    decision=$(aws iam simulate-custom-policy --policy-input-list "$policy" --action-names "$action" --resource-arns "$resource" \
+      --query 'EvaluationResults[0].EvalDecision' --output text)
+    [[ $decision == allowed ]] || fail "docs/permissions.md's policy does not allow $action on $resource ($decision)"
+  done
+  # and a role in another account stays out of reach, as the doc says
+  decision=$(aws iam simulate-custom-policy --policy-input-list "$policy" --action-names iam:GetRole \
+    --resource-arns "arn:aws:iam::000000000000:role/other" --query 'EvaluationResults[0].EvalDecision' --output text)
+  [[ $decision != allowed ]] || fail "docs/permissions.md's policy allows iam:GetRole on another account's role"
+  echo "   least-privilege policy: ${#pairs[@]} calls allowed on the cluster's resources" >&2
+}
+say "least-privilege IAM policy ($(elapsed))"
+check_least_privilege
+
 cluster "$target_cluster" ensure >/dev/null
 DST=$(cluster "$target_cluster" context)
 export SRC DST DST_CLUSTER=$target_cluster REGION=$region
@@ -104,6 +148,29 @@ run_line() {
 }
 
 # skip says why a block is not run, or nothing.
+# fill_remote_secret runs one of the playbook's create-secret lines with each
+# <value> filled in from the source's Secret: kubectl to jq to aws, never via disk.
+fill_remote_secret() {
+  local line=$1 key ns name tpl value
+  if [[ $line == *'put-parameter'* ]]; then
+    fail "Parameter Store remote secrets are not filled by this test: $line"
+    return
+  fi
+  local name_re="--name ('[^']*'|[^ ]+)" tpl_re="--secret-string '(\{[^']*\})'" src_re='# replaces ([^ /]+)/([^ ]+)$'
+  [[ $line =~ $name_re ]] || { fail "no --name in: $line"; return; }
+  key=${BASH_REMATCH[1]}; key=${key#\'}; key=${key%\'}
+  [[ $line =~ $tpl_re ]] || { fail "no --secret-string in: $line"; return; }
+  tpl=${BASH_REMATCH[1]}
+  [[ $line =~ $src_re ]] || { fail "no '# replaces ns/name' in: $line"; return; }
+  ns=${BASH_REMATCH[1]} name=${BASH_REMATCH[2]}
+  value=$(k_src -n "$ns" get secret "$name" -o json |
+    jq -ce --argjson tpl "$tpl" '.data as $d | $tpl | with_entries(.value = ($d[.key] // error("no key \(.key)") | @base64d))') ||
+    { fail "reading Secret $ns/$name for $key"; return; }
+  echo "   remote secret $key (from $ns/$name)" >&2
+  aws secretsmanager create-secret --region "$region" --name "$key" --secret-string "$value" >/dev/null 2>&1 ||
+    aws secretsmanager put-secret-value --region "$region" --secret-id "$key" --secret-string "$value" >/dev/null ||
+    fail "writing remote secret $key"
+}
 skip() {
   local block=$1
   case $block in
@@ -146,12 +213,10 @@ while IFS= read -r -d '' block; do
   fi
   echo >&2
   if [[ $block == *'secretsmanager create-secret'* || $block == *'ssm put-parameter'* ]]; then
-    printf '\n-- skipped (by hand: setdrift secrets export, above, wrote them):\n%s\n' "$(head -1 <<<"$block")" >&2
-    continue
-  fi
-  if [[ $block == 'setdrift secrets export'* ]]; then
-    # Option C: the module copies the values from the source; --yes as in a script.
-    run_line "$block --yes"
+    # Option C: the remote secrets, created by hand as the playbook says, the values from the source.
+    while IFS= read -r line; do
+      [[ $line == *'create-secret'* || $line == *'put-parameter'* ]] && fill_remote_secret "$line"
+    done <<<"$block"
     continue
   fi
   if [[ $block == *'apply -k external-secrets/'* ]]; then
@@ -256,3 +321,6 @@ if ((${#failures[@]} > 0)); then
   exit 1
 fi
 say "restore passed in $(elapsed)"
+
+# Copyright The SetDrift Authors
+# SPDX-License-Identifier: Apache-2.0

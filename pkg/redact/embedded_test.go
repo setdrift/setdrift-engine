@@ -1,5 +1,4 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
+// tests the detection of secret values outside Secrets, in env vars, ConfigMaps, custom resources and documents that arent Kubernetes objects
 
 package redact_test
 
@@ -15,6 +14,7 @@ import (
 	"setdrift.io/setdrift-engine/pkg/resource"
 )
 
+// process parses a JSON manifest and runs it through the redactor, giving back the object
 func process(t *testing.T, manifest string) *resource.Object {
 	t.Helper()
 	u := &unstructured.Unstructured{}
@@ -28,6 +28,7 @@ func process(t *testing.T, manifest string) *resource.Object {
 	return o
 }
 
+// paths lists the paths of an object's redactions, in the order they were recorded
 func paths(o *resource.Object) []string {
 	var out []string
 	for _, r := range o.Redactions {
@@ -36,6 +37,7 @@ func paths(o *resource.Object) []string {
 	return out
 }
 
+// check that secret env values are redacted by pattern or name, while references, files, ttls and secret names are kept
 func TestEmbeddedSecretsRedacted(t *testing.T) {
 	o := process(t, `{
 	  "apiVersion": "apps/v1", "kind": "Deployment", "metadata": {"name": "api", "namespace": "shop"},
@@ -74,6 +76,7 @@ func TestEmbeddedSecretsRedacted(t *testing.T) {
 	}
 }
 
+// check that secret values in ConfigMap keys and config files and in custom resource fields are redacted, and certificates and references are not
 func TestEmbeddedSecretsInConfigAndCustomResources(t *testing.T) {
 	cm := process(t, `{"apiVersion": "v1", "kind": "ConfigMap", "metadata": {"name": "app"},
 	  "data": {
@@ -97,6 +100,7 @@ func TestEmbeddedSecretsInConfigAndCustomResources(t *testing.T) {
 	}
 }
 
+// check that SealedSecrets and ExternalSecrets are not scanned, their content is ciphertext or references
 func TestSafeKindsNotScanned(t *testing.T) {
 	sealed := process(t, `{"apiVersion": "bitnami.com/v1alpha1", "kind": "SealedSecret", "metadata": {"name": "db"},
 	  "spec": {"encryptedData": {"password": "AgBy3i4OJSWK+PiTySYZZA=="}}}`)
@@ -109,8 +113,7 @@ func TestSafeKindsNotScanned(t *testing.T) {
 	}
 }
 
-// Values uses the manifest detection on a plain document and returns the
-// paths it replaced, without a leading dot.
+// check that Values uses the manifest detection on a document that isnt an object and gives back the paths it replaced, without a leading dot
 func TestValues(t *testing.T) {
 	v := map[string]any{
 		"agent":    map[string]any{"apiKey": "0123456789abcdef0123456789abcdef", "site": "eu"},
@@ -122,3 +125,34 @@ func TestValues(t *testing.T) {
 		t.Errorf("%v %v", got, paths)
 	}
 }
+
+// check that FieldValue hides a live field's value by pattern, by the field's name or by its list item's name, and leaves its input unchanged
+func TestFieldValue(t *testing.T) {
+	for _, c := range []struct {
+		path string
+		v    any
+		want any
+	}{
+		{"data.password", "hunter22", redact.Placeholder},
+		{"spec.template.spec.containers[web].env[DB_TOKEN].value", "s3cr3tvalue", redact.Placeholder},
+		{"data.config", "url: postgres://app:hunter22@db/app", redact.Placeholder},
+		{"spec.replicas", float64(3), float64(3)},
+		{"data.mode", "debug", "debug"},
+		{"data.password", "true", "true"},
+	} {
+		if got := redact.FieldValue(c.path, c.v); got != c.want {
+			t.Errorf("redact.FieldValue(%s, %v) = %v, want %v", c.path, c.v, got, c.want)
+		}
+	}
+	in := map[string]any{"apiKey": "abcd1234efgh", "region": "eu"}
+	out, ok := redact.FieldValue("spec.config", in).(map[string]any)
+	if !ok || out["apiKey"] != redact.Placeholder || out["region"] != "eu" {
+		t.Errorf("a map: %v", out)
+	}
+	if in["apiKey"] != "abcd1234efgh" {
+		t.Error("FieldValue changed its input")
+	}
+}
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

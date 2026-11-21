@@ -1,6 +1,3 @@
-# Copyright The SetDrift Authors
-# SPDX-License-Identifier: Apache-2.0
-
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >-
   SetDrift e2e reaper: deletes e2e cluster stacks (eks-cluster.yaml) that have
@@ -250,3 +247,6 @@ Outputs:
     Value: !GetAtt ClusterStackRole.Arn
   ReaperFunction:
     Value: !Ref Reaper
+
+# Copyright The SetDrift Authors
+# SPDX-License-Identifier: Apache-2.0

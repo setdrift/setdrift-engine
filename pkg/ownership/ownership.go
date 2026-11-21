@@ -1,7 +1,4 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
-// only keep parent objects (e.g. deployment) not children (e.g. pods)
+// Package ownership keeps the objects that carry configuration, like a Deployment, and drops the ones generated from them, like its ReplicaSets and Pods, or by the cluster itself, which a new cluster creates again
 package ownership
 
 import (
@@ -11,21 +8,24 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
+	"setdrift.io/setdrift-engine/internal/text"
 	"setdrift.io/setdrift-engine/pkg/resource"
 	snapshotv1alpha1 "setdrift.io/setdrift-engine/pkg/snapshot/v1alpha1"
 )
 
-// drop objects whose controller is collected, keep & flag ones where controller is missing
+// ControllerOwnerResolver is the ownership stage, for resource.Stage
+// it drops objects whose controller owner is collected, and keeps and flags those whose owner is missing
 type ControllerOwnerResolver struct{}
 
-// Name implements resource.Stage.
+// Name gives back the stage's name, for resource.Stage
 func (ControllerOwnerResolver) Name() string { return "ownership" }
 
-// Process implements resource.Stage.
+// Process takes the collected objects and gives back the ones that carry configuration, with findings counting what was dropped and why, for resource.Stage
 func (ControllerOwnerResolver) Process(_ context.Context, objs []*resource.Object) ([]*resource.Object, []*snapshotv1alpha1.Finding, error) {
 	present := make(map[types.UID]bool, len(objs))
-	// checks uid, mainly for directories for manifests where uid would be null
+	// going over the objects to note each uid that is present
 	for _, o := range objs {
+		// checking if the object has a uid, manifests read from a directory usually have none
 		if uid := o.GetUID(); uid != "" {
 			present[uid] = true
 		}
@@ -34,38 +34,43 @@ func (ControllerOwnerResolver) Process(_ context.Context, objs []*resource.Objec
 	out := make([]*resource.Object, 0, len(objs))
 	garbage := map[string]int{}
 	generated := map[string]int{}
+	// invoking newIndex to gather what the generated rules need about the other objects, its defined in generated.go
 	idx := newIndex(objs)
-	// ownership checks
+	// going over each object to decide by its controller owner if its kept
 	for _, o := range objs {
 		owner := metav1.GetControllerOfNoCopy(o)
-		// Children of a collected object are dropped below without a count.
+		// checking if the object has no owner or one that isnt collected, only those are matched against the generated rules
+		// children of a collected object are dropped below without a count
 		if owner == nil || !present[owner.UID] {
+			// invoking generatedBy and checking if the cluster generates this object, if so its counted and dropped, its defined in generated.go
 			if by := generatedBy(o, idx); by != "" {
 				generated[by]++
 				continue
 			}
 		}
+		// checking what we know about the owner, the first case that matches wins
 		switch {
-		// no owner, keep object
+		// no owner, the object is kept
 		case owner == nil:
 			out = append(out, o)
-		// owner present in collection, drop object
+		// the owner is in the collection, so this child isnt kept, the parent carries the config
 		case present[owner.UID]:
-			// child object, not kept, the parent carries the config
+		// the owner is gone, so the garbage collector is deleting this object
+		// exported, a GitOps tool would recreate it
 		case o.OwnerStatus == resource.OwnerDeleted:
-			// The owner is gone, so the garbage collector is deleting this
-			// object. Exported, a GitOps tool would recreate it.
 			garbage[o.GetNamespace()]++
+		// invoking IsChild to tell if its generated from an object of a type that is never collected, like a mirror Pod from a Node, its defined below
 		case IsChild(o, present):
-			// Generated from an object of a type that is never collected,
-			// e.g. a mirror Pod from a Node.
-		// owner not in collected set, adds warning to the finding, keeps object
+		// the owner's type wasnt collected, the object is kept with a warning saying why
 		case o.OwnerStatus == resource.OwnerNotCollected:
+			// invoking AddFinding to attach the warning, its defined in pkg/resource/resource.go
 			o.AddFinding(snapshotv1alpha1.Severity_SEVERITY_WARNING, "OWNER_NOT_EXPORTED",
 				"controller owner %s %s was not collected (its type was skipped, outside the requested namespaces, or not readable); kept as a top-level object",
 				owner.Kind, owner.Name)
 			out = append(out, o)
+		// the owner is missing for a reason we dont know, the object is kept with a warning
 		default:
+			// invoking AddFinding to attach the warning, its defined in pkg/resource/resource.go
 			o.AddFinding(snapshotv1alpha1.Severity_SEVERITY_WARNING, "OWNER_NOT_EXPORTED",
 				"controller owner %s %s is not in the export; kept as a top-level object", owner.Kind, owner.Name)
 			out = append(out, o)
@@ -74,43 +79,45 @@ func (ControllerOwnerResolver) Process(_ context.Context, objs []*resource.Objec
 
 	var findings []*snapshotv1alpha1.Finding
 	reasons := make([]string, 0, len(generated))
+	// collecting the reasons so the findings come out in a stable order
 	for by := range generated {
 		reasons = append(reasons, by)
 	}
 	sort.Strings(reasons)
+	// going over each reason and building its finding
 	for _, by := range reasons {
+		// invoking resource.NewFinding to build it, its defined in pkg/resource/resource.go, and text.Plural and text.Word for the wording, theyre defined in internal/text/text.go
 		findings = append(findings, resource.NewFinding(snapshotv1alpha1.Severity_SEVERITY_INFO, "GENERATED_SKIPPED",
-			"%s generated by %s %s not exported", resource.Plural(generated[by], "object", "objects"), by, resource.Verb(generated[by])))
+			"%s generated by %s %s not exported", text.Plural(generated[by], "object", "objects"), by, text.Word(generated[by], "was", "were")))
 	}
 	namespaces := make([]string, 0, len(garbage))
+	// collecting the namespaces with garbage so the findings come out in a stable order
 	for ns := range garbage {
 		namespaces = append(namespaces, ns)
 	}
 	sort.Strings(namespaces)
+	// going over each namespace and building its finding
 	for _, ns := range namespaces {
+		// invoking resource.NewFinding to build it, its defined in pkg/resource/resource.go, and text.Plural and text.Word for the wording, theyre defined in internal/text/text.go
 		findings = append(findings, resource.NewFinding(snapshotv1alpha1.Severity_SEVERITY_INFO, "OWNER_DELETED_SKIPPED",
 			"%s in namespace %q %s not exported: their controller owner was deleted, so the garbage collector is deleting them",
-			resource.Plural(garbage[ns], "object", "objects"), ns, resource.Verb(garbage[ns])))
+			text.Plural(garbage[ns], "object", "objects"), ns, text.Word(garbage[ns], "was", "were")))
 	}
 	return out, findings, nil
 }
 
-// mirrorPodAnnotation marks the API copy of a static Pod, which the kubelet
-// creates from a file on its node. The Node is its controller owner.
+// mirrorPodAnnotation marks the API copy of a static Pod, which the kubelet creates from a file on its node, the Node is its controller owner
 const mirrorPodAnnotation = "kubernetes.io/config.mirror"
 
-// IsChild reports whether o is generated from another object and so is not
-// exported: its controller owner is in present, was deleted, or is a Node
-// (mirror Pods; Nodes are never collected).
-//
-// collect.ClusterCollector uses it to decide which metadata-only objects to
-// leave unfetched, so the two always agree; if they did not, a metadata-only
-// object would reach snapshot.Build.
+// IsChild tells if o is generated from another object and so isnt exported, its controller owner is in present, was deleted, or is a Node, for mirror Pods since Nodes are never collected
+// collect.ClusterCollector uses it to decide which metadata-only objects to leave unfetched, so the two always agree, if they didnt a metadata-only object would reach snapshot.Build
 func IsChild(o *resource.Object, present map[types.UID]bool) bool {
 	owner := metav1.GetControllerOfNoCopy(o)
+	// checking if theres no controller owner, if so its not a child
 	if owner == nil {
 		return false
 	}
+	// checking if the owner was collected or was deleted
 	if present[owner.UID] || o.OwnerStatus == resource.OwnerDeleted {
 		return true
 	}
@@ -118,3 +125,6 @@ func IsChild(o *resource.Object, present map[types.UID]bool) bool {
 	_, mirror := o.GetAnnotations()[mirrorPodAnnotation]
 	return mirror && gvk.Group == "" && gvk.Kind == "Pod" && owner.Kind == "Node"
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

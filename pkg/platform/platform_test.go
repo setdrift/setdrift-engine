@@ -1,5 +1,4 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
+// tests the platform classification, from the signals each kind of evidence gives to the decision, its summary and its export directory
 
 package platform
 
@@ -12,12 +11,14 @@ import (
 	"setdrift.io/setdrift-engine/pkg/resource"
 )
 
+// obj builds a collected object of the given kind, namespace and name, for the object signals
 func obj(apiVersion, kind, ns, name string) *resource.Object {
 	u := &unstructured.Unstructured{Object: map[string]any{"apiVersion": apiVersion, "kind": kind,
 		"metadata": map[string]any{"name": name, "namespace": ns}}}
 	return resource.New(u)
 }
 
+// check that the platform, whether its managed, the confidence and the region are decided right for each mix of evidence
 func TestDecide(t *testing.T) {
 	kubeadmConfig := obj("v1", "ConfigMap", "kube-system", "kubeadm-config")
 	for _, c := range []struct {
@@ -66,7 +67,7 @@ func TestDecide(t *testing.T) {
 	}
 }
 
-// Strong evidence for two platforms: nothing is acted on.
+// check that strong evidence for two platforms is a conflict with low confidence, so nothing is acted on
 func TestDecideConflict(t *testing.T) {
 	got := Decide(append(FromKubeconfig(Kubeconfig{Context: "arn:aws:eks:us-east-2:111122223333:cluster/prod"}),
 		FromNodes([]Node{{ProviderID: "azure:///subscriptions/s/vm", Labels: map[string]string{"kubernetes.azure.com/cluster": "x"}}})...))
@@ -75,6 +76,7 @@ func TestDecideConflict(t *testing.T) {
 	}
 }
 
+// check that the context names, server addresses and credential plugins each tool writes are recognized
 func TestFromKubeconfigPatterns(t *testing.T) {
 	for _, c := range []struct {
 		k    Kubeconfig
@@ -83,7 +85,7 @@ func TestFromKubeconfigPatterns(t *testing.T) {
 		{Kubeconfig{Context: "gke_my-project_us-central1_prod"}, GKE},
 		{Kubeconfig{ExecCmd: "/usr/local/bin/gke-gcloud-auth-plugin"}, GKE},
 		{Kubeconfig{ExecCmd: "kubelogin", ExecArgs: []string{"get-token", "--server-id", "6dae42f8"}}, AKS},
-		// int128/kubelogin (generic OIDC) is not AKS
+		// int128/kubelogin, the generic OIDC one, isnt AKS
 		{Kubeconfig{ExecCmd: "kubelogin", ExecArgs: []string{"get-token", "--oidc-issuer-url", "https://idp"}}, Unknown},
 		{Kubeconfig{ExecCmd: `C:\tools\aws.exe`, ExecArgs: []string{"--region", "eu-west-1", "eks", "get-token"}}, EKS},
 		{Kubeconfig{Server: "https://api.prod.abcd.p1.openshiftapps.com:6443"}, OpenShift},
@@ -97,6 +99,7 @@ func TestFromKubeconfigPatterns(t *testing.T) {
 	}
 }
 
+// check that the summary names the infrastructure, and the distribution on it when they differ
 func TestSummary(t *testing.T) {
 	c := Decide(FromNodes([]Node{{ProviderID: "azure:///x", Labels: map[string]string{"topology.kubernetes.io/region": "eastus"}}}))
 	c2 := Decide(append(FromNodes([]Node{{ProviderID: "azure:///x"}}), FromObjects([]*resource.Object{obj("v1", "ConfigMap", "kube-system", "kubeadm-config")})...))
@@ -110,6 +113,7 @@ func TestSummary(t *testing.T) {
 	}
 }
 
+// check that each classification gets the right platform directory, and none with only weak evidence
 func TestDir(t *testing.T) {
 	kubeadmConfig := obj("v1", "ConfigMap", "kube-system", "kubeadm-config")
 	for _, c := range []struct {
@@ -132,3 +136,6 @@ func TestDir(t *testing.T) {
 		}
 	}
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

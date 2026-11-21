@@ -1,24 +1,22 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
-// classifies which system manages each object: Argo CD, Flux, Helm, an operator, or nothing (kubectl apply)
+// Package provenance classifies which system manages each object, Argo CD, Flux, Helm, an operator, a CI/CD pipeline, the platform, or nothing, meaning a person's kubectl apply
 package provenance
 
 import (
 	"context"
+	"maps"
 	"slices"
-	"sort"
 	"strings"
 
+	"setdrift.io/setdrift-engine/internal/text"
 	"setdrift.io/setdrift-engine/pkg/platform"
 	"setdrift.io/setdrift-engine/pkg/resource"
 	snapshotv1alpha1 "setdrift.io/setdrift-engine/pkg/snapshot/v1alpha1"
 )
 
-// labels and annotations that signal external system management
+// the labels and annotations that tell an external system manages an object, and the evidence keys for confidence
 const (
 	argoTrackingID = "argocd.argoproj.io/tracking-id"
-	// DefaultArgoInstanceLabel unless argo sets instanceLabelKey explicitly
+	// DefaultArgoInstanceLabel is the label Argo CD's label tracking uses unless argocd-cm sets instanceLabelKey
 	DefaultArgoInstanceLabel = "app.kubernetes.io/instance"
 	fluxKustomizeName        = "kustomize.toolkit.fluxcd.io/name"
 	fluxKustomizeNS          = "kustomize.toolkit.fluxcd.io/namespace"
@@ -31,108 +29,98 @@ const (
 	lowConfidence            = "low"
 )
 
-// group and kind of external systems
+// the API groups of the external systems' own objects, for finding the managers among the collected objects
 const (
 	argoGroup          = "argoproj.io"
 	fluxKustomizeGroup = "kustomize.toolkit.fluxcd.io"
 	fluxHelmGroup      = "helm.toolkit.fluxcd.io"
 )
 
-// LabelClassifier classifies objects from the labels and annotations that GitOps
-// tools stamp on what they apply. Checks run from strongest to weakest
-// evidence, and tool-specific markers before Helm's: Flux and Argo CD also
-// render Helm charts, so their objects can carry Helm markers too.
-//
-//  0. The Kubernetes platform (see platform): objects EKS creates and keeps
-//     up to date, which a new cluster gets from EKS.
-//  1. Flux labels (Kustomization, then HelmRelease).
-//  2. The Argo CD tracking-id annotation, if it names this object. A tracking
-//     id naming another object was copied (kubectl get | kubectl apply), and
-//     Argo CD does not manage the copy.
-//  3. The meta.helm.sh/release-* annotations, which only `helm install` and
-//     `helm upgrade` write.
-//  4. The Argo CD instance label (label tracking, the default before Argo CD
-//     3.0). Low confidence: many charts set app.kubernetes.io/instance too.
-//  5. The app.kubernetes.io/managed-by: Helm label alone. Low confidence:
-//     chart templates set it, so it is also on charts that Argo CD rendered
-//     with `helm template` and that Helm does not manage.
-//
-// The stage then checks that each manager exists in the collected objects
-// (see checkManagers), and drops Helm's release records, which are Helm's
-// state rather than configuration.
-//
-//  6. An owner reference to an object outside the export: an operator
-//     created it.
-//
-// TODO: detect operator-managed objects from managedFields managers (needs
-// real cluster dumps to learn the manager names), and resolve Argo
-// Applications to their Git source.
-
-// override default argo instance label
+// LabelClassifier classifies objects from the labels and annotations that GitOps tools stamp on what they apply
+// the checks run from the strongest evidence to the weakest, and tool-specific markers before Helm's, since Flux and Argo CD also render Helm charts so their objects can carry Helm markers too
+// first the Kubernetes platform, see the platform package, objects EKS creates and keeps up to date, which a new cluster gets from EKS anyway
+// second the Flux labels, the Kustomization one then the HelmRelease one
+// third the Argo CD tracking-id annotation, if it names this object, a tracking id naming another object was copied with kubectl get | kubectl apply and Argo CD doesnt manage the copy
+// fourth the meta.helm.sh/release-* annotations, which only `helm install` and `helm upgrade` write
+// fifth the Argo CD instance label, from label tracking, the default before Argo CD 3.0, with low confidence since many charts set app.kubernetes.io/instance too
+// sixth the app.kubernetes.io/managed-by=Helm label alone, with low confidence since chart templates set it, so its also on charts Argo CD rendered with `helm template` that Helm doesnt manage
+// the stage then checks that each manager exists in the collected objects, see managerIndex.check below, and drops Helm's release records, which are Helm's state rather than configuration
+// last an owner reference to an object outside the export, meaning an operator created it
+// TODO detect operator-managed objects from managedFields managers, that needs real cluster dumps to learn the manager names, and resolve Argo Applications to their Git source
 type LabelClassifier struct {
+	// ArgoInstanceLabel is the label Argo CD's label tracking uses, when its not DefaultArgoInstanceLabel, from application.instanceLabelKey in argocd-cm
 	ArgoInstanceLabel string
-	// CIFieldManagers are the kubectl field managers of CI/CD pipelines
-	// (kubectl apply --field-manager=github-actions): an object one of them
-	// wrote, with no other manager, is CI/CD's, with low confidence.
+	// CIFieldManagers are the kubectl field managers of CI/CD pipelines, like kubectl apply --field-manager=github-actions
+	// an object one of them wrote, with no other manager, is CI/CD's with low confidence
 	CIFieldManagers []string
-	// Platform is the stage that classified the platform, which runs before
-	// this one; its Result decides which name-based platform rules apply
-	// (kind's add-ons). Nil, or an unsure result, applies only the rules
-	// whose evidence names its platform (EKS's and kubeadm's field managers).
+	// Platform is the stage that classified the platform, which runs before this one, its Result decides which name-based platform rules apply, like kind's add-ons
+	// with nil or an unsure result only the rules whose evidence names its platform apply, like EKS's and kubeadm's field managers
 	Platform *platform.Stage
 }
 
-// Name implements resource.Stage
+// ManagerNotFound is the code of the finding on an object whose markers name a manager that isnt in the cluster, like an Argo CD Application, a Flux object or a Helm release
+const ManagerNotFound = "MANAGER_NOT_FOUND"
+
+// Name gives back the stage's name, it implements resource.Stage, which is defined in pkg/resource/resource.go
 func (LabelClassifier) Name() string { return "provenance" }
 
-// classifies provenance, prioritized by specificity e.g. an argo project that deploys a helm chart will be classified as argo
+// Process implements resource.Stage, it sets each object's provenance and drops Helm's release records, with a finding per namespace saying how many
+// the most specific evidence wins, an Argo CD Application that deploys a Helm chart makes its objects Argo CD's
 func (c LabelClassifier) Process(_ context.Context, objs []*resource.Object) ([]*resource.Object, []*snapshotv1alpha1.Finding, error) {
+	// invoking newManagerIndex to note which managers exist among the objects, its defined below
 	idx := newManagerIndex(objs)
 	out := make([]*resource.Object, 0, len(objs))
+	// releases counts the dropped Helm release records per namespace
 	releases := map[string]int{}
-	// runs each object through classifier checks
+	// running each object through the classifier checks
 	for _, o := range objs {
+		// invoking helmReleaseRecord and checking if the object is one of Helm's release records, if so its counted and left out, its defined below
 		if _, ok := helmReleaseRecord(o); ok {
 			releases[o.GetNamespace()]++
 			continue
 		}
-		o.Provenance = c.classify(o, c.platformResult())
+		// invoking fromMarkers to classify the object from its markers, with platformResult giving the platform, theyre defined below
+		o.Provenance = c.fromMarkers(o, c.platformResult())
+		// invoking check to fill in the manager's namespace or flag a missing manager, its defined below
 		idx.check(o)
+		// invoking pipeline to apply a CI/CD pipeline's evidence on top, its defined below
 		o.Provenance = c.pipeline(o, o.Provenance)
 		out = append(out, o)
 	}
-	// attach findings scoped to namespace if relvant
 	var findings []*snapshotv1alpha1.Finding
-	for _, ns := range sortedKeys(releases) {
+	// reporting the dropped release records, one finding per namespace in sorted order
+	for _, ns := range slices.Sorted(maps.Keys(releases)) {
+		// invoking resource.NewFinding to build the finding, its defined in pkg/resource/resource.go
+		// text.Plural and text.Word pick the wording for the count, theyre defined in internal/text/text.go
 		findings = append(findings, resource.NewFinding(snapshotv1alpha1.Severity_SEVERITY_INFO, "HELM_RELEASE_RECORDS_SKIPPED",
 			"%s in namespace %q %s not exported (Helm's release history; applying it would corrupt Helm's state)",
-			resource.Plural(releases[ns], "Helm release record", "Helm release records"), ns, resource.Verb(releases[ns])))
+			text.Plural(releases[ns], "Helm release record", "Helm release records"), ns, text.Word(releases[ns], "was", "were")))
 	}
 	return out, findings, nil
 }
 
+// platformResult gives back the platform classification from the Platform stage, or nil when theres no stage
 func (c LabelClassifier) platformResult() *platform.Classification {
+	// checking if no platform stage was given, if so theres no classification
 	if c.Platform == nil {
 		return nil
 	}
 	return c.Platform.Result
 }
 
-// Classify provenance from labels and annotations, attaches metadata to object
+// Classify gives back o's provenance from its labels, annotations and field managers, as Process does, without the checks against the other objects
 func (c LabelClassifier) Classify(o *resource.Object) *snapshotv1alpha1.Provenance {
-	return c.pipeline(o, c.classify(o, c.platformResult()))
+	// invoking fromMarkers and then pipeline, the same as Process, theyre defined below
+	return c.pipeline(o, c.fromMarkers(o, c.platformResult()))
 }
 
-// The annotations a CI/CD pipeline stamps on what it deploys, so its
-// objects are not taken for ones applied by hand. Only the repository is
-// required. Values, e.g. in GitHub Actions:
-//
-//	setdrift.io/source-repo: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY
-//	setdrift.io/source-path: deploy/prod
-//	setdrift.io/source-branch: $GITHUB_REF_NAME ($GITHUB_HEAD_REF on a pull request)
-//	setdrift.io/source-tag: $GITHUB_REF_NAME, when a tag is deployed
-//	setdrift.io/source-revision: $GITHUB_SHA
-//	setdrift.io/deployed-by: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
+// the annotations a CI/CD pipeline stamps on what it deploys, so its objects arent taken for ones applied by hand, only the repository is required
+// in GitHub Actions setdrift.io/source-repo takes $GITHUB_SERVER_URL/$GITHUB_REPOSITORY
+// setdrift.io/source-path takes the path in the repository, e.g. deploy/prod
+// setdrift.io/source-branch takes $GITHUB_REF_NAME, or $GITHUB_HEAD_REF on a pull request
+// setdrift.io/source-tag takes $GITHUB_REF_NAME when a tag is deployed
+// setdrift.io/source-revision takes $GITHUB_SHA
+// setdrift.io/deployed-by takes $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
 const (
 	SourceRepoAnnotation     = "setdrift.io/source-repo"
 	SourcePathAnnotation     = "setdrift.io/source-path"
@@ -142,95 +130,127 @@ const (
 	DeployedByAnnotation     = "setdrift.io/deployed-by"
 )
 
-// repoHosts are the shorthands for the common Git hosts: github/foo/bar.
+// repoHosts maps the shorthands for the common Git hosts, like github/foo/bar, to their full host names
 var repoHosts = map[string]string{"github": "github.com", "gitlab": "gitlab.com", "bitbucket": "bitbucket.org"}
 
-// CanonicalRepo writes a repository however a pipeline names it as one URL,
-// so the same repository groups the same:
-//
-//	https://github.com/foo/bar, http://github.com/foo/bar/, github.com/foo/bar,
-//	github/foo/bar, https://github.com/foo/bar.git, git@github.com:foo/bar.git,
-//	ssh://git@github.com/foo/bar  ->  https://github.com/foo/bar
-//
-// Credentials in it (https://user:token@host/...) are dropped, so they never
-// reach a snapshot. A value that names no host is kept as written.
+// CanonicalRepo takes a repository however a pipeline names it and writes it as one url, so the same repository always groups the same
+// e.g. https://github.com/foo/bar, http://github.com/foo/bar/, github.com/foo/bar, github/foo/bar, https://github.com/foo/bar.git, git@github.com:foo/bar.git and ssh://git@github.com/foo/bar all become https://github.com/foo/bar
+// credentials in it, like https://user:token@host/..., are dropped so they never reach a snapshot
+// a value that names no host is kept as written
 func CanonicalRepo(repo string) string {
 	r := strings.TrimSpace(repo)
 	r = strings.TrimSuffix(strings.TrimSuffix(r, "/"), ".git")
-	// git@host:owner/repo, the scp-like form
+	// checking if its the scp-like form git@host:owner/repo, the part before the @ has no slash or colon in that form
 	if at, rest, ok := strings.Cut(r, "@"); ok && !strings.Contains(at, "/") && !strings.Contains(at, ":") {
+		// checking if theres a colon after the host that doesnt start a //, if so it becomes a slash
 		if host, path, ok := strings.Cut(rest, ":"); ok && !strings.HasPrefix(path, "//") {
 			r = host + "/" + path
 		}
 	}
-	// scheme://[user[:token]@]host/path
+	// checking if theres a scheme, as in scheme://[user[:token]@]host/path, if so its dropped
 	if _, rest, ok := strings.Cut(r, "://"); ok {
 		r = rest
 	}
-	if at := strings.LastIndex(r, "@"); at >= 0 && at < strings.Index(r+"/", "/") {
+	// checking for an @ in the host part, the last one there ends the userinfo, an @ in the path isnt userinfo
+	if at := strings.LastIndex(r[:strings.Index(r+"/", "/")], "@"); at >= 0 {
 		r = r[at+1:]
 	}
 	host, path, ok := strings.Cut(r, "/")
+	// checking if theres no path after the host, if so it names no repository and is kept as written, minus credentials
 	if !ok || path == "" {
-		return strings.TrimSpace(repo)
+		// invoking withoutUserinfo to drop any credentials, its defined below
+		return withoutUserinfo(repo)
 	}
 	host = strings.ToLower(host)
+	// checking if the host is one of the shorthands, if so its full name is used
 	if full, ok := repoHosts[host]; ok {
 		host = full
 	}
+	// checking if the host has no dot or port, if so no host is named and its kept as written, minus credentials
 	if !strings.Contains(host, ".") && !strings.Contains(host, ":") {
-		// no host named: keep it as written
-		return strings.TrimSpace(repo)
+		// invoking withoutUserinfo to drop any credentials, its defined below
+		return withoutUserinfo(repo)
 	}
 	return "https://" + host + "/" + strings.TrimSuffix(path, "/")
 }
 
-// SourceAnnotations are the CI/CD source annotations.
+// withoutUserinfo gives back repo trimmed, without what comes before an @ in its first path element, as in [scheme://]user:token@host/...
+func withoutUserinfo(repo string) string {
+	r := strings.TrimSpace(repo)
+	start := 0
+	// checking if theres a scheme, if so the host part starts after it
+	if i := strings.Index(r, "://"); i >= 0 {
+		start = i + len("://")
+	}
+	end := len(r)
+	// checking if theres a slash after the host part, if so the host part ends there
+	if i := strings.Index(r[start:], "/"); i >= 0 {
+		end = start + i
+	}
+	// checking if the host part has an @, if so everything up to the last one is dropped
+	if at := strings.LastIndex(r[start:end], "@"); at >= 0 {
+		r = r[:start] + r[start+at+1:]
+	}
+	return r
+}
+
+// SourceAnnotations lists the CI/CD source annotations, in the order theyre read
 var SourceAnnotations = []string{SourceRepoAnnotation, SourcePathAnnotation, SourceBranchAnnotation, SourceTagAnnotation,
 	SourceRevisionAnnotation, DeployedByAnnotation}
 
-// pipeline applies a CI/CD pipeline's evidence, after the GitOps markers:
-//   - the source annotations make an object no tool claims, or that only a
-//     low-confidence marker does (helm template | kubectl apply leaves
-//     Helm's label), CI/CD's, managed from its repository;
-//   - on an object Argo CD, Flux, Helm, an operator or the platform manages,
-//     they are kept as extra evidence: those markers are stronger;
-//   - with neither, a write by one of CIFieldManagers makes it CI/CD's.
+// pipeline takes o and the provenance its markers gave, and applies a CI/CD pipeline's evidence on top
+// the source annotations make an object CI/CD's, managed from its repository, when no tool claims it or only a low-confidence marker does, like the Helm label helm template | kubectl apply leaves
+// on an object Argo CD, Flux, Helm, an operator or the platform manages, theyre kept as extra evidence since those markers are stronger
+// with neither, a write by one of CIFieldManagers makes it CI/CD's
 func (c LabelClassifier) pipeline(o *resource.Object, p *snapshotv1alpha1.Provenance) *snapshotv1alpha1.Provenance {
 	ann := o.GetAnnotations()
 	src := map[string]string{}
+	// collecting the source annotations the object carries
 	for _, k := range SourceAnnotations {
+		// checking if the annotation is set, empty ones are skipped
 		if v := ann[k]; v != "" {
 			src[k] = v
 		}
 	}
+	// weak means nothing claims the object, or only with low confidence
 	weak := p.GetSource() == snapshotv1alpha1.Source_SOURCE_UNMANAGED || p.GetSource() == snapshotv1alpha1.Source_SOURCE_UNSPECIFIED ||
 		p.GetEvidence()[confidenceKey] == lowConfidence
+	// checking if theres a repository annotation, if so its written in its canonical form
 	if repo, ok := src[SourceRepoAnnotation]; ok {
+		// invoking CanonicalRepo to write it as one url, its defined above
 		src[SourceRepoAnnotation] = CanonicalRepo(repo)
 	}
+	// checking if theres a repository and the markers are weak, if so the object is CI/CD's, managed from that repository
 	if repo := src[SourceRepoAnnotation]; repo != "" && weak {
 		manager := repo
+		// checking if theres a path too, if so the manager names it after a //
 		if path := src[SourcePathAnnotation]; path != "" {
 			manager += "//" + strings.TrimPrefix(path, "/")
 		}
 		return &snapshotv1alpha1.Provenance{Source: snapshotv1alpha1.Source_SOURCE_CI_CD, Manager: manager, Evidence: src}
 	}
+	// checking if theres source evidence on an object something stronger manages, if so its added to that evidence
 	if len(src) > 0 && !weak {
 		ev := make(map[string]string, len(p.GetEvidence())+len(src))
+		// copying the markers' evidence first
 		for k, v := range p.GetEvidence() {
 			ev[k] = v
 		}
+		// then adding the source annotations
 		for k, v := range src {
 			ev[k] = v
 		}
 		p.Evidence = ev
 		return p
 	}
+	// checking if nothing claims the object, if so a CI/CD field manager can still claim it
 	if p.GetSource() == snapshotv1alpha1.Source_SOURCE_UNMANAGED || p.GetSource() == snapshotv1alpha1.Source_SOURCE_UNSPECIFIED {
+		// looking through the field managers for a CI/CD one
 		for _, m := range o.GetManagedFields() {
+			// checking if this manager wrote more than status and is one of CIFieldManagers, if so the object is CI/CD's with low confidence
 			if m.Subresource != "status" && slices.Contains(c.CIFieldManagers, m.Manager) {
 				ev := map[string]string{"fieldManager": m.Manager, confidenceKey: lowConfidence}
+				// adding any source annotations as evidence too
 				for k, v := range src {
 					ev[k] = v
 				}
@@ -241,64 +261,73 @@ func (c LabelClassifier) pipeline(o *resource.Object, p *snapshotv1alpha1.Proven
 	return p
 }
 
-func (c LabelClassifier) classify(o *resource.Object, cls *platform.Classification) *snapshotv1alpha1.Provenance {
+// fromMarkers takes o and the platform classification and classifies o from the markers GitOps tools, Helm, operators and the platform leave, in the order LabelClassifier describes
+func (c LabelClassifier) fromMarkers(o *resource.Object, cls *platform.Classification) *snapshotv1alpha1.Provenance {
 	labels, ann := o.GetLabels(), o.GetAnnotations()
 	instanceLabel := c.ArgoInstanceLabel
-	// use default argo identifier if none provided
+	// checking if no Argo CD instance label was configured, if so the default one is used
 	if instanceLabel == "" {
 		instanceLabel = DefaultArgoInstanceLabel
 	}
+	// p builds a provenance from its source, manager and evidence
 	p := func(src snapshotv1alpha1.Source, manager string, evidence map[string]string) *snapshotv1alpha1.Provenance {
 		return &snapshotv1alpha1.Provenance{Source: src, Manager: manager, Evidence: evidence}
 	}
+	// invoking platformObject and checking if the platform manages the object, its defined below
 	if manager, ev := platformObject(o, cls); ev != nil {
 		return p(snapshotv1alpha1.Source_SOURCE_PLATFORM, manager, ev)
 	}
-	// kustomize name label for flux, namespace/name format
+	// checking if theres a Flux Kustomization name label, if so Flux manages it, the manager as namespace/name
 	if labels[fluxKustomizeName] != "" {
+		// invoking join to write the manager as namespace/name, its defined below
 		return p(snapshotv1alpha1.Source_SOURCE_FLUX, join(labels[fluxKustomizeNS], labels[fluxKustomizeName]),
 			map[string]string{fluxKustomizeName: labels[fluxKustomizeName]})
 	}
-	// helm name label for flux, namespace/name format
+	// checking if theres a Flux HelmRelease name label, if so Flux manages it, the manager as namespace/name
 	if labels[fluxHelmName] != "" {
 		return p(snapshotv1alpha1.Source_SOURCE_FLUX, join(labels[fluxHelmNS], labels[fluxHelmName]),
 			map[string]string{fluxHelmName: labels[fluxHelmName]})
 	}
-	// argo tracking id
+	// checking if theres an Argo CD tracking id annotation
 	if id := ann[argoTrackingID]; id != "" {
+		// invoking parseTrackingID and matches and checking if the tracking id names this object, if so Argo CD manages it, theyre defined below
 		if t, ok := parseTrackingID(id); ok && t.matches(o) {
 			return p(snapshotv1alpha1.Source_SOURCE_ARGO_CD, t.app, map[string]string{argoTrackingID: id})
 		}
-		// attach finding if tracking id references a higher level object
+		// the tracking id names another object, so it was probably copied, invoking AddFinding to say so, its defined in pkg/resource/resource.go
 		o.AddFinding(snapshotv1alpha1.Severity_SEVERITY_INFO, "ARGOCD_TRACKING_ID_MISMATCH",
 			"the %s annotation %q names another object, so Argo CD does not manage this one; it was probably copied from that object",
 			argoTrackingID, id)
 	}
-	// helm release name, namespace/name format
+	// checking if theres a Helm release name annotation, if so Helm manages it, the manager as namespace/release
 	if name := ann[helmReleaseName]; name != "" {
 		ev := map[string]string{helmReleaseName: name}
+		// checking if theres a managed-by label too, if so its kept as evidence
 		if v := labels[managedByLabel]; v != "" {
 			ev[managedByLabel] = v
 		}
 		ns := ann[helmReleaseNS]
+		// checking if the release namespace annotation is missing, if so the object's own namespace stands in
 		if ns == "" {
 			ns = o.GetNamespace()
 		}
 		return p(snapshotv1alpha1.Source_SOURCE_HELM, join(ns, name), ev)
 	}
-	// checks for legacy argo annotations
+	// checking if theres an Argo CD instance label from label tracking, if so Argo CD manages it with low confidence
 	if app := labels[instanceLabel]; app != "" {
+		// invoking argoApp to write the instance name as namespace/app, its defined below
 		return p(snapshotv1alpha1.Source_SOURCE_ARGO_CD, argoApp(app),
 			map[string]string{instanceLabel: app, confidenceKey: lowConfidence})
 	}
-	// always attributes low confidence if only helm
+	// checking if theres only the managed-by=Helm label, if so Helm manages it, always with low confidence
 	if labels[managedByLabel] == "Helm" {
 		return p(snapshotv1alpha1.Source_SOURCE_HELM, "",
 			map[string]string{managedByLabel: "Helm", confidenceKey: lowConfidence})
 	}
 
-	// owned by an object that wasnt collected
+	// looking for an owner in a custom resource group, an object that wasnt collected and that an operator runs
 	for _, r := range o.GetOwnerReferences() {
+		// invoking customGroup and checking if the owner's group is a custom resource group, if so an operator manages it, its defined below
 		if group, _, _ := strings.Cut(r.APIVersion, "/"); customGroup(group) {
 			return p(snapshotv1alpha1.Source_SOURCE_OPERATOR, r.Kind+"/"+r.Name,
 				map[string]string{"ownerReference": r.APIVersion + " " + r.Kind + " " + r.Name})
@@ -307,19 +336,17 @@ func (c LabelClassifier) classify(o *resource.Object, cls *platform.Classificati
 	return p(snapshotv1alpha1.Source_SOURCE_UNMANAGED, "", nil)
 }
 
-// Field managers of the components EKS runs: add-ons (eks), the control
-// plane's own objects (eks-internal) and Auto Mode (eks-auto-mode).
+// eksManagers are the field managers of the components EKS runs, its add-ons (eks), the control plane's own objects (eks-internal) and Auto Mode (eks-auto-mode)
 var eksManagers = map[string]bool{"eks": true, "eks-internal": true, "eks-auto-mode": true}
 
-// Managers of Kubernetes' own components, which write status and defaults
-// into objects whoever created them.
+// coreManagers are the field managers of Kubernetes' own components, which write status and defaults into objects whoever created them, so theyre ignored
 var coreManagers = map[string]bool{
 	"kube-apiserver": true, "kube-controller-manager": true, "api-priority-and-fairness-config-consumer-v1": true,
 }
 
-// eksBootstrap names objects EKS creates with kubectl when it creates a
-// cluster, so their only field manager is kubectl-client-side-apply, as if
-// a person had applied them. Names starting with "eks:" are EKS's too.
+// eksBootstrap names the objects EKS creates with kubectl when it creates a cluster, keyed by group/kind
+// their only field manager is kubectl-client-side-apply, as if a person had applied them
+// rbac names starting with "eks:" are EKS's too, eksEvidence checks those separately
 var eksBootstrap = map[string]map[string]bool{
 	"rbac.authorization.k8s.io/ClusterRole":        {"vpc-resource-controller-role": true},
 	"rbac.authorization.k8s.io/ClusterRoleBinding": {"vpc-resource-controller-rolebinding": true},
@@ -332,62 +359,63 @@ var eksBootstrap = map[string]map[string]bool{
 	"storage.k8s.io/CSIDriver":                                    {"efs.csi.aws.com": true},
 }
 
-// CRD groups of the controllers EKS runs in its control plane (VPC
-// resource controller, network policy controller, Auto Mode).
+// eksCRDGroups are the CRD groups of the controllers EKS runs in its control plane, the VPC resource controller, the network policy controller and Auto Mode
 var eksCRDGroups = []string{"eks.amazonaws.com", "vpcresources.k8s.aws", "networking.k8s.aws"}
 
-// platformObject returns who of the platform manages o (eks, kubeadm, kind)
-// and the evidence, or nil evidence. A new cluster gets its own copy of these
-// objects from its platform; exported, they would carry the old cluster's
-// values (webhook CA bundles, endpoints, kubelet settings) and, applied to
-// another cluster, overwrite its own.
-//
-// EKS's and kubeadm's own field managers name their platform, so those rules
-// apply on any cluster. kind's add-ons were applied with kubectl and are known
-// only by name: those rules apply only on a cluster classified as kind.
+// platformObject takes o and the platform classification and gives back which part of the platform manages o, eks, kubeadm or kind, with the evidence, or nil evidence
+// a new cluster gets its own copy of these objects from its platform, exported they would carry the old cluster's values like webhook CA bundles, endpoints and kubelet settings, and applied to another cluster overwrite its own
+// EKS's and kubeadm's own field managers name their platform, so those rules apply on any cluster
+// kind's add-ons were applied with kubectl and are known only by name, so those rules apply only on a cluster classified as kind
 func platformObject(o *resource.Object, cls *platform.Classification) (string, map[string]string) {
-	if ev := eks(o); ev != nil {
+	// invoking eksEvidence and checking if EKS manages the object, its defined below
+	if ev := eksEvidence(o); ev != nil {
 		return "eks", ev
 	}
-	if ev := kubeadm(o, cls); ev != nil {
+	// invoking kubeadmEvidence and checking if kubeadm created it, its defined below
+	if ev := kubeadmEvidence(o, cls); ev != nil {
 		return "kubeadm", ev
 	}
+	// invoking Is and checking if the cluster is confidently kind, its defined in pkg/platform/platform.go
 	if cls.Is(platform.Kind) {
-		if ev := kind(o); ev != nil {
+		// invoking kindEvidence and checking if the object is one of kind's add-ons, its defined below
+		if ev := kindEvidence(o); ev != nil {
 			return "kind", ev
 		}
 	}
 	return "", nil
 }
 
-// kubeadm returns the evidence that kubeadm created o and nothing changed it
-// since: its only field manager is kubeadm (besides Kubernetes' own). An
-// object kubeadm created that someone changed (a CoreDNS Corefile edit) is
-// the user's configuration: it is exported, with a finding saying so.
-//
-// On a cluster known to be built with kubeadm (kubeadm, kind, minikube), the
-// service accounts kubeadm creates without a field manager count too.
-func kubeadm(o *resource.Object, cls *platform.Classification) map[string]string {
+// kubeadmEvidence gives back the evidence that kubeadm created o and nothing changed it since, meaning its only field manager is kubeadm, besides Kubernetes' own
+// an object kubeadm created that someone changed, like a CoreDNS Corefile edit, is the user's configuration, its exported with a finding saying so
+// on a cluster known to be built with kubeadm, so kubeadm, kind or minikube, the service accounts kubeadm creates without a field manager count too
+func kubeadmEvidence(o *resource.Object, cls *platform.Classification) map[string]string {
 	var managers, others []string
+	// collecting the field managers, and the ones that arent kubeadm
 	for _, m := range o.GetManagedFields() {
+		// checking if its one of Kubernetes' own managers, if so its ignored
 		if coreManagers[m.Manager] {
 			continue
 		}
 		managers = append(managers, m.Manager)
+		// checking if the manager isnt kubeadm, if so its someone else who wrote to the object
 		if m.Manager != "kubeadm" {
 			others = append(others, m.Manager)
 		}
 	}
+	// checking if kubeadm is the only manager, or kubeadm and others wrote to it
 	switch {
 	case len(managers) > 0 && len(others) == 0:
 		return map[string]string{"managedFields": "kubeadm"}
 	case len(others) < len(managers):
+		// invoking AddFinding to say the object was changed after kubeadm created it, its defined in pkg/resource/resource.go
 		o.AddFinding(snapshotv1alpha1.Severity_SEVERITY_INFO, "PLATFORM_OBJECT_CHANGED",
 			"was created by kubeadm and changed since by %s, so it is exported to keep the change; a cluster built with kubeadm creates its own",
 			strings.Join(others, ", "))
 		return nil
 	}
+	// invoking Is to tell if the cluster is confidently built with kubeadm, its defined in pkg/platform/platform.go
 	builtWithKubeadm := cls.Is(platform.Kubeadm) || cls.Is(platform.Kind) || cls.Is(platform.Minikube)
+	// checking if its one of the kube-system service accounts kubeadm creates without a field manager, on a cluster built with kubeadm
 	if builtWithKubeadm && len(managers) == 0 && o.GetNamespace() == "kube-system" && o.GetKind() == "ServiceAccount" &&
 		kubeadmServiceAccounts[o.GetName()] {
 		return map[string]string{"name": o.GetName()}
@@ -395,15 +423,15 @@ func kubeadm(o *resource.Object, cls *platform.Classification) map[string]string
 	return nil
 }
 
-// kubeadmServiceAccounts are created by kubeadm without a field manager.
+// kubeadmServiceAccounts are the kube-system service accounts kubeadm creates without a field manager
 var kubeadmServiceAccounts = map[string]bool{"coredns": true, "kube-proxy": true, "bootstrap-signer": true}
 
-// kind returns the evidence that o is one of kind's own add-ons: the kindnet
-// network plugin and the local-path storage provisioner, with its namespace
-// and its "standard" StorageClass.
-func kind(o *resource.Object) map[string]string {
+// kindEvidence gives back the evidence that o is one of kind's own add-ons, or nil
+// those are the kindnet network plugin and the local-path storage provisioner, with its namespace and its "standard" StorageClass
+func kindEvidence(o *resource.Object) map[string]string {
 	gk := o.GroupVersionKind().GroupKind()
 	name, ns := o.GetName(), o.GetNamespace()
+	// checking if the object is in or is the local-path-storage namespace, is kindnet, is the provisioner's rbac, or is its standard StorageClass
 	switch {
 	case ns == "local-path-storage":
 		return map[string]string{"namespace": ns}
@@ -419,23 +447,26 @@ func kind(o *resource.Object) map[string]string {
 	return nil
 }
 
-// eks returns the evidence that EKS manages o, or nil. EKS creates these
-// objects in every cluster (or with an add-on) and keeps them up to date;
-// exported, they would carry the old cluster's values (webhook CA bundles,
-// endpoints) and some are rejected on apply.
-func eks(o *resource.Object) map[string]string {
+// eksEvidence gives back the evidence that EKS manages o, or nil
+// EKS creates these objects in every cluster, or with an add-on, and keeps them up to date
+// exported they would carry the old cluster's values, like webhook CA bundles and endpoints, and some are rejected on apply
+func eksEvidence(o *resource.Object) map[string]string {
+	// checking if the managed-by label says eks, in any case, if so thats the evidence
 	if v := o.GetLabels()[managedByLabel]; strings.EqualFold(v, "eks") {
 		return map[string]string{managedByLabel: v}
 	}
 	var managers []string
 	onlyEKS := true
+	// collecting the field managers, and whether all of them are EKS's
 	for _, m := range o.GetManagedFields() {
+		// checking if its one of Kubernetes' own managers, if so its ignored
 		if coreManagers[m.Manager] {
 			continue
 		}
 		managers = append(managers, m.Manager)
 		onlyEKS = onlyEKS && eksManagers[m.Manager]
 	}
+	// checking if every manager is EKS's, if so EKS manages it
 	if len(managers) > 0 && onlyEKS {
 		return map[string]string{"managedFields": strings.Join(managers, ",")}
 	}
@@ -443,17 +474,20 @@ func eks(o *resource.Object) map[string]string {
 	gvk := o.GroupVersionKind()
 	gk := gvk.Group + "/" + gvk.Kind
 	name := o.GetName()
+	// checking if the object is one EKS is known to create by name
 	switch {
 	case strings.HasPrefix(gk, "rbac.authorization.k8s.io/") && strings.HasPrefix(name, "eks:"):
 		return map[string]string{"name": name}
 	case eksBootstrap[gk][name]:
 		return map[string]string{"name": name}
 	case gk == "storage.k8s.io/StorageClass" && name == "gp2" && o.Object["provisioner"] == "kubernetes.io/aws-ebs":
-		// Created by EKS in every cluster, with the in-tree provisioner.
+		// EKS creates gp2 in every cluster, with the in-tree provisioner
 		return map[string]string{"name": name}
 	case gk == "apiextensions.k8s.io/CustomResourceDefinition":
 		_, group, _ := strings.Cut(name, ".")
+		// checking if the CRD's group is one of the groups of EKS's controllers
 		for _, g := range eksCRDGroups {
+			// checking if its this group, if so the CRD belongs to EKS
 			if group == g {
 				return map[string]string{"group": group}
 			}
@@ -462,68 +496,75 @@ func eks(o *resource.Object) map[string]string {
 	return nil
 }
 
-// trackingID is a parsed argo tracking id, format app:group/kind:namespace/name
+// trackingID is a parsed Argo CD tracking id, in the format app:group/kind:namespace/name
 type trackingID struct {
+	// the application, as namespace/app when the id names its namespace
 	app                   string
 	group, kind, ns, name string
 }
 
-// parse format of argo tracking ids
+// parseTrackingID takes an Argo CD tracking id and splits it into its parts, telling if it had the expected format
 func parseTrackingID(s string) (trackingID, bool) {
 	app, rest, ok := strings.Cut(s, ":")
+	// checking if theres an app before the first colon, if not its not a tracking id
 	if !ok || app == "" {
 		return trackingID{}, false
 	}
 	gk, nsName, ok := strings.Cut(rest, ":")
+	// checking if theres a second colon between group/kind and namespace/name
 	if !ok {
 		return trackingID{}, false
 	}
 	group, kind, ok := strings.Cut(gk, "/")
+	// checking if theres a kind after the group, the group itself may be empty for core objects
 	if !ok || kind == "" {
 		return trackingID{}, false
 	}
 	ns, name, ok := strings.Cut(nsName, "/")
+	// checking if theres a name after the namespace, the namespace may be empty for cluster-scoped objects
 	if !ok || name == "" {
 		return trackingID{}, false
 	}
+	// invoking argoApp to write the app as namespace/app, its defined below
 	return trackingID{app: argoApp(app), group: group, kind: kind, ns: ns, name: name}, true
 }
 
-// verify tracking id names this object, doesnt apply to cluster scoped objects
+// matches tells if the tracking id names o, the namespace isnt compared when either side is cluster-scoped
 func (t trackingID) matches(o *resource.Object) bool {
 	gvk := o.GroupVersionKind()
+	// checking if the group, kind or name differ, if so its another object
 	if t.group != gvk.Group || t.kind != gvk.Kind || t.name != o.GetName() {
 		return false
 	}
 	return t.ns == "" || o.GetNamespace() == "" || t.ns == o.GetNamespace()
 }
 
-// convert argo app instance name to namespace/app format
+// argoApp takes an Argo CD app instance name, which writes namespace_app for an app outside argocd's namespace, and gives back namespace/app
 func argoApp(s string) string {
+	// checking if the name has both a namespace and an app around an underscore, if not its kept as is
 	if ns, app, ok := strings.Cut(s, "_"); ok && ns != "" && app != "" {
 		return ns + "/" + app
 	}
 	return s
 }
 
-// helmReleaseRecord reports whether o is one of the records Helm keeps per
-// release revision: a Secret of type helm.sh/release.v1 (the default
-// driver) or a ConfigMap labelled owner=helm (HELM_DRIVER=configmap).
-// checks whether object is a helm release related object
+// helmReleaseRecord tells if o is one of the records Helm keeps per release revision, and gives back the release name
+// thats a Secret of type helm.sh/release.v1 with the default driver, or a ConfigMap labelled owner=helm with HELM_DRIVER=configmap
 func helmReleaseRecord(o *resource.Object) (string, bool) {
 	gvk := o.GroupVersionKind()
-	// check if object is a release revision
+	// checking if the object is in the core group and named like a release revision, if not its no record
 	if gvk.Group != "" || !strings.HasPrefix(o.GetName(), "sh.helm.release.v1.") {
 		return "", false
 	}
+	// checking if its a release Secret or a release ConfigMap
 	switch gvk.Kind {
-	// check if release secret
 	case "Secret":
+		// checking if the Secret has the release type
 		if t, _ := o.Object["type"].(string); t != "helm.sh/release.v1" {
 			return "", false
 		}
-	// check if release configmap
 	case "ConfigMap":
+		// checking if the ConfigMap carries Helm's owner label
 		if o.GetLabels()["owner"] != "helm" {
 			return "", false
 		}
@@ -533,21 +574,22 @@ func helmReleaseRecord(o *resource.Object) (string, bool) {
 	return o.GetLabels()["name"], true
 }
 
-// holds managers found in collected objects, so they can be identified even if deleted while running
+// managerIndex holds the managers found in the collected objects, so an object whose manager was deleted can be flagged
 type managerIndex struct {
-	// argoApps maps app name to namespace
+	// argoApps maps each Application name to the namespaces its found in
 	argoApps map[string][]string
-	// flux holds group/namespace/name
+	// flux holds group/namespace/name of each Kustomization and HelmRelease
 	flux map[string]bool
-	// helm holds namespace/release
+	// helm holds namespace/release of each Helm release record
 	helm map[string]bool
 
-	// Whether the manager's objects can be seen at all e.g. argo running in a remote cluster
+	// whether the manager's own objects can be seen at all, when they cant theres nothing to check against, e.g. Argo CD running in a remote cluster
 	argoSeen, fluxSeen bool
-	secretNamespaces   map[string]bool
+	// the namespaces any Secret was collected from, Helm's records are Secrets so a namespace without them cant be checked
+	secretNamespaces map[string]bool
 }
 
-// generate manager index and flags manager recognition
+// newManagerIndex takes the collected objects and indexes the Argo CD Applications, Flux objects and Helm releases among them
 func newManagerIndex(objs []*resource.Object) *managerIndex {
 	idx := &managerIndex{
 		argoApps:         map[string][]string{},
@@ -555,8 +597,10 @@ func newManagerIndex(objs []*resource.Object) *managerIndex {
 		helm:             map[string]bool{},
 		secretNamespaces: map[string]bool{},
 	}
+	// noting each manager object and each namespace with Secrets
 	for _, o := range objs {
 		gvk := o.GroupVersionKind()
+		// checking if the object is an Argo CD Application, a Flux Kustomization or HelmRelease, or a Secret
 		switch {
 		case gvk.Group == argoGroup && gvk.Kind == "Application":
 			idx.argoSeen = true
@@ -567,6 +611,7 @@ func newManagerIndex(objs []*resource.Object) *managerIndex {
 		case gvk.Group == "" && gvk.Kind == "Secret":
 			idx.secretNamespaces[o.GetNamespace()] = true
 		}
+		// invoking helmReleaseRecord and checking if the object is a release record with a name, if so the release is noted, its defined above
 		if name, ok := helmReleaseRecord(o); ok && name != "" {
 			idx.helm[o.GetNamespace()+"/"+name] = true
 		}
@@ -574,24 +619,31 @@ func newManagerIndex(objs []*resource.Object) *managerIndex {
 	return idx
 }
 
-// check fills in the app namespace when it can, and flags when manager isnt in the cluster
+// check takes a classified object and fills in its Argo CD app's namespace when it can, and flags it when its manager isnt in the cluster
+// an Argo CD claim resting only on the instance label is dropped when Argo CD runs here without that Application
 func (idx *managerIndex) check(o *resource.Object) {
 	p := o.Provenance
 	missing := ""
+	// checking which kind of manager claims the object, the others have nothing to check
 	switch p.Source {
 	case snapshotv1alpha1.Source_SOURCE_ARGO_CD:
+		// checking if Argo CD's Applications cant be seen or no app is named, if so theres nothing to check against
 		if !idx.argoSeen || p.Manager == "" {
 			return
 		}
+		// invoking hasArgoApp and checking if only the instance label claims it and theres no such Application, its defined below
 		if p.Evidence[confidenceKey] == lowConfidence && !idx.hasArgoApp(p.Manager) {
-			// Only the instance label, which many charts and installers
-			// set too (Flux's own objects say flux-system), and Argo CD
-			// runs here without such an Application: not Argo CD's.
+			// many charts and installers set the instance label too, Flux's own objects say flux-system
+			// with Argo CD running here and no such Application, its not Argo CD's
 			o.Provenance = &snapshotv1alpha1.Provenance{Source: snapshotv1alpha1.Source_SOURCE_UNMANAGED, Evidence: p.Evidence}
 			return
 		}
+		// checking if the manager names its namespace, if so that Application must be in it
+		// otherwise a single Application of that name gives its namespace, and several leave it out as ambiguous
 		if ns, app, ok := strings.Cut(p.Manager, "/"); ok {
+			// looking for the Application in the named namespace, if its there all is well
 			for _, n := range idx.argoApps[app] {
+				// checking if the Application is in that namespace, if so the tracking id is fine
 				if n == ns {
 					return
 				}
@@ -600,23 +652,27 @@ func (idx *managerIndex) check(o *resource.Object) {
 			p.Manager = nss[0] + "/" + p.Manager
 			return
 		} else if len(nss) > 1 {
-			return // ambiguous; leave the namespace out
+			return
 		}
 		missing = "Argo CD Application " + p.Manager
 	case snapshotv1alpha1.Source_SOURCE_FLUX:
+		// checking if Flux's objects cant be seen, if so theres nothing to check against
 		if !idx.fluxSeen {
 			return
 		}
 		group, kind := fluxKustomizeGroup, "Kustomization"
+		// checking if the evidence is the HelmRelease label, if so its a HelmRelease to look for
 		if _, ok := p.Evidence[fluxHelmName]; ok {
 			group, kind = fluxHelmGroup, "HelmRelease"
 		}
+		// checking if the Flux object was collected, if so all is well
 		if idx.flux[group+"/"+p.Manager] {
 			return
 		}
 		missing = "Flux " + kind + " " + p.Manager
 	case snapshotv1alpha1.Source_SOURCE_HELM:
 		ns, _, ok := strings.Cut(p.Manager, "/")
+		// checking if theres no release namespace, no Secrets were read there, or the release record was found, in each case theres nothing to flag
 		if !ok || !idx.secretNamespaces[ns] || idx.helm[p.Manager] {
 			return
 		}
@@ -624,39 +680,34 @@ func (idx *managerIndex) check(o *resource.Object) {
 	default:
 		return
 	}
-	o.AddFinding(snapshotv1alpha1.Severity_SEVERITY_WARNING, "MANAGER_NOT_FOUND",
+	// invoking AddFinding to warn that the manager is gone, its defined in pkg/resource/resource.go
+	o.AddFinding(snapshotv1alpha1.Severity_SEVERITY_WARNING, ManagerNotFound,
 		"carries the markers of %s, which is not in the cluster; it was probably deleted without deleting this object, so nothing manages it now",
 		missing)
 }
 
-// hasArgoApp reports whether an Argo CD Application named by manager
-// (name or namespace/name) was collected.
+// hasArgoApp tells if an Argo CD Application named by manager, as name or namespace/name, was collected
 func (idx *managerIndex) hasArgoApp(manager string) bool {
+	// checking if the manager names a namespace, if so the Application must be in it
 	if ns, app, ok := strings.Cut(manager, "/"); ok {
 		return slices.Contains(idx.argoApps[app], ns)
 	}
 	return len(idx.argoApps[manager]) > 0
 }
 
-// return concatenated namespace/name format
+// join writes a namespace and name as namespace/name, or only the name when theres no namespace
 func join(ns, name string) string {
+	// checking if theres no namespace, if so the name stands alone
 	if ns == "" {
 		return name
 	}
 	return ns + "/" + name
 }
 
-// create sorted array
-func sortedKeys[V any](m map[string]V) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
-}
-
-// customGroup reports whether an API group is a custom resource group, k8s own groups have no dot (apps, batch) or end in .k8s.io
+// customGroup tells if an API group is a custom resource group, Kubernetes' own groups have no dot, like apps and batch, or end in .k8s.io
 func customGroup(group string) bool {
 	return strings.Contains(group, ".") && !strings.HasSuffix(group, ".k8s.io")
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

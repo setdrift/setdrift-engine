@@ -1,5 +1,4 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
+// tests the platform rules of the classifier, the objects EKS, kubeadm and kind create that the export leaves out
 
 package provenance
 
@@ -15,6 +14,7 @@ import (
 	snapshotv1alpha1 "setdrift.io/setdrift-engine/pkg/snapshot/v1alpha1"
 )
 
+// check that the objects EKS creates and keeps are the platform's, by label, field manager, name or CRD group, and a user's own lookalikes arent
 func TestPlatform(t *testing.T) {
 	mk := func(apiVersion, kind, name string, labels map[string]string, managers ...string) *resource.Object {
 		u := &unstructured.Unstructured{Object: map[string]any{"apiVersion": apiVersion, "kind": kind}}
@@ -56,6 +56,7 @@ func TestPlatform(t *testing.T) {
 	}
 }
 
+// check that an instance label with no such Application, while Argo CD runs here, isnt taken for Argo CD's, and a matching one gets its namespace
 func TestInstanceLabelWithoutApplication(t *testing.T) {
 	mk := func(apiVersion, kind, ns, name string, labels map[string]string) *resource.Object {
 		u := &unstructured.Unstructured{Object: map[string]any{"apiVersion": apiVersion, "kind": kind}}
@@ -79,9 +80,7 @@ func TestInstanceLabelWithoutApplication(t *testing.T) {
 	}
 }
 
-// kubeadm's objects are the platform's by their field manager, on any
-// cluster; changed since, they are the user's. kind's add-ons count only on a
-// cluster classified as kind.
+// check that kubeadm's objects are the platform's by their field manager on any cluster and the user's once changed, and kind's add-ons count only on a cluster classified as kind
 func TestKubeadmAndKind(t *testing.T) {
 	mk := func(apiVersion, kind, ns, name string, managers ...string) *resource.Object {
 		u := &unstructured.Unstructured{Object: map[string]any{"apiVersion": apiVersion, "kind": kind}}
@@ -127,3 +126,6 @@ func TestKubeadmAndKind(t *testing.T) {
 		}
 	}
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0
