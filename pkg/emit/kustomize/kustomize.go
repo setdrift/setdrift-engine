@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package kustomize writes a snapshot as a Kustomize repository:
+//
 //	clusters/<cluster>/kustomization.yaml
 //	clusters/<cluster>/README.md
 //	clusters/<cluster>/RESTORE.md
@@ -19,8 +20,9 @@
 //	clusters/<cluster>/external-secrets/kustomization.yaml
 //	clusters/<cluster>/external-secrets/namespaces/<ns>/externalsecret.external-secrets.io/<name>.yaml
 //
-// Resources whose values were redacted (see ReferenceOnly) go under redacted/ and are not referenced and should not be applied, see RESTORE.md for instructions
-
+// Resources whose values were redacted (see ReferenceOnly) go under
+// redacted/: no kustomization lists them, and they must not be applied.
+// RESTORE.md says how to supply their values.
 package kustomize
 
 import (
@@ -30,6 +32,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -38,6 +41,7 @@ import (
 	"setdrift.io/setdrift-engine/pkg/helmsource"
 	"setdrift.io/setdrift-engine/pkg/lifecycle"
 	"setdrift.io/setdrift-engine/pkg/platform"
+	"setdrift.io/setdrift-engine/pkg/provenance"
 	snapshotv1alpha1 "setdrift.io/setdrift-engine/pkg/snapshot/v1alpha1"
 )
 
@@ -77,14 +81,16 @@ const (
   --external-secrets to have an ExternalSecret written for each.`
 )
 
-// rootReadme is written to README.md at the cluster root.
+// rootReadme and rootReadmeApply are README.md at the cluster root; the
+// overview of what the export found goes between them.
 const rootReadme = `# %s
 
 Exported by SetDrift. kustomization.yaml includes everything that can be
 applied: CRDs first, then cluster-scoped resources, then each namespace.
 redacted/ and external-secrets/ are not included; see their READMEs.
+`
 
-## Applying to a new cluster
+const rootReadmeApply = `## Applying to a new cluster
 
 RESTORE.md is the full checklist: secrets to fill in, volumes to copy,
 controllers to install first, and what lives outside Kubernetes. In short:
@@ -137,7 +143,7 @@ func Unmanaged(r *snapshotv1alpha1.Resource) bool {
 		return true
 	}
 	for _, f := range r.GetFindings() {
-		if f.GetCode() == "MANAGER_NOT_FOUND" {
+		if f.GetCode() == provenance.ManagerNotFound {
 			return true
 		}
 	}
@@ -199,7 +205,9 @@ func (e Emitter) Emit(s *snapshotv1alpha1.Snapshot, dir string) error {
 	if err := os.MkdirAll(parent, 0o755); err != nil {
 		return err
 	}
-	// Left by an export that was killed before it could clean up.
+	// Left by an export that was killed before it could clean up: removed
+	// if possible; one left behind changes nothing (the pattern is fixed, so
+	// Glob cannot fail).
 	stale, _ := filepath.Glob(filepath.Join(parent, "."+name+".tmp-*"))
 	for _, d := range stale {
 		_ = os.RemoveAll(d)
@@ -231,7 +239,7 @@ func replaceDir(tmp, root string) error {
 	}
 	if err := os.Rename(tmp, root); err != nil {
 		if old != "" {
-			_ = os.Rename(old, root)
+			_ = os.Rename(old, root) // best effort: the error that matters is err
 		}
 		return err
 	}
@@ -243,90 +251,116 @@ func replaceDir(tmp, root string) error {
 	return nil
 }
 
-// write writes the export into root; name is the cluster directory's final name, for README.md.
+// write writes the export into root; name is the cluster directory's final
+// name, for README.md.
 func (e Emitter) write(s *snapshotv1alpha1.Snapshot, root, name string) error {
-	var resources []*snapshotv1alpha1.Resource
+	cls, platDir := exportPlatform(s)
+	resources, bound := e.partition(s, platDir)
+	paths, err := filePaths(resources[:len(resources)-bound], "")
+	if err != nil {
+		return err
+	}
+	boundPaths, err := filePaths(resources[len(resources)-bound:], platDir)
+	if err != nil {
+		return err
+	}
+	written, buckets, err := writeManifests(root, resources, append(paths, boundPaths...))
+	if err != nil {
+		return err
+	}
+	referenceOnly := slices.ContainsFunc(written, func(w writtenFile) bool { return w.referenceOnly })
+	var settings *ExternalSecrets
+	if e.ExternalSecrets != nil {
+		settings = e.ExternalSecrets.resolved(cls)
+	}
+
+	var remotes []remoteSecret
+	if referenceOnly {
+		esText := readmeWithoutExternalSecrets
+		if settings != nil {
+			esText = readmeWithExternalSecrets
+		}
+		if err := writeFile(filepath.Join(root, redactedDir, "README.md"), []byte(fmt.Sprintf(redactedReadme, esText))); err != nil {
+			return err
+		}
+		if settings != nil {
+			if remotes, err = settings.emit(s, resources, root, platDir); err != nil {
+				return err
+			}
+		}
+	}
+	if err := e.writeRestore(root, s, written, remotes, bound); err != nil {
+		return err
+	}
+	secretManager := ""
+	if settings != nil && referenceOnly {
+		secretManager = settings.ID
+	}
+	if err := writeExportInfo(root, s, secretManager); err != nil {
+		return err
+	}
+	_, hasCRDs := buckets[crdsDir]
+	if err := writeFile(filepath.Join(root, "README.md"), []byte(e.readme(s, name, hasCRDs, cls, platDir))); err != nil {
+		return err
+	}
+	return writeBuckets(root, buckets, cls, platDir, bound)
+}
+
+// partition returns the resources to write, the generic ones first, and how
+// many at the end are the platform set's own objects: custom resources of
+// APIs the platform provides (their CRD is the platform's, left out), which
+// no other cluster serves.
+func (e Emitter) partition(s *snapshotv1alpha1.Snapshot, platDir string) ([]*snapshotv1alpha1.Resource, int) {
+	platformKinds := platformCRDKinds(s)
+	var generic, bound []*snapshotv1alpha1.Resource
 	for _, r := range s.Resources {
 		if NotWritten(r) || (e.UnmanagedOnly && !Unmanaged(r)) {
 			continue
 		}
-		resources = append(resources, r)
-	}
-	// The platform set's own objects: custom resources of APIs the platform
-	// provides (their CRD is the platform's, left out), which no other
-	// cluster serves. Everything else is generic.
-	cls, platDir := exportPlatform(s)
-	platformKinds := platformCRDKinds(s)
-	var generic, bound []*snapshotv1alpha1.Resource
-	for _, r := range resources {
 		if platDir != "" && platformKinds[resourceGroupKind(r)] && !ReferenceOnly(r) {
 			bound = append(bound, r)
 		} else {
 			generic = append(generic, r)
 		}
 	}
-	resources = append(generic, bound...)
-	paths, err := filePaths(generic, "")
-	if err != nil {
-		return err
-	}
-	boundPaths, err := filePaths(bound, platDir)
-	if err != nil {
-		return err
-	}
-	paths = append(paths, boundPaths...)
+	return append(generic, bound...), len(bound)
+}
 
-	buckets := map[string][]string{} // bucket dir > files relative to it
-	referenceOnly := false
+// writeManifests writes each resource at its path, and returns what it
+// wrote and, by bucket directory, the files each kustomization lists
+// (reference-only files are in none).
+func writeManifests(root string, resources []*snapshotv1alpha1.Resource, paths []filePath) ([]writtenFile, map[string][]string, error) {
+	buckets := map[string][]string{}
 	written := make([]writtenFile, len(resources))
 	for i, r := range resources {
 		bucket, rel := paths[i].bucket, paths[i].rel
 		out, err := writeManifest(filepath.Join(root, bucket, rel), r)
 		if err != nil {
-			return err
+			return nil, nil, err
 		}
 		written[i] = writtenFile{resource: r, path: filepath.ToSlash(filepath.Join(bucket, rel)), yaml: out, referenceOnly: paths[i].referenceOnly}
-		if paths[i].referenceOnly {
-			referenceOnly = true
-			continue
+		if !paths[i].referenceOnly {
+			buckets[bucket] = append(buckets[bucket], filepath.ToSlash(rel))
 		}
-		buckets[bucket] = append(buckets[bucket], filepath.ToSlash(rel))
 	}
+	return written, buckets, nil
+}
 
-	var remotes []remoteSecret
-	if referenceOnly {
-		esText := readmeWithoutExternalSecrets
-		if e.ExternalSecrets != nil {
-			esText = readmeWithExternalSecrets
-		}
-		if err := writeFile(filepath.Join(root, redactedDir, "README.md"), []byte(fmt.Sprintf(redactedReadme, esText))); err != nil {
-			return err
-		}
-		if e.ExternalSecrets != nil {
-			if remotes, err = e.ExternalSecrets.resolved(cls).emit(s, resources, root, platDir); err != nil {
-				return err
-			}
-		}
-	}
-	if err := e.writeRestore(root, s, written, remotes, len(bound)); err != nil {
-		return err
-	}
-	secretManager := ""
-	if e.ExternalSecrets != nil && referenceOnly {
-		secretManager = e.ExternalSecrets.resolved(cls).ID
-	}
-	if err := writeExportInfo(root, s, secretManager); err != nil {
-		return err
-	}
+// readme is README.md at the cluster root: what the export holds, what it
+// found, how to apply it, and the platform set.
+func (e Emitter) readme(s *snapshotv1alpha1.Snapshot, name string, hasCRDs bool, cls *platform.Classification, platDir string) string {
 	apply := applyWithoutCRDs
-	if _, ok := buckets[crdsDir]; ok {
+	if hasCRDs {
 		apply = applyWithCRDs
 	}
-	readme := fmt.Sprintf(rootReadme, name, apply)
+	readme := fmt.Sprintf(rootReadme, name)
 	// What the export found, before how to apply it.
 	if ov := NewOverview(s, e.UnmanagedOnly).markdown(); ov != "" {
-		readme = strings.Replace(readme, "\n## Applying to a new cluster", ov+"## Applying to a new cluster", 1)
+		readme += ov
+	} else {
+		readme += "\n"
 	}
+	readme += fmt.Sprintf(rootReadmeApply, apply)
 	if platDir != "" {
 		readme += fmt.Sprintf("\n## The %s set\n\n"+
 			"This directory is generic: it applies to any Kubernetes cluster. The source\n"+
@@ -335,10 +369,13 @@ func (e Emitter) write(s *snapshotv1alpha1.Snapshot, root, name string) error {
 			"its README), and\n"+
 			"RESTORE.md says which of its steps are for that platform.\n", platDir, cls.Summary(), platDir)
 	}
-	if err := writeFile(filepath.Join(root, "README.md"), []byte(readme)); err != nil {
-		return err
-	}
+	return readme
+}
 
+// writeBuckets writes each bucket's kustomization.yaml, the platform set,
+// and the root kustomization.yaml listing the generic buckets: CRDs first,
+// then cluster-scoped objects (Namespaces), then namespaces.
+func writeBuckets(root string, buckets map[string][]string, cls *platform.Classification, platDir string, bound int) error {
 	var bucketNames, platformBuckets []string
 	for b, files := range buckets {
 		if err := writeBucket(filepath.Join(root, b), files); err != nil {
@@ -350,8 +387,6 @@ func (e Emitter) write(s *snapshotv1alpha1.Snapshot, root, name string) error {
 		}
 		bucketNames = append(bucketNames, filepath.ToSlash(b))
 	}
-
-	// CRDs first, then cluster-scoped objects (Namespaces), then namespaces.
 	rank := func(b string) int {
 		switch b {
 		case crdsDir:
@@ -368,7 +403,7 @@ func (e Emitter) write(s *snapshotv1alpha1.Snapshot, root, name string) error {
 		return bucketNames[i] < bucketNames[j]
 	})
 	if platDir != "" {
-		if err := writePlatformSet(root, platDir, cls, bucketNames, platformBuckets, len(bound)); err != nil {
+		if err := writePlatformSet(root, platDir, cls, bucketNames, platformBuckets, bound); err != nil {
 			return err
 		}
 	}

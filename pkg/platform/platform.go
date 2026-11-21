@@ -117,18 +117,21 @@ func (c *Classification) On(i Infrastructure) bool {
 	return c != nil && c.Infrastructure == i && (c.InfraConfidence == HighConfidence || c.InfraConfidence == MediumConfidence)
 }
 
-// Name is a display name for the distribution, e.g. "EKS", or "" when unknown.
-func (d Distribution) Name() string {
-	return map[Distribution]string{
+var (
+	distributionNames = map[Distribution]string{
 		EKS: "EKS", AKS: "AKS", GKE: "GKE", OpenShift: "OpenShift", K3s: "k3s", RKE2: "RKE2",
 		Kubeadm: "kubeadm", Kind: "kind", Minikube: "minikube", DockerDesktop: "Docker Desktop",
-	}[d]
-}
+	}
+	infrastructureNames = map[Infrastructure]string{
+		AWS: "AWS", Azure: "Azure", GCP: "Google Cloud", Local: "a local machine", Other: "self-hosted infrastructure",
+	}
+)
+
+// Name is a display name for the distribution, e.g. "EKS", or "" when unknown.
+func (d Distribution) Name() string { return distributionNames[d] }
 
 // Name is a display name for the infrastructure, e.g. "AWS", or "" when unknown.
-func (i Infrastructure) Name() string {
-	return map[Infrastructure]string{AWS: "AWS", Azure: "Azure", GCP: "Google Cloud", Local: "a local machine", Other: "self-hosted infrastructure"}[i]
-}
+func (i Infrastructure) Name() string { return infrastructureNames[i] }
 
 // distributionFacts: the infrastructure a distribution implies, and whether
 // a provider manages it.

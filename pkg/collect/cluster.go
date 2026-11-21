@@ -1,19 +1,20 @@
 // Copyright The SetDrift Authors
 // SPDX-License-Identifier: Apache-2.0
 
-// Collecting from a Kubernetes API server (as opposed to a directory of manifests).
+// Collecting from a Kubernetes API server (as opposed to a directory of
+// manifests).
 
 package collect
 
 import (
 	"context"
-	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"sort"
 	"strings"
-	"sync"
 
+	"golang.org/x/sync/errgroup"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -25,12 +26,15 @@ import (
 	"k8s.io/client-go/metadata"
 	"k8s.io/client-go/tools/pager"
 
+	"setdrift.io/setdrift-engine/internal/kube"
+	"setdrift.io/setdrift-engine/internal/text"
 	"setdrift.io/setdrift-engine/pkg/ownership"
 	"setdrift.io/setdrift-engine/pkg/resource"
+	"setdrift.io/setdrift-engine/pkg/snapshot"
 	snapshotv1alpha1 "setdrift.io/setdrift-engine/pkg/snapshot/v1alpha1"
 )
 
-// set defaults
+// The collector's defaults.
 const (
 	// DefaultPageSize is the number of objects requested per list call.
 	DefaultPageSize = 500
@@ -43,61 +47,71 @@ const (
 	DefaultOwnerGetLimit = 200
 )
 
-// DefaultSkip lists types that hold runtime state rather than configuration: objects to ignore, e.g. events are too noisy
-var DefaultSkip = map[schema.GroupResource]bool{
-	{Group: "", Resource: "events"}:              true,
-	{Group: "events.k8s.io", Resource: "events"}: true,
+// runtimeState lists the types that hold runtime state rather than
+// configuration, by resource (for the cluster collector, which lists by
+// resource) and by kind (for FileSource, which reads objects without
+// discovery): objects not to export, e.g. Events, too noisy and gone soon.
+var runtimeState = []struct {
+	group, resource, kind string
+}{
+	{"", "events", "Event"},
+	{"events.k8s.io", "events", "Event"},
 	// One per node, registered by the kubelet or a node provisioner.
-	{Group: "", Resource: "nodes"}:                                         true,
-	{Group: "storage.k8s.io", Resource: "csinodes"}:                        true,
-	{Group: "storage.k8s.io", Resource: "volumeattachments"}:               true,
-	{Group: "storage.k8s.io", Resource: "csistoragecapacities"}:            true,
-	{Group: "resource.k8s.io", Resource: "resourceslices"}:                 true,
-	{Group: "karpenter.sh", Resource: "nodeclaims"}:                        true,
-	{Group: "vpcresources.k8s.aws", Resource: "cninodes"}:                  true,
-	{Group: "eks.amazonaws.com", Resource: "cninodes"}:                     true,
-	{Group: "eks.amazonaws.com", Resource: "nodediagnostics"}:              true,
-	{Group: "certificates.k8s.io", Resource: "certificatesigningrequests"}: true,
+	{"", "nodes", "Node"},
+	{"storage.k8s.io", "csinodes", "CSINode"},
+	{"storage.k8s.io", "volumeattachments", "VolumeAttachment"},
+	{"storage.k8s.io", "csistoragecapacities", "CSIStorageCapacity"},
+	{"resource.k8s.io", "resourceslices", "ResourceSlice"},
+	{"karpenter.sh", "nodeclaims", "NodeClaim"},
+	{"vpcresources.k8s.aws", "cninodes", "CNINode"},
+	{"eks.amazonaws.com", "cninodes", "CNINode"},
+	{"eks.amazonaws.com", "nodediagnostics", "NodeDiagnostic"},
+	{"certificates.k8s.io", "certificatesigningrequests", "CertificateSigningRequest"},
 	// Leader election and node heartbeats.
-	{Group: "coordination.k8s.io", Resource: "leases"}: true,
+	{"coordination.k8s.io", "leases", "Lease"},
 	// One PodMetrics per Pod and NodeMetrics per Node, computed live.
-	{Group: "metrics.k8s.io", Resource: "pods"}:  true,
-	{Group: "metrics.k8s.io", Resource: "nodes"}: true,
+	{"metrics.k8s.io", "pods", "PodMetrics"},
+	{"metrics.k8s.io", "nodes", "NodeMetrics"},
 	// Allocated per Service IP.
-	{Group: "networking.k8s.io", Resource: "ipaddresses"}: true,
+	{"networking.k8s.io", "ipaddresses", "IPAddress"},
 	// Deprecated, computed on read.
-	{Group: "", Resource: "componentstatuses"}: true,
+	{"", "componentstatuses", "ComponentStatus"},
 }
 
-// DefaultSkipKinds is DefaultSkip by kind, for FileSource, which reads objects without discovery. Keep the two in step.
-var DefaultSkipKinds = map[schema.GroupKind]bool{
-	{Group: "", Kind: "Event"}:                                        true,
-	{Group: "events.k8s.io", Kind: "Event"}:                           true,
-	{Group: "", Kind: "Node"}:                                         true,
-	{Group: "storage.k8s.io", Kind: "CSINode"}:                        true,
-	{Group: "storage.k8s.io", Kind: "VolumeAttachment"}:               true,
-	{Group: "storage.k8s.io", Kind: "CSIStorageCapacity"}:             true,
-	{Group: "resource.k8s.io", Kind: "ResourceSlice"}:                 true,
-	{Group: "karpenter.sh", Kind: "NodeClaim"}:                        true,
-	{Group: "vpcresources.k8s.aws", Kind: "CNINode"}:                  true,
-	{Group: "eks.amazonaws.com", Kind: "CNINode"}:                     true,
-	{Group: "eks.amazonaws.com", Kind: "NodeDiagnostic"}:              true,
-	{Group: "certificates.k8s.io", Kind: "CertificateSigningRequest"}: true,
-	{Group: "coordination.k8s.io", Kind: "Lease"}:                     true,
-	{Group: "metrics.k8s.io", Kind: "PodMetrics"}:                     true,
-	{Group: "metrics.k8s.io", Kind: "NodeMetrics"}:                    true,
-	{Group: "networking.k8s.io", Kind: "IPAddress"}:                   true,
-	{Group: "", Kind: "ComponentStatus"}:                              true,
+var (
+	skipResources = map[schema.GroupResource]bool{}
+	skipKinds     = map[schema.GroupKind]bool{}
+)
+
+func init() {
+	for _, t := range runtimeState {
+		skipResources[schema.GroupResource{Group: t.group, Resource: t.resource}] = true
+		skipKinds[schema.GroupKind{Group: t.group, Kind: t.kind}] = true
+	}
 }
 
-// DefaultMetadataOnly lists high volume objects, usually children to other resources, only retrieve metadata to cut down on size and drops if child
-var DefaultMetadataOnly = map[schema.GroupResource]bool{
+// DefaultSkip reports whether the collector leaves out a type by default:
+// one that holds runtime state rather than configuration.
+func DefaultSkip(gr schema.GroupResource) bool { return skipResources[gr] }
+
+// DefaultSkipKind is DefaultSkip by kind, for objects read without
+// discovery.
+func DefaultSkipKind(gk schema.GroupKind) bool { return skipKinds[gk] }
+
+// metadataOnlyTypes are high-volume types whose objects are usually
+// children of others: listed metadata-only first, and fetched in full only
+// when nothing collected owns them.
+var metadataOnlyTypes = map[schema.GroupResource]bool{
 	{Group: "", Resource: "pods"}:                           true,
 	{Group: "apps", Resource: "replicasets"}:                true,
 	{Group: "apps", Resource: "controllerrevisions"}:        true,
 	{Group: "batch", Resource: "jobs"}:                      true,
 	{Group: "discovery.k8s.io", Resource: "endpointslices"}: true,
 }
+
+// DefaultMetadataOnly reports whether the collector lists a type
+// metadata-only first, by default.
+func DefaultMetadataOnly(gr schema.GroupResource) bool { return metadataOnlyTypes[gr] }
 
 // ClusterCollector lists every listable resource in a cluster.
 type ClusterCollector struct {
@@ -121,9 +135,10 @@ type ClusterCollector struct {
 	RequireNamespaces bool
 	// objects per call; zero means DefaultPageSize
 	PageSize int64
-	// types not to list; nil means DefaultSkip
+	// Skip reports the types not to list; nil means DefaultSkip.
 	Skip func(schema.GroupResource) bool
-	// resources to list metadata-only first; nil means DefaultMetadataOnly
+	// MetadataOnly reports the types to list metadata-only first; nil means
+	// DefaultMetadataOnly.
 	MetadataOnly func(schema.GroupResource) bool
 	// zero means DefaultHydrateGetLimit
 	HydrateGetLimit int
@@ -167,29 +182,76 @@ type listResult struct {
 	denied []string
 }
 
-// Collect implements Collector, gathers in order- Server Version, Discovery, Kinds by group, Scope, Tasks, Sort, listAll, merge in task order, fail if list empty, get ns resolve owners then hydrate
+// Finding codes the CLI reads.
+const (
+	// ListDenied is the code of the finding naming the types a namespace
+	// refused to list, when others allowed them.
+	ListDenied = "LIST_DENIED"
+	// NamespaceScopedAccess is the code of the finding on a capture that
+	// read only the kubeconfig context's namespace.
+	NamespaceScopedAccess = "NAMESPACE_SCOPED_ACCESS"
+)
+
+// Collect implements Collector. In order: the server version, discovery,
+// what the credentials may read (scope), the lists (at most Concurrency at a
+// time), then the requested Namespace objects, missing owners and the full
+// objects behind metadata-only stubs that are kept.
 func (c *ClusterCollector) Collect(ctx context.Context) (*Result, error) {
 	res := &Result{}
-
-	// unknown k8s server version is warning not breaking error
+	// an unknown version is a warning, not a failure
 	if v, err := c.Discovery.ServerVersion(); err != nil {
 		res.warn("SERVER_VERSION_UNKNOWN", err.Error())
 	} else {
 		res.KubernetesVersion = v.GitVersion
 	}
+	discovered, kinds, err := c.discover(res)
+	if err != nil {
+		return nil, err
+	}
+	// A caller who may only read some namespaces lists with a collector
+	// scoped to them.
+	sc, err := c.scope(ctx, res, kinds)
+	if err != nil {
+		return nil, err
+	}
+	tasks := sc.tasks(discovered)
+	results, err := sc.listAll(ctx, tasks)
+	if err != nil {
+		return nil, err
+	}
+	partials, listed := sc.merge(ctx, res, tasks, results)
+	// Nothing at all could be listed: an empty export would look like an empty cluster.
+	if listed == 0 && len(tasks) > 0 {
+		if IsPermission(results[0].err) {
+			return nil, &NoAccessError{Identity: Identity(ctx, sc.Dynamic, results[0].err), Namespaces: sc.namespaces(), Err: results[0].err}
+		}
+		return nil, fmt.Errorf("no resource type could be listed; first error: %w", results[0].err)
+	}
+	if err := sc.getNamespaces(ctx, res, kinds); err != nil {
+		return nil, err
+	}
+	if err := sc.resolveOwners(ctx, res, kinds); err != nil {
+		return nil, err
+	}
+	if err := sc.hydrate(ctx, res, partials); err != nil {
+		return nil, err
+	}
+	return res, nil
+}
 
-	// returns every type, one version per API group pulled from server
+// discover returns every listable type the server serves, one version per
+// API group, and the same by group and kind, for resolveOwners: owner
+// references name a kind, not a resource.
+func (c *ClusterCollector) discover(res *Result) ([]*typeInfo, map[schema.GroupKind]*typeInfo, error) {
 	lists, err := discovery.ServerPreferredResources(c.Discovery)
 	if err != nil {
 		if !discovery.IsGroupDiscoveryFailedError(err) || len(lists) == 0 {
-			return nil, fmt.Errorf("discovering API resources: %w", err)
+			return nil, nil, fmt.Errorf("discovering API resources: %w", err)
 		}
-		// aggregated apis (e.g. metrics-server) may have registered api service that is unreachable
-		// results in warning not terminal error
+		// An aggregated API (e.g. metrics-server) may be registered but
+		// unreachable: a warning, not a failure.
 		res.warn("DISCOVERY_PARTIAL", err.Error())
 	}
-
-	// One entry per group and kind, for resolveOwners: owner references name a kind, not a resource.
 	kinds := map[schema.GroupKind]*typeInfo{}
 	var discovered []*typeInfo
 	for _, list := range lists {
@@ -198,7 +260,6 @@ func (c *ClusterCollector) Collect(ctx context.Context) (*Result, error) {
 			res.warn("DISCOVERY_BAD_GROUP_VERSION", err.Error())
 			continue
 		}
-		// iterates through each api resource as defined by server
 		for _, r := range list.APIResources {
 			if strings.Contains(r.Name, "/") || !slices.Contains(r.Verbs, "list") || !slices.Contains(r.Verbs, "get") {
 				continue // subresource, or not listable e.g. SubjectAccessReview
@@ -208,48 +269,40 @@ func (c *ClusterCollector) Collect(ctx context.Context) (*Result, error) {
 			discovered = append(discovered, info)
 		}
 	}
+	return discovered, kinds, nil
+}
 
-	// A caller who may only read some namespaces gets the fallback namespace.
-	c, err = c.scope(ctx, res, kinds)
-	if err != nil {
-		return nil, err
-	}
-
+// tasks returns the types to list, in a stable order: discovery order
+// varies, and sorting keeps the result the same every run.
+func (c *ClusterCollector) tasks(discovered []*typeInfo) []listTask {
 	var tasks []listTask
 	for _, info := range discovered {
-		// apply skip rule
 		if c.skip(info.gvr.GroupResource()) {
 			continue
 		}
-		// apply namespace rule
+		// with namespaces given, cluster-scoped types are not read
 		if !info.namespaced && len(c.Namespaces) > 0 {
 			continue
 		}
-		// only pull metadata for types specified in metadata only above
 		tasks = append(tasks, listTask{info: info, metadataOnly: c.Metadata != nil && c.metadataOnly(info.gvr.GroupResource())})
 	}
-
-	// Discovery order varies; sorting keeps the result the same every run.
 	sort.Slice(tasks, func(i, j int) bool { return tasks[i].info.gvr.String() < tasks[j].info.gvr.String() })
-	results, err := c.listAll(ctx, tasks)
-	if err != nil {
-		return nil, err
-	}
-	// Merged in task order, so the result does not depend on which list finished first.
+	return tasks
+}
+
+// merge adds the lists' objects to res in task order, so the result does not
+// depend on which list finished first, and records what could not be read.
+// It returns the metadata-only types, and how many types were listed.
+func (c *ClusterCollector) merge(ctx context.Context, res *Result, tasks []listTask, results []listResult) ([]*partialType, int) {
 	var partials []*partialType
 	listed := 0
 	// types refused in some of the namespaces read, by namespace
 	deniedIn := map[string][]string{}
 	// what could not be read, for the scope
 	var unread []*snapshotv1alpha1.Unread
-	defer func() {
-		if res.Scope != nil {
-			res.Scope.Unread = unread
-		}
-	}()
 	for i, r := range results {
 		gvr := tasks[i].info.gvr
-		// LIST_FAILED warning for any error the API server returned for one type, else breaks with error
+		// an error the API server returned for one type is a warning
 		if r.err != nil {
 			res.warn("LIST_FAILED", fmt.Sprintf("%s: %v", gvr, r.err))
 			unread = append(unread, &snapshotv1alpha1.Unread{Group: gvr.Group, Kind: tasks[i].info.kind})
@@ -268,55 +321,48 @@ func (c *ClusterCollector) Collect(ctx context.Context) (*Result, error) {
 			res.Objects = append(res.Objects, r.objects...)
 		}
 	}
-
-	if len(deniedIn) > 0 {
-		identity := ""
-		if res.Scope != nil {
-			identity = res.Scope.Identity
-		}
-		if identity == "" {
-			identity = Identity(ctx, c.Dynamic)
-			if res.Scope != nil {
-				res.Scope.Identity = identity
-			}
-		}
-		who := "these credentials"
-		if identity != "" {
-			who += " (" + identity + ")"
-		}
-		nss := make([]string, 0, len(deniedIn))
-		for ns := range deniedIn {
-			nss = append(nss, ns)
-		}
-		sort.Strings(nss)
-		for _, ns := range nss {
-			res.warn("LIST_DENIED", fmt.Sprintf("in namespace %s, %s may not list %d %s, so they were not read there: %s",
-				ns, who, len(deniedIn[ns]), choose(len(deniedIn[ns]) == 1, "type", "types"), truncateList(deniedIn[ns], 12)))
-		}
+	if res.Scope != nil {
+		res.Scope.Unread = unread
 	}
-
-	// Nothing at all could be listed: an empty export would look like an empty cluster.
-	if listed == 0 && len(tasks) > 0 {
-		if IsPermission(results[0].err) {
-			return nil, &NoAccessError{Identity: Identity(ctx, c.Dynamic, results[0].err), Namespaces: c.namespaces(), Err: results[0].err}
-		}
-		return nil, fmt.Errorf("no resource type could be listed; first error: %v", results[0].err)
-	}
-
-	if err := c.getNamespaces(ctx, res, kinds); err != nil {
-		return nil, err
-	}
-	if err := c.resolveOwners(ctx, res, kinds); err != nil {
-		return nil, err
-	}
-	if err := c.hydrate(ctx, res, partials); err != nil {
-		return nil, err
-	}
-	return res, nil
+	c.warnDenied(ctx, res, deniedIn)
+	return partials, listed
 }
 
-// fetch full object for meta-data only objects that ownership stage will keep (no controller owner, controller owner unknown)
-// must match logic in ownership.ControllerOwnerResolver otherwise snapshot.Build will reject it
+// warnDenied adds a LIST_DENIED finding for each namespace that refused
+// some types.
+func (c *ClusterCollector) warnDenied(ctx context.Context, res *Result, deniedIn map[string][]string) {
+	if len(deniedIn) == 0 {
+		return
+	}
+	identity := ""
+	if res.Scope != nil {
+		identity = res.Scope.Identity
+	}
+	if identity == "" {
+		identity = Identity(ctx, c.Dynamic)
+		if res.Scope != nil {
+			res.Scope.Identity = identity
+		}
+	}
+	who := "these credentials"
+	if identity != "" {
+		who += " (" + identity + ")"
+	}
+	nss := make([]string, 0, len(deniedIn))
+	for ns := range deniedIn {
+		nss = append(nss, ns)
+	}
+	sort.Strings(nss)
+	for _, ns := range nss {
+		res.warn(ListDenied, fmt.Sprintf("in namespace %s, %s may not list %s, so they were not read there: %s",
+			ns, who, text.Plural(len(deniedIn[ns]), "type", "types"), truncateList(deniedIn[ns], 12)))
+	}
+}
+
+// hydrate fetches in full the metadata-only objects the ownership stage
+// will keep (no controller owner, or one not collected). It must decide as
+// ownership.ControllerOwnerResolver does, or snapshot.Build rejects a stub
+// left metadata-only.
 func (c *ClusterCollector) hydrate(ctx context.Context, res *Result, partials []*partialType) error {
 	if len(partials) == 0 {
 		return nil
@@ -347,25 +393,7 @@ func (c *ClusterCollector) hydrate(ctx context.Context, res *Result, partials []
 
 		fetched := false
 		for _, pt := range partials {
-			need := map[types.UID]*resource.Object{}
-			for _, o := range pt.objects {
-				if gone[o] || tried[o] {
-					continue
-				}
-				// Children of an object that went away this run are fetched either way, they may have gone too (cascading deletion), or still exist as garbage the ownership stage drops.
-				ownerGone := false
-				if owner := metav1.GetControllerOfNoCopy(o); owner != nil {
-					var st resource.OwnerStatus
-					if st, ownerGone = goneStatus[owner.UID]; ownerGone {
-						o.OwnerStatus = st
-					}
-				}
-				// otherwise the same rule the ownership stage drops by
-				if ownerGone || !ownership.IsChild(o, present) {
-					need[o.GetUID()] = o
-					tried[o] = true
-				}
-			}
+			need := toFetch(pt, gone, tried, present, goneStatus)
 			if len(need) == 0 {
 				continue
 			}
@@ -380,7 +408,7 @@ func (c *ClusterCollector) hydrate(ctx context.Context, res *Result, partials []
 				err = c.hydrateByList(ctx, pt, need, gone)
 			}
 			if err != nil {
-				if tolerable(err) {
+				if kube.IsObjectError(err) {
 					// warning, not breaking error when stubs cant be fully listed, marks as gone;
 					// their children are fetched next round
 					res.warn("HYDRATE_FAILED", fmt.Sprintf("%s: %v", pt.gvr, err))
@@ -404,7 +432,33 @@ func (c *ClusterCollector) hydrate(ctx context.Context, res *Result, partials []
 	return nil
 }
 
-// GET request for each stub by name
+// toFetch returns pt's stubs to fetch in full this round, marking them
+// tried: those the ownership stage will keep, and the children of objects
+// that went away this run, which may have gone too (cascading deletion) or
+// still exist as garbage the ownership stage drops.
+func toFetch(pt *partialType, gone, tried map[*resource.Object]bool, present map[types.UID]bool, goneStatus map[types.UID]resource.OwnerStatus) map[types.UID]*resource.Object {
+	need := map[types.UID]*resource.Object{}
+	for _, o := range pt.objects {
+		if gone[o] || tried[o] {
+			continue
+		}
+		ownerGone := false
+		if owner := metav1.GetControllerOfNoCopy(o); owner != nil {
+			var st resource.OwnerStatus
+			if st, ownerGone = goneStatus[owner.UID]; ownerGone {
+				o.OwnerStatus = st
+			}
+		}
+		// otherwise the same rule the ownership stage drops by
+		if ownerGone || !ownership.IsChild(o, present) {
+			need[o.GetUID()] = o
+			tried[o] = true
+		}
+	}
+	return need
+}
+
+// hydrateByGet fetches each stub by name.
 func (c *ClusterCollector) hydrateByGet(ctx context.Context, pt *partialType, need map[types.UID]*resource.Object, gone map[*resource.Object]bool) error {
 	for _, o := range need {
 		u, err := c.Dynamic.Resource(pt.gvr).Namespace(o.GetNamespace()).Get(ctx, o.GetName(), metav1.GetOptions{})
@@ -425,7 +479,8 @@ func (c *ClusterCollector) hydrateByGet(ctx context.Context, pt *partialType, ne
 	return nil
 }
 
-// pull full manifests by type, only keeps stubs matching desired uid, else discard, uses setFull instead of Unstructured for the full object
+// hydrateByList lists the whole type in full, filling in the stubs in need
+// by UID; a stub not in the list is gone.
 func (c *ClusterCollector) hydrateByList(ctx context.Context, pt *partialType, need map[types.UID]*resource.Object, gone map[*resource.Object]bool) error {
 	seen := map[types.UID]bool{}
 	_, err := c.listFull(ctx, pt.gvr, pt.kind, pt.namespaced, func(u *unstructured.Unstructured) bool {
@@ -454,7 +509,8 @@ func setFull(o *resource.Object, u *unstructured.Unstructured, pt *partialType) 
 	o.Partial = false
 }
 
-// listFull is a paged list through the dynamic client, optional keep filter for hydrateByList
+// listFull is a paged list through the dynamic client; keep, when set,
+// filters the items (hydrateByList).
 func (c *ClusterCollector) listFull(ctx context.Context, gvr schema.GroupVersionResource, kind string, namespaced bool, keep func(*unstructured.Unstructured) bool, denied func(ns string)) ([]*resource.Object, error) {
 	var out []*resource.Object
 	err := c.paginate(ctx, namespaced, metav1.ListOptions{}, func(ns string) pager.ListPageFunc {
@@ -502,7 +558,9 @@ func (c *ClusterCollector) listMetadata(ctx context.Context, pt *partialType, de
 
 var podsResource = schema.GroupResource{Resource: "pods"}
 
-// tagPodPhases: the metadata API doesn't return status, so this passes through to see Succeeded and Failed status.phase values enabling TERMINATED_PODS_TO_CLEANUP
+// tagPodPhases sets status.phase on terminated Pod stubs: the metadata API
+// returns no status, so it lists Succeeded and Failed Pods by field selector
+// (for TERMINATED_PODS_TO_CLEANUP).
 func (c *ClusterCollector) tagPodPhases(ctx context.Context, pt *partialType, namespaced bool) error {
 	byUID := make(map[types.UID]*resource.Object, len(pt.objects))
 	for _, o := range pt.objects {
@@ -513,7 +571,7 @@ func (c *ClusterCollector) tagPodPhases(ctx context.Context, pt *partialType, na
 		opts := metav1.ListOptions{FieldSelector: "status.phase=" + phase}
 		err := c.eachMetadata(ctx, pt.gvr, namespaced, opts, func(pom *metav1.PartialObjectMetadata) error {
 			if o, ok := byUID[pom.UID]; ok {
-				_ = unstructured.SetNestedField(o.Object, phase, "status", "phase")
+				_ = unstructured.SetNestedField(o.Object, phase, "status", "phase") // cannot fail: a stub has no status yet
 			}
 			return nil
 		}, func(string) {})
@@ -524,7 +582,7 @@ func (c *ClusterCollector) tagPodPhases(ctx context.Context, pt *partialType, na
 	return nil
 }
 
-// metadata equivalent of listFull's paging
+// eachMetadata is listFull's paging, metadata-only.
 func (c *ClusterCollector) eachMetadata(ctx context.Context, gvr schema.GroupVersionResource, namespaced bool, opts metav1.ListOptions, fn func(*metav1.PartialObjectMetadata) error, denied func(ns string)) error {
 	return c.paginate(ctx, namespaced, opts, func(ns string) pager.ListPageFunc {
 		return func(ctx context.Context, opts metav1.ListOptions) (runtime.Object, error) {
@@ -539,7 +597,8 @@ func (c *ClusterCollector) eachMetadata(ctx context.Context, gvr schema.GroupVer
 	}, denied)
 }
 
-// wrapper for client-go's pager, runs once per set namespace for namespaced objects, otherwise once for all namespaces.
+// paginate wraps client-go's pager: once per namespace for namespaced types
+// when namespaces are set, otherwise once for all namespaces.
 // Listing several namespaces, a namespace that refuses the type (Forbidden) is skipped and passed to denied, when set:
 // a role can allow ConfigMaps in one namespace and not another. The type fails only if every namespace refuses it.
 func (c *ClusterCollector) paginate(ctx context.Context, namespaced bool, opts metav1.ListOptions, page func(ns string) pager.ListPageFunc, fn func(runtime.Object) error, denied func(ns string)) error {
@@ -574,85 +633,52 @@ func (c *ClusterCollector) paginate(ctx context.Context, namespaced bool, opts m
 	return nil
 }
 
-// skip uses c.Skip, which replaces DefaultSkip rather than adding to it
+// skip uses c.Skip, which replaces DefaultSkip rather than adding to it.
 func (c *ClusterCollector) skip(gr schema.GroupResource) bool {
 	if c.Skip != nil {
 		return c.Skip(gr)
 	}
-	return DefaultSkip[gr]
+	return DefaultSkip(gr)
 }
 
-// metadataOnly uses c.MetadataOnly, which replaces DefaultMetadataOnly
+// metadataOnly uses c.MetadataOnly, which replaces DefaultMetadataOnly.
 func (c *ClusterCollector) metadataOnly(gr schema.GroupResource) bool {
 	if c.MetadataOnly != nil {
 		return c.MetadataOnly(gr)
 	}
-	return DefaultMetadataOnly[gr]
-}
-
-// tolerable defines errors that are non-terminal for the Collector, stores as warning instead
-func tolerable(err error) bool {
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || apierrors.IsUnauthorized(err) {
-		return false
-	}
-	var status apierrors.APIStatus
-	return errors.As(err, &status)
+	return DefaultMetadataOnly(gr)
 }
 
 // namespaces returns c.Namespaces without duplicates, in the order given.
-func (c *ClusterCollector) namespaces() []string {
-	var out []string
-	for _, ns := range c.Namespaces {
-		if !slices.Contains(out, ns) {
-			out = append(out, ns)
-		}
-	}
-	return out
-}
+func (c *ClusterCollector) namespaces() []string { return dedupe(c.Namespaces) }
 
-// listAll runs the list tasks, at most c.Concurrency at a time. A result's err is set only for tolerable errors, any other error cancels the rest and is returned.
+// listAll runs the list tasks, at most c.Concurrency at a time. A result's
+// err is set only for an error about that type (kube.IsObjectError); any
+// other error stops the rest, and the first is returned.
 func (c *ClusterCollector) listAll(ctx context.Context, tasks []listTask) ([]listResult, error) {
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
 	n := c.Concurrency
 	if n <= 0 {
 		n = DefaultConcurrency
 	}
 	results := make([]listResult, len(tasks))
-	sem := make(chan struct{}, n)
-	var (
-		wg    sync.WaitGroup
-		once  sync.Once
-		fatal error
-	)
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(n)
 	for i := range tasks {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			select {
-			case sem <- struct{}{}:
-			case <-ctx.Done():
-				results[i].err = ctx.Err()
-				return
+		g.Go(func() error {
+			results[i] = c.listOne(gctx, tasks[i])
+			if err := results[i].err; err != nil && !kube.IsObjectError(err) {
+				return fmt.Errorf("listing %s: %w", tasks[i].info.gvr, err)
 			}
-			defer func() { <-sem }()
-			results[i] = c.listOne(ctx, tasks[i])
-			if err := results[i].err; err != nil && !tolerable(err) {
-				once.Do(func() {
-					fatal = fmt.Errorf("listing %s: %w", tasks[i].info.gvr, err)
-					cancel()
-				})
-			}
-		}()
+			return nil
+		})
 	}
-	wg.Wait()
-	if fatal != nil {
-		return nil, fatal
+	if err := g.Wait(); err != nil {
+		return nil, err
 	}
 	return results, nil
 }
 
-// listOne lists one type, metadata-only or in full
+// listOne lists one type, metadata-only or in full.
 func (c *ClusterCollector) listOne(ctx context.Context, t listTask) listResult {
 	var denied []string
 	deny := func(ns string) { denied = append(denied, ns) }
@@ -663,12 +689,11 @@ func (c *ClusterCollector) listOne(ctx context.Context, t listTask) listResult {
 		}
 		return listResult{partial: pt, denied: denied}
 	}
-	// full list for every type not defined as metadata only
 	objs, err := c.listFull(ctx, t.info.gvr, t.info.kind, t.info.namespaced, nil, deny)
 	return listResult{objects: objs, err: err, denied: denied}
 }
 
-// getNamespaces adds the Namespace objects themselves when requested
+// getNamespaces adds the requested Namespace objects themselves.
 func (c *ClusterCollector) getNamespaces(ctx context.Context, res *Result, kinds map[schema.GroupKind]*typeInfo) error {
 	info := kinds[schema.GroupKind{Kind: "Namespace"}]
 	if len(c.Namespaces) == 0 || info == nil || c.skip(info.gvr.GroupResource()) {
@@ -679,7 +704,7 @@ func (c *ClusterCollector) getNamespaces(ctx context.Context, res *Result, kinds
 		switch {
 		case apierrors.IsNotFound(err):
 			res.warn("NAMESPACE_NOT_FOUND", fmt.Sprintf("requested namespace %q does not exist", ns))
-		case err != nil && tolerable(err):
+		case err != nil && kube.IsObjectError(err):
 			res.warn("NAMESPACE_GET_FAILED", fmt.Sprintf("namespace %q: %v", ns, err))
 		case err != nil:
 			return fmt.Errorf("getting namespace %s: %w", ns, err)
@@ -757,7 +782,7 @@ func (c *ClusterCollector) resolveOwners(ctx context.Context, res *Result, kinds
 			switch {
 			case apierrors.IsNotFound(err):
 				status = resource.OwnerDeleted
-			case err != nil && tolerable(err):
+			case err != nil && kube.IsObjectError(err):
 				res.warn("OWNER_GET_FAILED", fmt.Sprintf("%s %s: %v", m.info.gvr, m.ref.Name, err))
 			case err != nil:
 				return fmt.Errorf("getting %s %s: %w", m.info.gvr, m.ref.Name, err)
@@ -777,7 +802,9 @@ func (c *ClusterCollector) resolveOwners(ctx context.Context, res *Result, kinds
 	return nil
 }
 
-// ScopeError means the caller may not list the cluster as a whole (listing namespaces is forbidden), no namespaces were requested, and there is no fallback namespace.
+// ScopeError means the caller may not list the cluster as a whole (listing
+// namespaces is forbidden), no namespaces were requested, and there is no
+// fallback namespace.
 type ScopeError struct {
 	Err error
 	// Identity is who the cluster says the credentials are, when known.
@@ -803,11 +830,11 @@ func (c *ClusterCollector) scope(ctx context.Context, res *Result, kinds map[sch
 		if err := CheckNamespaces(ctx, c.Dynamic, c.Namespaces, false, c.RequireNamespaces); err != nil {
 			return nil, err
 		}
-		res.Scope = &snapshotv1alpha1.ReadScope{Mode: "namespaces", Namespaces: c.namespaces()}
+		res.Scope = &snapshotv1alpha1.ReadScope{Mode: snapshot.ScopeNamespaces, Namespaces: c.namespaces()}
 		return c, nil
 	}
 	if info == nil {
-		res.Scope = &snapshotv1alpha1.ReadScope{Mode: "cluster"}
+		res.Scope = &snapshotv1alpha1.ReadScope{Mode: snapshot.ScopeCluster}
 		return c, nil
 	}
 	// Metadata and full lists need the same list permission; the metadata one is cheaper.
@@ -827,18 +854,18 @@ func (c *ClusterCollector) scope(ctx context.Context, res *Result, kinds map[sch
 		}
 		scoped := *c
 		scoped.Namespaces = []string{c.FallbackNamespace}
-		res.Scope = &snapshotv1alpha1.ReadScope{Mode: "context-namespace", Namespaces: scoped.Namespaces, Identity: Identity(ctx, c.Dynamic, err)}
-		res.warn("NAMESPACE_SCOPED_ACCESS", fmt.Sprintf(
+		res.Scope = &snapshotv1alpha1.ReadScope{Mode: snapshot.ScopeContextNamespace, Namespaces: scoped.Namespaces, Identity: Identity(ctx, c.Dynamic, err)}
+		res.warn(NamespaceScopedAccess, fmt.Sprintf(
 			"credentials can't list resources across the cluster (listing namespaces is forbidden), so only namespace %q was exported; %s",
 			c.FallbackNamespace, c.accessHint(ctx, c.FallbackNamespace)))
 		return &scoped, nil
 	case err != nil:
 		// other errors surface in the lists themselves
-		res.Scope = &snapshotv1alpha1.ReadScope{Mode: "cluster"}
+		res.Scope = &snapshotv1alpha1.ReadScope{Mode: snapshot.ScopeCluster}
 		return c, nil
 	}
 	if CanReadCluster(ctx, c.Dynamic) {
-		res.Scope = &snapshotv1alpha1.ReadScope{Mode: "cluster"}
+		res.Scope = &snapshotv1alpha1.ReadScope{Mode: snapshot.ScopeCluster}
 		return c, nil
 	}
 	// Namespaces can be listed, but not read across: read the ones that can be.
@@ -852,7 +879,7 @@ func (c *ClusterCollector) scope(ctx context.Context, res *Result, kinds map[sch
 	}
 	scoped := *c
 	scoped.Namespaces = readable
-	res.Scope = &snapshotv1alpha1.ReadScope{Mode: "readable-namespaces", Namespaces: readable, Unreadable: unreadable, Identity: identity}
+	res.Scope = &snapshotv1alpha1.ReadScope{Mode: snapshot.ScopeReadableNamespaces, Namespaces: readable, Unreadable: unreadable, Identity: identity}
 	res.warn("NAMESPACE_READABLE_ONLY", fmt.Sprintf(
 		"credentials can't read resources across the cluster, so the %d namespaces they can read were exported (%s), and cluster-scoped resources were not; "+
 			"not readable with them: %s", len(readable), truncateList(readable, 10), truncateList(unreadable, 10)))
@@ -903,15 +930,11 @@ func (c *ClusterCollector) accessHint(ctx context.Context, ns string) string {
 	if len(seen) == 0 {
 		return "they can't list anything in it either; check the namespace"
 	}
-	types := make([]string, 0, len(seen))
-	for t := range seen {
-		types = append(types, t)
-	}
-	sort.Strings(types)
+	listable := slices.Sorted(maps.Keys(seen))
 	more := ""
-	if len(types) > maxHintTypes {
-		more = fmt.Sprintf(" and %d more", len(types)-maxHintTypes)
-		types = types[:maxHintTypes]
+	if len(listable) > maxHintTypes {
+		more = fmt.Sprintf(" and %d more", len(listable)-maxHintTypes)
+		listable = listable[:maxHintTypes]
 	}
-	return "in it they can list " + strings.Join(types, ", ") + more
+	return "in it they can list " + strings.Join(listable, ", ") + more
 }

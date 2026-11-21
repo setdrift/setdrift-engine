@@ -33,7 +33,7 @@ func secretWith(data map[string]any, owners map[string]string) *resource.Object 
 		}
 		fields += "}}"
 		mf = append(mf, metav1.ManagedFieldsEntry{Manager: m, Operation: metav1.ManagedFieldsOperationUpdate, APIVersion: "v1",
-			FieldsType: "FieldsV1", FieldsV1: &metav1.FieldsV1{Raw: []byte(fields)}})
+			FieldsType: "FieldsV1", FieldsV1: metav1.NewFieldsV1(fields)})
 	}
 	u.SetManagedFields(mf)
 	return resource.New(u)
@@ -81,12 +81,12 @@ func TestGeneratedKeys(t *testing.T) {
 func TestToolManagers(t *testing.T) {
 	for _, m := range []string{"kubectl-client-side-apply", "helm", "argocd-controller", "kustomize-controller",
 		"agentk", "fleetagent", "provider-kubernetes/my-object"} {
-		if !tool(m) {
+		if !isTool(m) {
 			t.Errorf("%s is not counted as a tool", m)
 		}
 	}
 	for _, m := range []string{"cert-manager", "external-secrets", "argocd-server", "provider"} {
-		if tool(m) {
+		if isTool(m) {
 			t.Errorf("%s is counted as a tool", m)
 		}
 	}
@@ -98,7 +98,7 @@ func TestFilledByController(t *testing.T) {
 	filled := secretWith(map[string]any{"server.secretkey": "c2s="}, map[string]string{"server.secretkey": "argocd-server"})
 	// The install manifest's apply owns the labels, not a key.
 	mf := append(filled.GetManagedFields(), metav1.ManagedFieldsEntry{Manager: "kubectl", Operation: metav1.ManagedFieldsOperationApply,
-		APIVersion: "v1", FieldsType: "FieldsV1", FieldsV1: &metav1.FieldsV1{Raw: []byte(`{"f:metadata":{"f:labels":{"f:app":{}}}}`)}})
+		APIVersion: "v1", FieldsType: "FieldsV1", FieldsV1: metav1.NewFieldsV1(`{"f:metadata":{"f:labels":{"f:app":{}}}}`)})
 	filled.SetManagedFields(mf)
 	whole := secretWith(map[string]any{"password": "cA=="}, map[string]string{"password": "argocd-server"})
 	if _, _, err := (SecretRedactor{}).Process(context.Background(), []*resource.Object{filled, whole}); err != nil {

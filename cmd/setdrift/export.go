@@ -6,7 +6,6 @@
 package main
 
 import (
-	// standard library packages
 	"bufio"
 	"context"
 	"crypto/rand"
@@ -17,25 +16,20 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"slices"
-	"sort"
 	"strings"
 	"time"
-	// cli, k8s packages
+
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
+	"github.com/aws/aws-sdk-go-v2/service/eks"
+	"github.com/aws/aws-sdk-go-v2/service/iam"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/metadata"
-	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/clientcmd"
-	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
-	// aws packages
-	awsconfig "github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/service/ec2"
-	"github.com/aws/aws-sdk-go-v2/service/eks"
-	"github.com/aws/aws-sdk-go-v2/service/iam"
-	// packages from this repo
+
+	"setdrift.io/setdrift-engine/internal/text"
 	"setdrift.io/setdrift-engine/internal/version"
 	"setdrift.io/setdrift-engine/pkg/awsinventory"
 	"setdrift.io/setdrift-engine/pkg/collect"
@@ -51,7 +45,7 @@ import (
 	snapshotv1alpha1 "setdrift.io/setdrift-engine/pkg/snapshot/v1alpha1"
 )
 
-// holds every flag, cobra writes it, run reads it
+// exportOptions holds export's flags: cobra writes them, run reads them.
 type exportOptions struct {
 	// source and output settings
 	kubeconfig   string
@@ -84,7 +78,7 @@ type exportOptions struct {
 	helmRepos          string
 }
 
-// builds export command including help, flags, and what runs when its called, added via main.go
+// newExportCmd builds the export command: its help, flags and run.
 func newExportCmd() *cobra.Command {
 	o := &exportOptions{}
 	cmd := &cobra.Command{
@@ -138,13 +132,19 @@ under redacted/, outside every kustomization.yaml.`,
 	return cmd
 }
 
-// clusterOnlyFlags are the flags about reading a cluster or its cloud provider, which --from-dir rejects
+// clusterOnlyFlags are the flags about reading a cluster or its cloud
+// provider, which --from-dir rejects.
 var clusterOnlyFlags = []string{"kubeconfig", "context", "namespace", "full-list", "aws", "aws-cluster", "aws-region"}
 
-// externalSecretsFlags configure the ExternalSecrets, so --external-secrets none rejects them
+// externalSecretsFlags configure the ExternalSecrets, so --external-secrets
+// none rejects them.
 var externalSecretsFlags = []string{"secret-store", "secret-store-kind", "secret-key-template"}
 
-// executes export step from input and flags
+// now is the clock export stamps snapshots with; tests set it.
+var now = time.Now
+
+// run checks the flags, reads the source, and writes the export and its
+// snapshots.
 func (o *exportOptions) run(cmd *cobra.Command) error {
 	// flags checked first, so a typo fails before minutes of cluster reading
 	emitter, err := o.emitter(cmd)
@@ -157,7 +157,8 @@ func (o *exportOptions) run(cmd *cobra.Command) error {
 	}
 	kc := src.kc
 	// the snapshot files, checked before the read so a bad path fails at once
-	snapPB, snapJSON, err := o.snapshotPaths(cmd, src.cluster.Name, time.Now().UTC())
+	at := now().UTC()
+	snapPB, snapJSON, err := o.snapshotPaths(cmd, src.cluster.Name, at)
 	if err != nil {
 		return err
 	}
@@ -171,7 +172,7 @@ func (o *exportOptions) run(cmd *cobra.Command) error {
 		return err
 	}
 
-	snap, err := o.capture(cmd.Context(), src)
+	snap, err := capture(cmd.Context(), src, o.settings(), at)
 	if err != nil {
 		return err
 	}
@@ -191,7 +192,7 @@ func (o *exportOptions) run(cmd *cobra.Command) error {
 		return err
 	}
 
-	printSummary(cmd, snap, o.output, o.unmanagedOnly, emitter.ExternalSecrets != nil)
+	printSummary(cmd.OutOrStdout(), snap, o.output, o.unmanagedOnly, emitter.ExternalSecrets != nil)
 	if snapPB != "" || snapJSON != "" {
 		fmt.Fprintf(cmd.OutOrStdout(), "Snapshot: %s\n", strings.Join(nonEmpty(snapPB, snapJSON), ", "))
 	}
@@ -317,12 +318,12 @@ func ignoreSnapshots(out string) error {
 		return err
 	}
 	if _, err := f.WriteString(add); err != nil {
-		f.Close()
-		return err
+		return errors.Join(err, f.Close())
 	}
 	return f.Close()
 }
 
+// nonEmpty returns the strings that are not empty.
 func nonEmpty(s ...string) []string {
 	var out []string
 	for _, v := range s {
@@ -366,26 +367,61 @@ func (o *exportOptions) open(cmd *cobra.Command) (*source, error) {
 		}
 		return src, nil
 	}
-	c, kc, err := o.clusterCollector()
+	return openCluster(cmd.Context(), o.target())
+}
+
+// target is the cluster the flags name.
+func (o *exportOptions) target() clusterTarget {
+	return clusterTarget{kubeconfig: o.kubeconfig, context: o.context, clusterName: o.clusterName, namespaces: o.namespaces,
+		fullList: o.fullList, aws: o.aws, awsCluster: o.awsCluster, awsRegion: o.awsRegion}
+}
+
+// settings are the flags that change how the capture classifies and
+// normalizes.
+func (o *exportOptions) settings() captureSettings {
+	return captureSettings{argoInstanceLabel: o.argoInstanceLabel, ciFieldManagers: o.ciFieldManagers, keepSourceDefaults: o.keepSourceDefaults}
+}
+
+// clusterTarget is the cluster to read and how: the cluster flags export
+// and diff share.
+type clusterTarget struct {
+	kubeconfig, context string
+	// clusterName names the cluster in the snapshot; empty takes it from the
+	// context
+	clusterName string
+	namespaces  []string
+	// fullList lists every type in full, none metadata-only first
+	fullList bool
+	// aws reads the EKS settings held in AWS too, for the cluster awsCluster
+	// in awsRegion (empty: from the context)
+	aws                   bool
+	awsCluster, awsRegion string
+}
+
+// openCluster connects to the cluster t names, failing fast on a bad
+// kubeconfig, an unreachable cluster or bad AWS credentials.
+func openCluster(ctx context.Context, t clusterTarget) (*source, error) {
+	src := &source{plat: &platform.Stage{}, cluster: &snapshotv1alpha1.Cluster{Name: t.clusterName}}
+	c, kc, err := t.collector()
 	if err != nil {
 		return nil, err
 	}
 	src.collector, src.kc = c, kc
 	applyContext(src.cluster, kc)
-	if o.aws {
+	if t.aws {
 		// connect to AWS now, so bad credentials or a wrong cluster fail
 		// before minutes of cluster reading rather than after
-		if src.aws, err = o.connectAWS(cmd.Context(), kc); err != nil {
+		if src.aws, err = t.connectAWS(ctx, kc); err != nil {
 			return nil, err
 		}
 	}
 	// a quick first request, so an unreachable cluster or expired credentials fail now and plainly
-	if err := checkReachable(cmd.Context(), kc); err != nil {
+	if err := checkReachable(ctx, kc); err != nil {
 		return nil, err
 	}
 	plat := src.plat
 	plat.Initial = platform.FromKubeconfig(kc.platform)
-	probed, notes := platform.Probe(cmd.Context(), c.Discovery, c.Dynamic)
+	probed, notes := platform.Probe(ctx, c.Discovery, c.Dynamic)
 	plat.Initial, plat.Notes = append(plat.Initial, probed...), notes
 	if src.aws != nil {
 		plat.Initial = append(plat.Initial, platform.Signal{Source: "aws", Detail: "EKS cluster " + src.aws.name + " found with --aws",
@@ -394,8 +430,16 @@ func (o *exportOptions) open(cmd *cobra.Command) (*source, error) {
 	return src, nil
 }
 
+// captureSettings are the flags that change how a capture classifies and
+// normalizes what it reads.
+type captureSettings struct {
+	argoInstanceLabel  string
+	ciFieldManagers    []string
+	keepSourceDefaults bool
+}
+
 // capture reads the source through the pipeline into a snapshot.
-func (o *exportOptions) capture(ctx context.Context, src *source) (*snapshotv1alpha1.Snapshot, error) {
+func capture(ctx context.Context, src *source, cs captureSettings, at time.Time) (*snapshotv1alpha1.Snapshot, error) {
 	id, err := newID()
 	if err != nil {
 		return nil, err
@@ -403,15 +447,14 @@ func (o *exportOptions) capture(ctx context.Context, src *source) (*snapshotv1al
 	p := pipeline.New(src.collector)
 	p.Lifecycle = lifecycle.Filter{}
 	p.Platform = src.plat
-	p.Provenance = provenance.LabelClassifier{ArgoInstanceLabel: o.argoInstanceLabel, Platform: src.plat, CIFieldManagers: o.ciFieldManagers}
-	p.Normalizer = normalize.Normalizer{ArgoInstanceLabel: o.argoInstanceLabel, KeepSourceDefaults: o.keepSourceDefaults}
+	p.Provenance = provenance.LabelClassifier{ArgoInstanceLabel: cs.argoInstanceLabel, Platform: src.plat, CIFieldManagers: cs.ciFieldManagers}
+	p.Normalizer = normalize.Normalizer{ArgoInstanceLabel: cs.argoInstanceLabel, KeepSourceDefaults: cs.keepSourceDefaults}
 	snap, err := p.Run(ctx, snapshot.Meta{
 		ID:         id,
-		CapturedAt: time.Now().UTC(),
+		CapturedAt: at,
 		Cluster:    src.cluster,
 		Producer:   &snapshotv1alpha1.Producer{Name: "setdrift-cli", Version: version.Version},
 	})
-	// only error with its own message, adhoc error messaging
 	if err != nil {
 		return nil, explainAccess(err)
 	}
@@ -433,7 +476,8 @@ func (o *exportOptions) capture(ctx context.Context, src *source) (*snapshotv1al
 	return snap, nil
 }
 
-// explainAccess turns the collector's access errors into what to do, plainly; other errors pass through.
+// explainAccess turns the collector's access errors into what to do,
+// plainly; other errors pass through.
 func explainAccess(err error) error {
 	var scopeErr *collect.ScopeError
 	var nsErr *collect.NamespaceError
@@ -461,16 +505,16 @@ func explainAccess(err error) error {
 	return err
 }
 
-// awsReader is an AWS connection checked before the cluster read, for --aws
+// awsReader is an AWS connection checked before the cluster read, for --aws.
 type awsReader struct {
 	clients      awsinventory.Clients
 	name, region string
 }
 
-// connectAWS loads AWS credentials and reads the EKS cluster once
-func (o *exportOptions) connectAWS(ctx context.Context, kc *kubeContext) (*awsReader, error) {
+// connectAWS loads AWS credentials and reads the EKS cluster once.
+func (t clusterTarget) connectAWS(ctx context.Context, kc *kubeContext) (*awsReader, error) {
 	// the EKS name and region, from --aws-cluster and --aws-region or the kubeconfig
-	name, region, err := o.awsTarget(kc)
+	name, region, err := t.awsTarget(kc)
 	if err != nil {
 		return nil, err
 	}
@@ -496,7 +540,8 @@ func (o *exportOptions) connectAWS(ctx context.Context, kc *kubeContext) (*awsRe
 	return r, nil
 }
 
-// writePrivate writes a snapshot file only its owner can read locally (0o600)
+// writePrivate writes a snapshot file only its owner can read (0o600); an
+// existing file gets that mode too.
 func writePrivate(path string, data []byte) error {
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		return err
@@ -504,9 +549,10 @@ func writePrivate(path string, data []byte) error {
 	return os.Chmod(path, 0o600)
 }
 
-// awsTarget is the EKS cluster name and region --aws reads from the flags if set, otherwise what the kubeconfig context shows.
-func (o *exportOptions) awsTarget(kc *kubeContext) (name, region string, err error) {
-	name, region = o.awsCluster, o.awsRegion
+// awsTarget is the EKS cluster name and region --aws reads: from the flags
+// if set, otherwise what the kubeconfig context shows.
+func (t clusterTarget) awsTarget(kc *kubeContext) (name, region string, err error) {
+	name, region = t.awsCluster, t.awsRegion
 	if name == "" {
 		name = kc.eksName
 	}
@@ -519,7 +565,9 @@ func (o *exportOptions) awsTarget(kc *kubeContext) (name, region string, err err
 	return name, region, nil
 }
 
-// checks output dir, if it already exists and is not empty, requires --force flag and a confirmation if interactive otherwise --yes for pipeline
+// confirmReplace checks the output directory: one that exists and is not
+// empty needs --force, and then a yes at the prompt, or --yes when there is
+// no terminal to ask at.
 func confirmReplace(dir, cluster string, force, yes, interactive bool, in io.Reader, out io.Writer) error {
 	entries, err := os.ReadDir(dir)
 	if errors.Is(err, os.ErrNotExist) || (err == nil && len(entries) == 0) {
@@ -533,6 +581,7 @@ func confirmReplace(dir, cluster string, force, yes, interactive bool, in io.Rea
 		return fmt.Errorf("output directory %s is not empty; use --force to replace %s in it", dir, root)
 	}
 	files := 0
+	// counted for the message only: an unreadable entry is not counted
 	_ = filepath.WalkDir(root, func(_ string, d fs.DirEntry, err error) error {
 		if err == nil && !d.IsDir() {
 			files++
@@ -542,7 +591,7 @@ func confirmReplace(dir, cluster string, force, yes, interactive bool, in io.Rea
 	var msg string
 	if files > 0 {
 		msg = fmt.Sprintf("Output directory %s is not empty. %s (%s) will be deleted and written again; everything else in %s is kept.",
-			dir, root, plural(files, "file", "files"), dir)
+			dir, root, text.Plural(files, "file", "files"), dir)
 	} else {
 		msg = fmt.Sprintf("Output directory %s is not empty. The export will be written to %s; nothing is deleted.", dir, root)
 	}
@@ -554,6 +603,7 @@ func confirmReplace(dir, cluster string, force, yes, interactive bool, in io.Rea
 		return fmt.Errorf("%s\nPass --yes to confirm without a prompt", msg)
 	}
 	fmt.Fprintf(out, "%s\nContinue? [y/N] ", msg)
+	// no answer (EOF) is a no
 	answer, _ := bufio.NewReader(in).ReadString('\n')
 	switch strings.ToLower(strings.TrimSpace(answer)) {
 	case "y", "yes":
@@ -562,122 +612,10 @@ func confirmReplace(dir, cluster string, force, yes, interactive bool, in io.Rea
 	return errors.New("export cancelled; nothing was written")
 }
 
-// kubeContext is what the CLI takes from the kubeconfig.
-type kubeContext struct {
-	config *rest.Config
-	name   string
-	// namespace is the context's namespace; empty if it sets none.
-	namespace string
-	// EKS cluster name and region and the AWS profile, when the context
-	// shows them (an EKS ARN, `aws eks get-token` credentials, or an EKS
-	// API server address).
-	eksName, eksRegion, awsProfile string
-	// what the platform classifier reads from the context (its first pass)
-	platform platform.Kubeconfig
-}
-
-// loadConfig reads the kubeconfig
-func loadConfig(kubeconfig, context string) (*kubeContext, error) {
-	rules := clientcmd.NewDefaultClientConfigLoadingRules()
-	if kubeconfig != "" {
-		rules.ExplicitPath = expandHome(kubeconfig)
-	}
-	cc := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(rules, &clientcmd.ConfigOverrides{CurrentContext: context})
-	raw, err := cc.RawConfig()
-	if err != nil {
-		// unparseable YAML, or a file that can't be read
-		return nil, explainKubeconfig(err, rules, raw, context)
-	}
-	cfg, err := cc.ClientConfig()
-	if err != nil {
-		return nil, explainKubeconfig(err, rules, raw, context)
-	}
-	cfg.QPS, cfg.Burst = 50, 100
-	cfg.UserAgent = "setdrift/" + version.Version
-	// API deprecation warnings (e.g. v1 Endpoints, listed by discovery) are not the user's to act on
-	cfg.WarningHandler = rest.NoWarnings{}
-	contextName := context
-	if contextName == "" {
-		contextName = raw.CurrentContext
-	}
-	kc := &kubeContext{config: cfg, name: contextName, platform: platform.Kubeconfig{Context: contextName, Server: cfg.Host}}
-	// Read from the context itself, ClientConfig().Namespace() gives "default" when the context sets none
-	if ctx := raw.Contexts[contextName]; ctx != nil {
-		kc.namespace = ctx.Namespace
-		if user := raw.AuthInfos[ctx.AuthInfo]; user != nil && user.Exec != nil {
-			kc.eksName, kc.eksRegion, kc.awsProfile = eksExec(user.Exec.Command, user.Exec.Args, user.Exec.Env)
-			kc.platform.ExecCmd, kc.platform.ExecArgs = user.Exec.Command, user.Exec.Args
-		}
-	}
-	if region, name, ok := eksARN(contextName); ok {
-		kc.eksRegion, kc.eksName = region, name
-	}
-	if kc.eksRegion == "" {
-		kc.eksRegion = eksServerRegion(cfg.Host)
-	}
-	return kc, nil
-}
-
-// eksExec reads the cluster name, region and profile from aws
-func eksExec(command string, args []string, env []clientcmdapi.ExecEnvVar) (name, region, profile string) {
-	// aws, or aws.exe on Windows, possibly as a full path
-	if strings.TrimSuffix(filepath.Base(command), ".exe") != "aws" {
-		return "", "", ""
-	}
-	for i := 0; i < len(args); i++ {
-		// both --region us-east-2 and --region=us-east-2
-		flag, value, hasValue := strings.Cut(args[i], "=")
-		if !hasValue {
-			if i+1 >= len(args) {
-				break
-			}
-			value = args[i+1]
-		}
-		switch flag {
-		case "--cluster-name", "--cluster-id":
-			name = value
-		case "--region":
-			region = value
-		case "--profile":
-			profile = value
-		}
-	}
-	// AWS_PROFILE only when there's no --profile, which wins in the AWS CLI
-	if profile == "" {
-		for _, e := range env {
-			if e.Name == "AWS_PROFILE" {
-				profile = e.Value
-			}
-		}
-	}
-	return name, region, profile
-}
-
-// eksARN returns the region and name of an EKS cluster ARN
-func eksARN(s string) (region, name string, ok bool) {
-	parts := strings.SplitN(s, ":", 6)
-	if len(parts) != 6 || parts[0] != "arn" || parts[2] != "eks" || !strings.HasPrefix(parts[5], "cluster/") {
-		return "", "", false
-	}
-	return parts[3], strings.TrimPrefix(parts[5], "cluster/"), true
-}
-
-// eksServerRegion returns the region of an EKS API server address
-func eksServerRegion(host string) string {
-	host = strings.TrimPrefix(strings.TrimPrefix(host, "https://"), "http://")
-	host, _, _ = strings.Cut(host, ":")
-	host, _, _ = strings.Cut(host, "/")
-	parts := strings.Split(host, ".")
-	if n := len(parts); n >= 4 && strings.HasSuffix(host, ".eks.amazonaws.com") {
-		return parts[n-4]
-	}
-	return ""
-}
-
-// emitter converts flags to Kustomize writer's settings
+// emitter converts the flags into the Kustomize writer's settings, checking
+// them first.
 func (o *exportOptions) emitter(cmd *cobra.Command) (kustomize.Emitter, error) {
 	e := kustomize.Emitter{Force: o.force, UnmanagedOnly: o.unmanagedOnly}
-	// groupby is picky, only accepts kind or app
 	// read and check the --helm-repos file now, so a bad entry fails before the read
 	if o.helmRepos != "" {
 		repos, err := helmsource.LoadRepos(o.helmRepos)
@@ -696,7 +634,6 @@ func (o *exportOptions) emitter(cmd *cobra.Command) (kustomize.Emitter, error) {
 		return e, nil
 	}
 	es, err := kustomize.DefaultExternalSecrets(o.externalSecrets)
-	// --external-secrets none stops the processing, otherwise it checks --secret-store-kind, applies values and validates template
 	if err != nil {
 		return e, fmt.Errorf("--external-secrets: %w", err)
 	}
@@ -710,6 +647,9 @@ func (o *exportOptions) emitter(cmd *cobra.Command) (kustomize.Emitter, error) {
 	if o.secretKeyTemplate != "" {
 		es.KeyTemplate = o.secretKeyTemplate
 	}
+	if err := kustomize.CheckStore(es.StoreKind, es.StoreName); err != nil {
+		return e, fmt.Errorf("--secret-store: %w", err)
+	}
 	if err := es.Validate(); err != nil {
 		return e, fmt.Errorf("--secret-key-template: %w", err)
 	}
@@ -717,9 +657,10 @@ func (o *exportOptions) emitter(cmd *cobra.Command) (kustomize.Emitter, error) {
 	return e, nil
 }
 
-// builds 3 api clients - discovery, dynamic, and metadata
-func (o *exportOptions) clusterCollector() (*collect.ClusterCollector, *kubeContext, error) {
-	kc, err := loadConfig(o.kubeconfig, o.context)
+// collector loads the kubeconfig and builds the collector's clients:
+// discovery, dynamic, and metadata (unless fullList).
+func (t clusterTarget) collector() (*collect.ClusterCollector, *kubeContext, error) {
+	kc, err := loadConfig(t.kubeconfig, t.context)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -736,8 +677,8 @@ func (o *exportOptions) clusterCollector() (*collect.ClusterCollector, *kubeCont
 	if err != nil {
 		return nil, nil, err
 	}
-	collector := &collect.ClusterCollector{Discovery: dc, Dynamic: dyn, Namespaces: o.namespaces, FallbackNamespace: kc.namespace, RequireNamespaces: true}
-	if !o.fullList {
+	collector := &collect.ClusterCollector{Discovery: dc, Dynamic: dyn, Namespaces: t.namespaces, FallbackNamespace: kc.namespace, RequireNamespaces: true}
+	if !t.fullList {
 		// metadata only for high volume, managed resource types like pods, events
 		if collector.Metadata, err = metadata.NewForConfig(cfg); err != nil {
 			return nil, nil, err
@@ -746,274 +687,11 @@ func (o *exportOptions) clusterCollector() (*collect.ClusterCollector, *kubeCont
 	return collector, kc, nil
 }
 
-// applyContext fills in cluster details from the kubeconfig context
-func applyContext(c *snapshotv1alpha1.Cluster, kc *kubeContext) {
-	contextName := kc.name
-	if kc.eksName != "" || kc.eksRegion != "" {
-		c.Platform = "eks"
-	}
-	if _, name, ok := eksARN(contextName); ok {
-		c.Platform = "eks"
-		c.ProviderId = contextName
-		if c.Name == "" {
-			c.Name = name
-		}
-	}
-	if c.Name == "" {
-		// An aliased EKS context, the credentials name the cluster
-		c.Name = kc.eksName
-	}
-	if c.Name == "" {
-		c.Name = contextName
-	}
-}
-
-// generates random 128 bit snapshot id
+// newID returns a random 128-bit snapshot ID.
 func newID() (string, error) {
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
 		return "", err
 	}
 	return hex.EncodeToString(b), nil
-}
-
-// truncate shortens s to n runes with an ellipsis.
-func truncate(s string, n int) string {
-	if r := []rune(s); len(r) > n {
-		return string(r[:n-1]) + "…"
-	}
-	return s
-}
-
-// maxSuggestions caps the cleanup suggestions printed, the snapshot has all
-const maxSuggestions = 10
-
-// platformCreators names who of the platform created the objects left out, e.g. "kind and kubeadm"
-func platformCreators(s *snapshotv1alpha1.Snapshot) string {
-	var by []string
-	for _, r := range s.Resources {
-		if kustomize.Platform(r) {
-			if n := kustomize.PlatformName(r.GetProvenance().GetManager()); !slices.Contains(by, n) {
-				by = append(by, n)
-			}
-		}
-	}
-	sort.Strings(by)
-	return strings.Join(by, " and ")
-}
-
-// counts resources per source, findings and redactions, what was written, and managed ones if --unmanaged-only
-func printSummary(cmd *cobra.Command, s *snapshotv1alpha1.Snapshot, out string, unmanagedOnly, externalSecrets bool) {
-	w := cmd.OutOrStdout()
-	bySource := map[snapshotv1alpha1.Source]int{}
-	findings, redactions, referenceOnly, written, redactedSecrets := len(s.Findings), 0, 0, 0, 0
-	needsValues, regenerated := 0, 0
-	suggestions := map[string][]string{}
-	for _, f := range s.Findings {
-		suggestions[f.Code] = append(suggestions[f.Code], f.Message)
-	}
-	for _, r := range s.Resources {
-		bySource[r.GetProvenance().GetSource()]++
-		findings += len(r.Findings)
-		redactions += len(r.Redactions)
-		for _, f := range r.Findings {
-			suggestions[f.Code] = append(suggestions[f.Code], fmt.Sprintf("%s %s/%s %s", r.Kind, r.Namespace, r.Name, f.Message))
-		}
-		if kustomize.NotWritten(r) || (unmanagedOnly && !kustomize.Unmanaged(r)) {
-			continue
-		}
-		written++
-		if kustomize.NeedsValues(r) {
-			needsValues++
-		} else if kustomize.ReferenceOnly(r) {
-			regenerated++
-		}
-		if kustomize.ReferenceOnly(r) {
-			referenceOnly++
-			// only Secrets with values to supply get an ExternalSecret: a controller recreates the others
-			if r.Kind == "Secret" && r.ApiVersion == "v1" && kustomize.NeedsValues(r) {
-				redactedSecrets++
-			}
-		}
-	}
-
-	printAccess(w, s)
-	fmt.Fprintf(w, "Exported %s from %s to %s\n", plural(len(s.Resources), "resource", "resources"), s.Cluster.GetName(), out)
-	if c := s.Cluster.GetClassification(); c != nil {
-		cls := platform.FromProto(c)
-		if dir := cls.Dir(); dir != "" {
-			fmt.Fprintf(w, "Platform: %s. The export is generic (any cluster); %s/ is the set for the same platform.\n", cls.Summary(), dir)
-		} else if cls.Distribution != platform.Unknown || cls.Infrastructure != platform.UnknownInfra {
-			fmt.Fprintf(w, "Platform: %s, not certain enough for platform-specific output; the export is generic.\n", cls.Summary())
-		}
-	}
-	for src := snapshotv1alpha1.Source_SOURCE_UNMANAGED; src <= snapshotv1alpha1.Source_SOURCE_CI_CD; src++ {
-		if n := bySource[src]; n > 0 {
-			note := ""
-			switch src {
-			case snapshotv1alpha1.Source_SOURCE_PLATFORM:
-				note = "  (created by " + platformCreators(s) + "; in the snapshot, not written)"
-			case snapshotv1alpha1.Source_SOURCE_CI_CD:
-				note = "  (deployed by a pipeline: setdrift.io/source-* annotations or --ci-field-manager)"
-			}
-			name := strings.ToLower(strings.TrimPrefix(src.String(), "SOURCE_"))
-			if src == snapshotv1alpha1.Source_SOURCE_CI_CD {
-				name = "ci/cd"
-			}
-			fmt.Fprintf(w, "  %-10s %d%s\n", name, n, note)
-		}
-	}
-	if unmanagedOnly {
-		fmt.Fprintf(w, "Wrote the %s nothing manages (--unmanaged-only); the snapshot has all of them.\n", plural(written, "resource", "resources"))
-	}
-	ov := kustomize.NewOverview(s, unmanagedOnly)
-	if n := ov.ByHandCount(); n > 0 {
-		fmt.Fprintf(w, "\nApplied by hand, so this export is their only record (no GitOps tool, Helm or operator manages them): %d\n", n)
-		for i, ns := range ov.Namespaces() {
-			if i == maxSuggestions {
-				fmt.Fprintf(w, "  ... and %d more namespaces (see README.md)\n", len(ov.ByHand)-maxSuggestions)
-				break
-			}
-			fmt.Fprintf(w, "  %-20s %3d  %s\n", orDefault(ns, "(cluster-scoped)"), len(ov.ByHand[ns]), truncate(kustomize.Grouped(ov.ByHand[ns]), 90))
-		}
-	}
-	if len(ov.HeldBack) > 0 {
-		fmt.Fprintf(w, "\nHeld back from the kustomization, secret values in the manifest (move them into Secrets):\n")
-		for _, h := range ov.HeldBack {
-			fmt.Fprintf(w, "  %s: %s\n", h.Resource, strings.Join(h.Fields, ", "))
-		}
-	}
-	fmt.Fprintln(w)
-	if referenceOnly > 0 {
-		fmt.Fprintf(w, "%s with redacted values %s written to redacted/ for reference only.\n"+
-			"They are in no kustomization.yaml: applying them would overwrite the real values. See redacted/README.md.\n",
-			plural(referenceOnly, "resource", "resources"), verb(referenceOnly))
-		if externalSecrets && redactedSecrets > 0 {
-			fmt.Fprintf(w, "%s for the redacted Secrets %s in external-secrets/, not applied until the values are in the secret manager (see its README).\n",
-				plural(redactedSecrets, "ExternalSecret", "ExternalSecrets"), map[bool]string{true: "is", false: "are"}[redactedSecrets == 1])
-		}
-	}
-
-	fmt.Fprintf(w, "\nTo recreate this cluster elsewhere, follow %s", filepath.Join(kustomize.ClusterDir(out, s.Cluster.GetName()), "RESTORE.md"))
-	if todo := restoreTodo(s, needsValues, regenerated); len(todo) > 0 {
-		fmt.Fprintf(w, ": %s", strings.Join(todo, ", "))
-	}
-	fmt.Fprintln(w, ".")
-	fmt.Fprintf(w, "Overview: %s (%s, %s; every finding is in the snapshot).\n",
-		filepath.Join(kustomize.ClusterDir(out, s.Cluster.GetName()), "README.md"), plural(redactions, "redaction", "redactions"), plural(findings, "finding", "findings"))
-
-	if lines := ov.Cleanup; len(lines) > 0 {
-		fmt.Fprintf(w, "\nCleanup suggestions (SetDrift changes nothing in the cluster):\n")
-		for i, l := range lines {
-			if i == maxSuggestions {
-				fmt.Fprintf(w, "  ... and %d more in the snapshot\n", len(lines)-maxSuggestions)
-				break
-			}
-			fmt.Fprintf(w, "  - %s\n", l)
-		}
-	}
-}
-
-// printAccess says what the credentials limited the read to, before the summary.
-func printAccess(w io.Writer, s *snapshotv1alpha1.Snapshot) {
-	sc := s.GetScope()
-	who := "these credentials"
-	if id := sc.GetIdentity(); id != "" {
-		who += " (" + id + ")"
-	}
-	switch sc.GetMode() {
-	case "context-namespace":
-		hint := ""
-		for _, f := range s.Findings {
-			if f.Code == "NAMESPACE_SCOPED_ACCESS" {
-				if _, after, ok := strings.Cut(f.Message, "was exported; "); ok {
-					hint = " " + capitalize(after) + "."
-				}
-			}
-		}
-		fmt.Fprintf(w, "Read namespace %s only: %s may not list namespaces, so SetDrift read the kubeconfig context's namespace.%s\n"+
-			"Pass -n to export other namespaces you can read.\n\n", strings.Join(sc.GetNamespaces(), ", "), who, hint)
-	case "readable-namespaces":
-		fmt.Fprintf(w, "Read namespaces %s only: %s can't read across the cluster, only in these, so cluster-scoped resources were not read either.\n"+
-			"Not readable with them (%d): %s\n\n", strings.Join(sc.GetNamespaces(), ", "), who, len(sc.GetUnreadable()), truncate(strings.Join(sc.GetUnreadable(), ", "), 200))
-	}
-	var denied []string
-	for _, f := range s.Findings {
-		if f.Code == "LIST_DENIED" {
-			denied = append(denied, f.Message)
-		}
-	}
-	if len(denied) > 0 {
-		fmt.Fprintln(w, "Not read for lack of permission:")
-		for i, d := range denied {
-			if i == maxSuggestions {
-				fmt.Fprintf(w, "  ... and %d more namespaces in the snapshot (LIST_DENIED)\n", len(denied)-maxSuggestions)
-				break
-			}
-			fmt.Fprintf(w, "  %s\n", capitalize(d))
-		}
-		fmt.Fprintln(w)
-	}
-}
-
-// restoreTodo summarizes what RESTORE.md asks of the user
-func restoreTodo(s *snapshotv1alpha1.Snapshot, needsValues, regenerated int) []string {
-	var todo []string
-	if needsValues > 0 {
-		todo = append(todo, plural(needsValues, "resource", "resources")+" to supply secret values for")
-	}
-	if regenerated > 0 {
-		todo = append(todo, plural(regenerated, "Secret", "Secrets")+" their controllers create again (nothing to do)")
-	}
-	if n := len(s.GetInventory().GetVolumes()); n > 0 {
-		todo = append(todo, plural(n, "volume", "volumes")+" to bring over")
-	}
-	crds, irsa := 0, 0
-	releases := map[string]bool{}
-	for _, r := range s.Resources {
-		if kustomize.Platform(r) {
-			continue
-		}
-		switch {
-		case r.Kind == "CustomResourceDefinition":
-			crds++
-		case r.Kind == "ServiceAccount" && strings.Contains(r.ManifestJson, `"eks.amazonaws.com/role-arn"`):
-			irsa++
-		}
-		if p := r.GetProvenance(); p.GetSource() == snapshotv1alpha1.Source_SOURCE_HELM && p.GetManager() != "" && p.GetEvidence()["confidence"] != "low" {
-			releases[p.GetManager()] = true
-		}
-	}
-	if crds > 0 {
-		todo = append(todo, plural(crds, "CRD", "CRDs")+" to create first")
-	}
-	if len(releases) > 0 {
-		todo = append(todo, plural(len(releases), "Helm release", "Helm releases")+" to install")
-	}
-	if irsa > 0 {
-		todo = append(todo, plural(irsa, "IRSA service account", "IRSA service accounts")+" whose roles must trust the new cluster")
-	}
-	if n := len(s.GetInventory().GetAws().GetPodIdentityAssociations()); n > 0 {
-		todo = append(todo, plural(n, "Pod Identity association", "Pod Identity associations")+" to create")
-	}
-	if n := len(s.GetInventory().GetLoadBalancers()); n > 0 {
-		todo = append(todo, plural(n, "load balancer address", "load balancer addresses")+" that will change")
-	}
-	return todo
-}
-
-// helper
-func plural(n int, singular, pl string) string {
-	if n == 1 {
-		return fmt.Sprintf("%d %s", n, singular)
-	}
-	return fmt.Sprintf("%d %s", n, pl)
-}
-
-// helper
-func verb(n int) string {
-	if n == 1 {
-		return "was"
-	}
-	return "were"
 }

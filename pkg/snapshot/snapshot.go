@@ -12,19 +12,34 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"strings"
 	"time"
 
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"setdrift.io/setdrift-engine/internal/kube"
 	"setdrift.io/setdrift-engine/pkg/resource"
 	snapshotv1alpha1 "setdrift.io/setdrift-engine/pkg/snapshot/v1alpha1"
 )
 
 // SchemaVersion identifies the snapshot schema written by this package.
 const SchemaVersion = "setdrift.snapshot.v1alpha1"
+
+// The modes of a snapshot's ReadScope: what the credentials let a capture
+// read.
+const (
+	// ScopeCluster is the whole cluster.
+	ScopeCluster = "cluster"
+	// ScopeNamespaces is the namespaces asked for (export -n).
+	ScopeNamespaces = "namespaces"
+	// ScopeContextNamespace is the kubeconfig context's namespace only: the
+	// credentials may not list namespaces.
+	ScopeContextNamespace = "context-namespace"
+	// ScopeReadableNamespaces is the namespaces the credentials can read,
+	// when they can list namespaces but not read across them.
+	ScopeReadableNamespaces = "readable-namespaces"
+)
 
 // Meta describes a capture.
 type Meta struct {
@@ -93,7 +108,7 @@ func Build(meta Meta, objs []*resource.Object) (*snapshotv1alpha1.Snapshot, erro
 	}
 	slices.SortFunc(s.Resources, func(a, b *snapshotv1alpha1.Resource) int {
 		return cmp.Or(
-			cmp.Compare(group(a.ApiVersion), group(b.ApiVersion)),
+			cmp.Compare(kube.Group(a.ApiVersion), kube.Group(b.ApiVersion)),
 			cmp.Compare(a.Kind, b.Kind),
 			cmp.Compare(a.Namespace, b.Namespace),
 			cmp.Compare(a.Name, b.Name),
@@ -151,6 +166,11 @@ func Unmarshal(b []byte) (*snapshotv1alpha1.Snapshot, error) {
 	if err := proto.Unmarshal(b, s); err != nil {
 		return nil, fmt.Errorf("not a snapshot: %w", err)
 	}
+	return checkSchema(s)
+}
+
+// checkSchema returns s if this version reads its schema.
+func checkSchema(s *snapshotv1alpha1.Snapshot) (*snapshotv1alpha1.Snapshot, error) {
 	switch v := s.GetSchemaVersion(); v {
 	case SchemaVersion:
 		return s, nil
@@ -210,14 +230,7 @@ func UnmarshalInspectJSON(b []byte) (*snapshotv1alpha1.Snapshot, error) {
 	if err := protojson.Unmarshal(back, s); err != nil {
 		return nil, fmt.Errorf("not a snapshot: %w", err)
 	}
-	switch v := s.GetSchemaVersion(); v {
-	case SchemaVersion:
-		return s, nil
-	case "":
-		return nil, errors.New("not a snapshot: no schema version")
-	default:
-		return nil, fmt.Errorf("snapshot schema %s is not supported by this version of setdrift (supported: %s)", v, SchemaVersion)
-	}
+	return checkSchema(s)
 }
 
 // MarshalInspectJSON renders a snapshot as indented, stable JSON, with each
@@ -256,12 +269,4 @@ func MarshalInspectJSON(s *snapshotv1alpha1.Snapshot) ([]byte, error) {
 		return nil, err
 	}
 	return out.Bytes(), nil
-}
-
-func group(apiVersion string) string {
-	g, _, found := strings.Cut(apiVersion, "/")
-	if !found {
-		return ""
-	}
-	return g
 }

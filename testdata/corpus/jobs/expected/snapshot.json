@@ -8,7 +8,7 @@
     {
       "severity": "SEVERITY_INFO",
       "code": "TERMINATED_PODS_TO_CLEANUP",
-      "message": "5 terminated Pods in namespace \"batch\" (3 Succeeded, 2 Failed) are kept in the cluster: 1 from ReplicaSets, StatefulSets or DaemonSets (evicted or shut down), which the Pod garbage collector only removes once the cluster has 12,500 terminated Pods; delete them by hand; 1 kept by CronJob history limits (see CRONJOB_HISTORY_LIMIT); 1 kept by finished Jobs with no ttlSecondsAfterFinished (see JOBS_WITHOUT_TTL); 2 with no owner, which only deleting them removes"
+      "message": "5 terminated Pods in namespace \"batch\" (3 Succeeded, 2 Failed) are kept in the cluster: 1 kept by CronJob history limits (see CRONJOB_HISTORY_LIMIT); 1 kept by finished Jobs with no ttlSecondsAfterFinished (see JOBS_WITHOUT_TTL); 2 with no owner, which only deleting them removes; 1 from ReplicaSets, StatefulSets or DaemonSets (evicted or shut down), which the Pod garbage collector only removes once the cluster has 12,500 terminated Pods; delete them by hand"
     },
     {
       "severity": "SEVERITY_INFO",

@@ -29,13 +29,14 @@ var zoneKeys = []string{
 }
 
 // Build returns the inventory of objs, or nil if there is nothing to
-// record. It does not change them.
+// record. It does not change the objects; the Helm releases it lists are the
+// objects' own records, with their chart repository filled in.
 func Build(objs []*resource.Object) *snapshotv1alpha1.Inventory {
 	inv := &snapshotv1alpha1.Inventory{}
 	pvs := map[string]*resource.Object{}
 	var claims []*resource.Object
-	stsClaims := map[string]string{} // "<ns>/<template>-<sts>-" > StatefulSet
-	repos := map[string]string{}     // "<ns>/<release>" > chart repository
+	stsClaims := resource.ClaimTemplatePrefixes(objs) // "<ns>/<template>-<sts>-" > StatefulSet
+	repos := map[string]string{}                      // "<ns>/<release>" > chart repository
 	for _, o := range objs {
 		if o.HelmRelease != nil {
 			inv.HelmReleases = append(inv.HelmReleases, o.HelmRelease)
@@ -53,14 +54,6 @@ func Build(objs []*resource.Object) *snapshotv1alpha1.Inventory {
 			pvs[o.GetName()] = o
 		case "/PersistentVolumeClaim":
 			claims = append(claims, o)
-		case "apps/StatefulSet":
-			templates, _, _ := unstructured.NestedSlice(o.Object, "spec", "volumeClaimTemplates")
-			for _, t := range templates {
-				tm, _ := t.(map[string]any)
-				if name, _, _ := unstructured.NestedString(tm, "metadata", "name"); name != "" {
-					stsClaims[o.GetNamespace()+"/"+name+"-"+o.GetName()+"-"] = o.GetName()
-				}
-			}
 		case "/Service":
 			if t, _, _ := unstructured.NestedString(o.Object, "spec", "type"); t == "LoadBalancer" {
 				addLoadBalancer(inv, o, "status", "loadBalancer", "ingress")

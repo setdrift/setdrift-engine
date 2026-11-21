@@ -4,10 +4,12 @@
 package kustomize
 
 import (
+	"cmp"
 	"fmt"
 	"sort"
 	"strings"
 
+	"setdrift.io/setdrift-engine/internal/text"
 	snapshotv1alpha1 "setdrift.io/setdrift-engine/pkg/snapshot/v1alpha1"
 )
 
@@ -83,6 +85,7 @@ func NewOverview(s *snapshotv1alpha1.Snapshot, unmanagedOnly bool) Overview {
 	return o
 }
 
+// qualified is r's name, with its namespace when it has one.
 func qualified(r *snapshotv1alpha1.Resource) string {
 	if r.Namespace == "" {
 		return r.Name
@@ -101,7 +104,7 @@ func (o Overview) ByHandCount() int {
 
 // Namespaces are ByHand's namespaces, cluster-scoped ("") first.
 func (o Overview) Namespaces() []string {
-	return sortedKeys(o.ByHand)
+	return sortedMapKeys(o.ByHand)
 }
 
 // Grouped joins "<Kind> <name>" entries as "Kind a, b; Kind c".
@@ -124,15 +127,18 @@ func Grouped(entries []string) string {
 
 // markdown is the overview's section of README.md.
 func (o Overview) markdown() string {
+	if o.ByHandCount() == 0 && len(o.HeldBack) == 0 && o.Secrets == 0 && len(o.Cleanup) == 0 {
+		return ""
+	}
 	var b strings.Builder
 	b.WriteString("\n## What SetDrift found\n\n")
 	if n := o.ByHandCount(); n > 0 {
 		fmt.Fprintf(&b, "**Applied by hand: %s.** No GitOps tool, Helm or operator manages these,\n"+
 			"so this export is the only record of them. Adopt them into Git (export with\n"+
-			"`--unmanaged-only` to write just these):\n\n", pluralize(n, "resource", "resources"))
+			"`--unmanaged-only` to write just these):\n\n", text.Plural(n, "resource", "resources"))
 		b.WriteString("| Namespace | Resources |\n|---|---|\n")
 		for _, ns := range o.Namespaces() {
-			fmt.Fprintf(&b, "| %s | %s |\n", orDefault(ns, "(cluster-scoped)"), Grouped(o.ByHand[ns]))
+			fmt.Fprintf(&b, "| %s | %s |\n", cmp.Or(ns, "(cluster-scoped)"), Grouped(o.ByHand[ns]))
 		}
 		b.WriteString("\n")
 	}
@@ -140,7 +146,7 @@ func (o Overview) markdown() string {
 		fmt.Fprintf(&b, "**Held back: %s with secret values in the manifest.** They are in\n"+
 			"redacted/, not in the kustomization, so applying this export leaves them out.\n"+
 			"Move the values into Secrets and reference them, and the next export\n"+
-			"includes them:\n\n", pluralize(len(o.HeldBack), "resource", "resources"))
+			"includes them:\n\n", text.Plural(len(o.HeldBack), "resource", "resources"))
 		for _, h := range o.HeldBack {
 			fmt.Fprintf(&b, "- %s: `%s`\n", h.Resource, strings.Join(h.Fields, "`, `"))
 		}
@@ -148,7 +154,7 @@ func (o Overview) markdown() string {
 	}
 	if o.Secrets > 0 {
 		fmt.Fprintf(&b, "**Secrets: %s whose values were left out.** RESTORE.md's secrets step\n"+
-			"says how to supply them.\n\n", pluralize(o.Secrets, "Secret", "Secrets"))
+			"says how to supply them.\n\n", text.Plural(o.Secrets, "Secret", "Secrets"))
 	}
 	if len(o.Cleanup) > 0 {
 		b.WriteString("**Cleanup suggestions** (SetDrift changes nothing in the cluster):\n\n")
@@ -156,9 +162,6 @@ func (o Overview) markdown() string {
 			fmt.Fprintf(&b, "- %s\n", c)
 		}
 		b.WriteString("\n")
-	}
-	if b.Len() == len("\n## What SetDrift found\n\n") {
-		return ""
 	}
 	return b.String()
 }

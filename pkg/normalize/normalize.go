@@ -1,7 +1,10 @@
 // Copyright The SetDrift Authors
 // SPDX-License-Identifier: Apache-2.0
 
-// reduces objects to declarative values only, not cluster specific modified fields
+// Package normalize reduces objects to what a person or tool declared:
+// server-set metadata, status, the API server's defaults and what
+// controllers wrote are removed, so an export applies cleanly to another
+// cluster and compares with Git without noise.
 package normalize
 
 import (
@@ -28,10 +31,12 @@ var serverMetadata = []string{
 	"ownerReferences",
 }
 
-// rule removes server-generated fields, they run before the generic metadata stripping, so they can still read managedFields and status
+// rule removes server-generated fields of one kind. Rules run before the
+// generic metadata stripping, so they can still read managedFields and status.
 type rule func(o *resource.Object)
 
-// rules is the per-kind rule registry, for server-set values beyond generic metadata clensing
+// rules are the per-kind rules, for server-set values beyond the generic
+// metadata.
 var rules = map[schema.GroupKind][]rule{
 	jobGK:         {jobGeneratedSelector, jobDefaults},
 	cronJobGK:     {cronJobDefaults},
@@ -93,9 +98,12 @@ var (
 // tool label that stays.
 const defaultArgoInstanceLabel = "app.kubernetes.io/instance"
 
-// strips server owned state in order: managedFields pruning, per kind rules, status/server-set metadata
+// Normalizer is the normalize stage. It strips server-owned state in order:
+// fields only controllers own, per-kind defaults, then status and
+// server-set metadata. It implements resource.Stage.
 type Normalizer struct {
-	// ControllerManagers are the field managers whose fields are removed when no other manager owns them
+	// ControllerManagers are the field managers whose fields are removed when
+	// no other manager owns them; nil means Kubernetes' own components.
 	ControllerManagers map[string]bool
 	// ArgoInstanceLabel is the label Argo CD's label tracking uses, if not app.kubernetes.io/instance;
 	// a custom key is Argo CD's alone, so it is removed like the other tool markers
@@ -107,14 +115,18 @@ type Normalizer struct {
 	KeepSourceDefaults bool
 }
 
-// Name implements resource.Stage
+// Name implements resource.Stage.
 func (Normalizer) Name() string { return "normalize" }
 
-// iterates through each object to remove server-applied values
+// ReplicasFromHPA is the code of the finding on a workload whose replicas
+// were left out because a HorizontalPodAutoscaler sets them.
+const ReplicasFromHPA = "REPLICAS_FROM_HPA"
+
+// Process implements resource.Stage.
 func (n Normalizer) Process(_ context.Context, objs []*resource.Object) ([]*resource.Object, []*snapshotv1alpha1.Finding, error) {
 	controllers := n.ControllerManagers
 	if controllers == nil {
-		controllers = DefaultControllerManagers
+		controllers = defaultControllerManagers
 	}
 	scaled := hpaTargets(objs)
 	for _, o := range objs {
@@ -128,12 +140,12 @@ func (n Normalizer) Process(_ context.Context, objs []*resource.Object) ([]*reso
 				r(o)
 			}
 		}
-		if gvk := o.GroupVersionKind(); scaled[gvk.Group+"/"+gvk.Kind+" "+o.GetNamespace()+"/"+o.GetName()] {
+		if gvk := o.GroupVersionKind(); scaled[scaleTarget{gvk.GroupKind(), o.GetNamespace(), o.GetName()}] {
 			// The HorizontalPodAutoscaler sets the replicas; written by
 			// it through the scale subresource, they are owned by no one.
 			if _, ok, _ := unstructured.NestedFieldNoCopy(o.Object, "spec", "replicas"); ok {
 				unstructured.RemoveNestedField(o.Object, "spec", "replicas")
-				o.AddFinding(snapshotv1alpha1.Severity_SEVERITY_INFO, "REPLICAS_FROM_HPA",
+				o.AddFinding(snapshotv1alpha1.Severity_SEVERITY_INFO, ReplicasFromHPA,
 					"replicas left out: a HorizontalPodAutoscaler scales this workload")
 			}
 		}
@@ -154,7 +166,7 @@ func (n Normalizer) Process(_ context.Context, objs []*resource.Object) ([]*reso
 		}
 		// remove tool markers from the object's own metadata, never from Pod templates, where a selector may use them
 		n.removeToolMarkers(o)
-		// remmove annotations, labels, and finalizers when left empty
+		// remove annotations, labels, and finalizers when left empty
 		for _, f := range []string{"annotations", "labels", "finalizers"} {
 			dropEmpty(o.Object, "metadata", f)
 		}
@@ -162,7 +174,8 @@ func (n Normalizer) Process(_ context.Context, objs []*resource.Object) ([]*reso
 	return objs, nil, nil
 }
 
-// jobGeneratedLabels are added by the API server to every Job that does not set spec.manualSelector
+// jobGeneratedLabels are added by the API server to every Job that does not
+// set spec.manualSelector.
 var jobGeneratedLabels = []string{
 	"controller-uid",
 	"job-name",
@@ -170,7 +183,8 @@ var jobGeneratedLabels = []string{
 	"batch.kubernetes.io/job-name",
 }
 
-// jobGeneratedSelector removes the selector and labels the API server generates for a Job
+// jobGeneratedSelector removes the selector and labels the API server
+// generates for a Job.
 func jobGeneratedSelector(o *resource.Object) {
 	if manual, _, _ := unstructured.NestedBool(o.Object, "spec", "manualSelector"); manual {
 		return
@@ -190,6 +204,7 @@ func jobGeneratedSelector(o *resource.Object) {
 		if len(labels) == 0 {
 			unstructured.RemoveNestedField(o.Object, path...)
 		} else {
+			// cannot fail: path was just read as a string map
 			_ = unstructured.SetNestedStringMap(o.Object, labels, path...)
 		}
 	}

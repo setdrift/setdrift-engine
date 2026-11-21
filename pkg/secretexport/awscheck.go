@@ -31,19 +31,21 @@ func IsAccessDenied(err error) bool {
 	return false
 }
 
-// STSAPI, IAMAPI and KMSAPI are the parts of those clients used.
-type (
-	STSAPI interface {
-		GetCallerIdentity(context.Context, *sts.GetCallerIdentityInput, ...func(*sts.Options)) (*sts.GetCallerIdentityOutput, error)
-	}
-	IAMAPI interface {
-		SimulatePrincipalPolicy(context.Context, *iam.SimulatePrincipalPolicyInput, ...func(*iam.Options)) (*iam.SimulatePrincipalPolicyOutput, error)
-		GetRole(context.Context, *iam.GetRoleInput, ...func(*iam.Options)) (*iam.GetRoleOutput, error)
-	}
-	KMSAPI interface {
-		DescribeKey(context.Context, *kms.DescribeKeyInput, ...func(*kms.Options)) (*kms.DescribeKeyOutput, error)
-	}
-)
+// STSAPI is the part of the STS client used.
+type STSAPI interface {
+	GetCallerIdentity(context.Context, *sts.GetCallerIdentityInput, ...func(*sts.Options)) (*sts.GetCallerIdentityOutput, error)
+}
+
+// IAMAPI is the part of the IAM client used.
+type IAMAPI interface {
+	SimulatePrincipalPolicy(context.Context, *iam.SimulatePrincipalPolicyInput, ...func(*iam.Options)) (*iam.SimulatePrincipalPolicyOutput, error)
+	GetRole(context.Context, *iam.GetRoleInput, ...func(*iam.Options)) (*iam.GetRoleOutput, error)
+}
+
+// KMSAPI is the part of the KMS client used.
+type KMSAPI interface {
+	DescribeKey(context.Context, *kms.DescribeKeyInput, ...func(*kms.Options)) (*kms.DescribeKeyOutput, error)
+}
 
 // Caller is who the AWS credentials are.
 type Caller struct {
@@ -140,7 +142,11 @@ func Simulate(ctx context.Context, i IAMAPI, c Caller, m Manager, region string,
 	if c.Principal == "" {
 		return Permissions{Unverified: "the account's root user can do everything, and IAM can't simulate it"}
 	}
-	partition := strings.SplitN(c.ARN, ":", 3)[1]
+	parts := strings.SplitN(c.ARN, ":", 3)
+	if len(parts) < 3 {
+		return Permissions{Unverified: "the caller's ARN " + c.ARN + " does not parse"}
+	}
+	partition := parts[1]
 	arns := make([]string, 0, len(keys)+1)
 	for _, k := range keys {
 		arns = append(arns, ResourceARN(m, partition, region, c.Account, k))

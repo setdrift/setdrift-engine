@@ -47,11 +47,11 @@ func (a apiType) gvr() schema.GroupVersionResource {
 }
 
 // fakeCluster serves objs for types through discovery and the dynamic client.
-func fakeCluster(types []apiType, objs ...*unstructured.Unstructured) (*fakediscovery.FakeDiscovery, *dynamicfake.FakeDynamicClient) {
+func fakeCluster(apiTypes []apiType, objs ...*unstructured.Unstructured) (*fakediscovery.FakeDiscovery, *dynamicfake.FakeDynamicClient) {
 	byGV := map[string][]metav1.APIResource{}
 	var order []string
 	listKinds := map[schema.GroupVersionResource]string{}
-	for _, a := range types {
+	for _, a := range apiTypes {
 		if _, ok := byGV[a.gv]; !ok {
 			order = append(order, a.gv)
 		}
@@ -251,17 +251,17 @@ func TestMirrorPodsNotFetched(t *testing.T) {
 // TestConcurrentListingDeterministic: the result doesn't depend on how many
 // types are listed at once or which finishes first.
 func TestConcurrentListingDeterministic(t *testing.T) {
-	var types []apiType
+	var apiTypes []apiType
 	var objs []*unstructured.Unstructured
 	for i := range 40 {
 		a := apiType{fmt.Sprintf("g%02d.example.com/v1", i), "things", "Thing", true}
-		types = append(types, a)
+		apiTypes = append(apiTypes, a)
 		for j := range 3 {
 			objs = append(objs, owned(a.gv, "Thing", fmt.Sprintf("t%d", j), fmt.Sprintf("u-%d-%d", i, j), nil))
 		}
 	}
 	run := func(concurrency int) string {
-		disc, dyn := fakeCluster(types, objs...)
+		disc, dyn := fakeCluster(apiTypes, objs...)
 		res, err := (&collect.ClusterCollector{Discovery: disc, Dynamic: dyn, Concurrency: concurrency}).Collect(context.Background())
 		if err != nil {
 			t.Fatal(err)

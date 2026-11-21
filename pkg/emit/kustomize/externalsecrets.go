@@ -9,16 +9,29 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
 	"text/template"
+
+	yamlv3 "go.yaml.in/yaml/v3"
 
 	"setdrift.io/setdrift-engine/pkg/platform"
 	snapshotv1alpha1 "setdrift.io/setdrift-engine/pkg/snapshot/v1alpha1"
 )
 
 const externalSecretsDir = "external-secrets"
+
+// The AWS services ExternalSecrets read from (spec.provider.aws.service).
+const (
+	serviceSecretsManager = "SecretsManager"
+	serviceParameterStore = "ParameterStore"
+)
+
+// regionPlaceholder stands in RESTORE.md's commands for an AWS region the
+// snapshot does not show.
+const regionPlaceholder = "<region>"
 
 // ExternalSecrets configures the ExternalSecret written for each redacted secret
 type ExternalSecrets struct {
@@ -61,10 +74,10 @@ func DefaultExternalSecrets(provider string) (*ExternalSecrets, error) {
 	case "generic":
 		x.Provider = "your secret manager"
 	case "aws-secrets-manager":
-		x.Provider, x.Service = "AWS Secrets Manager", "SecretsManager"
+		x.Provider, x.Service = "AWS Secrets Manager", serviceSecretsManager
 	case "aws-parameter-store":
 		// Parameter names are paths and start with a slash.
-		x.Provider, x.Service, x.KeyTemplate = "AWS Systems Manager Parameter Store", "ParameterStore", "/"+defaultKeyTemplate
+		x.Provider, x.Service, x.KeyTemplate = "AWS Systems Manager Parameter Store", serviceParameterStore, "/"+defaultKeyTemplate
 	default:
 		return nil, fmt.Errorf("unknown external secrets provider %q (known: %s)", provider, strings.Join(ExternalSecretProviders, ", "))
 	}
@@ -79,15 +92,20 @@ func (x *ExternalSecrets) resolved(cls *platform.Classification) *ExternalSecret
 	if r.Auto {
 		r.ID = "generic"
 		if cls.On(platform.AWS) || cls.Is(platform.EKS) {
-			r.Provider, r.Service, r.ID = "AWS Secrets Manager", "SecretsManager", "aws-secrets-manager"
+			r.Provider, r.Service, r.ID = "AWS Secrets Manager", serviceSecretsManager, "aws-secrets-manager"
 		}
 	}
 	r.Auto = false
 	return &r
 }
 
-// Validate checks the settings before anything is read or written, so a bad key template fails at once rather than partway through writing the export.
+// Validate checks the settings before anything is read or written, so a
+// bad key template or store fails at once rather than partway through
+// writing the export.
 func (x *ExternalSecrets) Validate() error {
+	if err := CheckStore(x.StoreKind, x.StoreName); err != nil {
+		return err
+	}
 	_, err := x.keyTemplate()
 	return err
 }
@@ -125,7 +143,7 @@ func (x *ExternalSecrets) emit(s *snapshotv1alpha1.Snapshot, resources []*snapsh
 		}
 		es, remote, err := x.externalSecret(s.GetCluster().GetName(), r, tmpl)
 		if err != nil {
-			return nil, fmt.Errorf("Secret %s/%s: %w", r.Namespace, r.Name, err)
+			return nil, fmt.Errorf("secret %s/%s: %w", r.Namespace, r.Name, err)
 		}
 		if es != nil {
 			out = append(out, es)
@@ -165,7 +183,7 @@ func (x *ExternalSecrets) emit(s *snapshotv1alpha1.Snapshot, resources []*snapsh
 	}
 	// The exact store for the source's cloud goes with the platform's files.
 	storeFile := ""
-	if x.Service != "" && strings.HasPrefix(platDir, "platform/aws/") {
+	if x.Service != "" && strings.HasPrefix(platDir, awsDir) {
 		storeFile = filepath.ToSlash(filepath.Join(filepath.Dir(platDir), "secret-store.yaml"))
 		if err := writeFile(filepath.Join(root, storeFile), []byte(x.awsStore(region(s), ""))); err != nil {
 			return nil, err
@@ -210,32 +228,12 @@ func (x *ExternalSecrets) externalSecret(cluster string, r *snapshotv1alpha1.Res
 	}
 	remoteKey := b.String()
 
-	data := make([]any, 0, len(keys))
-	for _, k := range keys {
-		data = append(data, map[string]any{
-			"secretKey": k,
-			"remoteRef": map[string]any{"key": remoteKey, "property": k},
-		})
-	}
-	target := map[string]any{"name": r.Name}
-	if len(Generated(r)) > 0 {
-		// A controller creates this Secret and writes some of its keys (Argo CD's argocd-secret)
-		// Merge adds the other keys to it without owning it, so the two do not fight
-		target["creationPolicy"] = "Merge"
-	} else if t := secretTemplate(secret.Type, secret.Metadata.Labels, secret.Metadata.Annotations); len(t) > 0 {
-		target["template"] = t
-	}
-	manifest := map[string]any{
-		"apiVersion": "external-secrets.io/v1",
-		"kind":       "ExternalSecret",
-		"metadata":   map[string]any{"name": r.Name, "namespace": r.Namespace},
-		"spec": map[string]any{
-			"refreshInterval": "1h",
-			"secretStoreRef":  map[string]any{"kind": x.StoreKind, "name": x.StoreName},
-			"target":          target,
-			"data":            data,
-		},
-	}
+	manifest := x.manifest(SecretSource{Namespace: r.Namespace, Name: r.Name, Type: secret.Type,
+		Labels: secret.Metadata.Labels, Annotations: secret.Metadata.Annotations, Keys: keys, RemoteKey: remoteKey,
+		// A controller creates this Secret and writes some of its keys (Argo
+		// CD's argocd-secret): Merge adds the other keys to it without
+		// owning it, so the two do not fight.
+		Merge: len(Generated(r)) > 0})
 	js, err := json.Marshal(manifest)
 	if err != nil {
 		return nil, remoteSecret{}, err
@@ -245,6 +243,38 @@ func (x *ExternalSecrets) externalSecret(cluster string, r *snapshotv1alpha1.Res
 			ManifestJson: string(js), Provenance: r.Provenance,
 		}, remoteSecret{key: remoteKey, properties: keys, secret: r.Namespace + "/" + r.Name},
 		nil
+}
+
+// manifest is the ExternalSecret that rebuilds src from its remote secret,
+// one property per key: with Merge, adding its keys to a Secret a controller
+// creates; otherwise creating the Secret with its type, labels and
+// annotations.
+func (x *ExternalSecrets) manifest(src SecretSource) map[string]any {
+	data := make([]any, 0, len(src.Keys))
+	for _, k := range src.Keys {
+		ref := map[string]any{"key": src.RemoteKey, "property": k}
+		if slices.Contains(src.Binary, k) {
+			ref["decodingStrategy"] = "Base64"
+		}
+		data = append(data, map[string]any{"secretKey": k, "remoteRef": ref})
+	}
+	target := map[string]any{"name": src.Name}
+	if src.Merge {
+		target["creationPolicy"] = "Merge"
+	} else if t := secretTemplate(src.Type, src.Labels, src.Annotations); len(t) > 0 {
+		target["template"] = t
+	}
+	return map[string]any{
+		"apiVersion": "external-secrets.io/v1",
+		"kind":       "ExternalSecret",
+		"metadata":   map[string]any{"name": src.Name, "namespace": src.Namespace},
+		"spec": map[string]any{
+			"refreshInterval": "1h",
+			"secretStoreRef":  map[string]any{"kind": x.StoreKind, "name": x.StoreName},
+			"target":          target,
+			"data":            data,
+		},
+	}
 }
 
 // sortRemotes sorts remote secrets by key, for the README and RESTORE.md
@@ -271,16 +301,26 @@ func secretTemplate(typ string, labels, annotations map[string]string) map[strin
 	return t
 }
 
-// region returns the AWS region from the AWS inventory or an EKS cluster ARN, or a placeholder.
-func region(s *snapshotv1alpha1.Snapshot) string {
+// regionOf returns the AWS region from the AWS inventory or an EKS cluster
+// ARN, and whether the snapshot shows one.
+func regionOf(s *snapshotv1alpha1.Snapshot) (string, bool) {
 	if r := s.GetInventory().GetAws().GetRegion(); r != "" {
-		return r
+		return r, true
 	}
 	c := s.GetCluster()
 	if parts := strings.Split(c.GetProviderId(), ":"); len(parts) > 3 && parts[0] == "arn" && parts[3] != "" {
-		return parts[3]
+		return parts[3], true
 	}
-	return "<region>"
+	return "", false
+}
+
+// region returns the snapshot's AWS region, or regionPlaceholder, for a
+// command shown to the user.
+func region(s *snapshotv1alpha1.Snapshot) string {
+	if r, ok := regionOf(s); ok {
+		return r
+	}
+	return regionPlaceholder
 }
 
 // readme is external-secrets/README.md: how to set up the store and the remote secrets, then apply the directory
@@ -297,7 +337,7 @@ func (x *ExternalSecrets) readme(s *snapshotv1alpha1.Snapshot, remotes []remoteS
 		}
 		sort.Strings(namespaces)
 		where = ", in each of these namespaces\n   (a SecretStore only serves its own): " + strings.Join(namespaces, ", ")
-		storeNS = "\n  namespace: <namespace>"
+		storeNS = "<namespace>"
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "# External secrets\n\n"+
@@ -338,15 +378,77 @@ func (x *ExternalSecrets) readme(s *snapshotv1alpha1.Snapshot, remotes []remoteS
 }
 
 // awsStore is the store for AWS Secrets Manager or Parameter Store, as YAML.
-func (x *ExternalSecrets) awsStore(region, ns string) string {
-	return fmt.Sprintf("apiVersion: external-secrets.io/v1\nkind: %s\nmetadata:\n  name: %s%s\nspec:\n  provider:\n    aws:\n"+
-		"      service: %s\n      region: %s\n", x.StoreKind, x.StoreName, ns, x.Service, region)
+// namespace is the SecretStore's namespace, "" for a ClusterSecretStore.
+func (x *ExternalSecrets) awsStore(region, namespace string) string {
+	var spec storeSpec
+	spec.Spec.Provider.AWS = awsProvider{Service: x.Service, Region: region}
+	return storeHead(x.StoreKind, x.StoreName, namespace) + marshalYAML(spec)
+}
+
+// storeMeta is a store's apiVersion, kind and metadata, as YAML writes them.
+type storeMeta struct {
+	APIVersion string `yaml:"apiVersion"`
+	Kind       string `yaml:"kind"`
+	Metadata   struct {
+		Name      string `yaml:"name"`
+		Namespace string `yaml:"namespace,omitempty"`
+	} `yaml:"metadata"`
+}
+
+// storeSpec is an AWS store's spec, as YAML writes it.
+type storeSpec struct {
+	Spec struct {
+		Provider struct {
+			AWS awsProvider `yaml:"aws"`
+		} `yaml:"provider"`
+	} `yaml:"spec"`
+}
+
+// awsProvider is a store's spec.provider.aws.
+type awsProvider struct {
+	Service string `yaml:"service"`
+	Region  string `yaml:"region"`
+}
+
+// storeHead is a store's apiVersion, kind and metadata, as YAML.
+func storeHead(kind, name, namespace string) string {
+	m := storeMeta{APIVersion: "external-secrets.io/v1", Kind: kind}
+	m.Metadata.Name, m.Metadata.Namespace = name, namespace
+	return marshalYAML(m)
+}
+
+// marshalYAML writes v as YAML in its fields' order, two-space indented, so
+// any value is quoted as YAML needs.
+func marshalYAML(v any) string {
+	var b bytes.Buffer
+	enc := yamlv3.NewEncoder(&b)
+	enc.SetIndent(2)
+	if err := enc.Encode(v); err != nil {
+		// v is one of this file's structs of strings: it always encodes
+		panic(fmt.Sprintf("kustomize: marshalYAML: %v", err))
+	}
+	return b.String()
+}
+
+// storeNameRE matches a Kubernetes object name: a DNS subdomain.
+var storeNameRE = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`)
+
+// CheckStore checks an External Secrets store's kind and name: the kind is
+// ClusterSecretStore or SecretStore, and the name a Kubernetes name.
+func CheckStore(kind, name string) error {
+	if kind != "ClusterSecretStore" && kind != "SecretStore" {
+		return fmt.Errorf("store kind %q: use ClusterSecretStore or SecretStore", kind)
+	}
+	if !storeNameRE.MatchString(name) || len(name) > 253 {
+		return fmt.Errorf("store name %q: use a Kubernetes name: lowercase letters, digits, dashes and dots", name)
+	}
+	return nil
 }
 
 // storeExamples shows the store for the common secret managers, with the
 // remote key format each accepts.
-func storeExamples(kind, name, ns string) string {
-	head := fmt.Sprintf("apiVersion: external-secrets.io/v1\nkind: %s\nmetadata:\n  name: %s%s\nspec:\n  provider:\n", kind, name, ns)
+func storeExamples(kind, name, namespace string) string {
+	head := storeHead(kind, name, namespace) + "spec:\n  provider:\n"
 	ex := func(title, note, provider string) string {
 		return "**" + title + ".** " + note + "\n\n```yaml\n" + head + provider + "```\n\n"
 	}

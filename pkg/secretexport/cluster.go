@@ -7,7 +7,6 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
-	"io/fs"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -24,7 +23,7 @@ type ClusterSecrets struct{ Client dynamic.Interface }
 func (c ClusterSecrets) Get(ctx context.Context, namespace, name string) (map[string][]byte, error) {
 	u, err := c.Client.Resource(secretsGVR).Namespace(namespace).Get(ctx, name, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
-		return nil, fmt.Errorf("%s/%s: %w", namespace, name, fs.ErrNotExist)
+		return nil, fmt.Errorf("%s/%s: %w", namespace, name, ErrNoSecret)
 	}
 	if err != nil {
 		return nil, err

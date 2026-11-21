@@ -43,7 +43,7 @@ func WriteExternalSecrets(dir string, x *ExternalSecrets, region string, secrets
 	if x.StoreKind == "SecretStore" {
 		for _, ns := range namespaces {
 			f := "secret-store-" + SafeName(ns) + ".yaml"
-			if err := writeFile(filepath.Join(dir, f), []byte(x.awsStore(region, "\n  namespace: "+ns))); err != nil {
+			if err := writeFile(filepath.Join(dir, f), []byte(x.awsStore(region, ns))); err != nil {
 				return err
 			}
 			files = append(files, f)
@@ -57,31 +57,7 @@ func WriteExternalSecrets(dir string, x *ExternalSecrets, region string, secrets
 
 	var rows strings.Builder
 	for _, s := range secrets {
-		data := make([]any, 0, len(s.Keys))
-		for _, k := range s.Keys {
-			ref := map[string]any{"key": s.RemoteKey, "property": k}
-			if slices.Contains(s.Binary, k) {
-				ref["decodingStrategy"] = "Base64"
-			}
-			data = append(data, map[string]any{"secretKey": k, "remoteRef": ref})
-		}
-		target := map[string]any{"name": s.Name}
-		if s.Merge {
-			target["creationPolicy"] = "Merge"
-		} else if t := secretTemplate(s.Type, s.Labels, s.Annotations); len(t) > 0 {
-			target["template"] = t
-		}
-		manifest := map[string]any{
-			"apiVersion": "external-secrets.io/v1",
-			"kind":       "ExternalSecret",
-			"metadata":   map[string]any{"name": s.Name, "namespace": s.Namespace},
-			"spec": map[string]any{
-				"refreshInterval": "1h",
-				"secretStoreRef":  map[string]any{"kind": x.StoreKind, "name": x.StoreName},
-				"target":          target,
-				"data":            data,
-			},
-		}
+		manifest := x.manifest(s)
 		out, err := yaml.Marshal(manifest)
 		if err != nil {
 			return err

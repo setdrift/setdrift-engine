@@ -12,13 +12,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
 
+	"setdrift.io/setdrift-engine/internal/text"
 	"setdrift.io/setdrift-engine/pkg/verify"
 )
 
@@ -45,7 +48,8 @@ type verifyDocument struct {
 
 // causes are the groups differences print in, by Diff.Kind, in order.
 var causes = []struct {
-	kind, title string
+	kind  verify.Kind
+	title string
 }{
 	{verify.KindChanged, "Fields differ"},
 	{verify.KindNotInCluster, "Not in the cluster (applying would create them)"},
@@ -64,7 +68,7 @@ func likelyCause(d verifyDocument) string {
 		if d.Identity != "" {
 			who += " (" + d.Identity + ")"
 		}
-		return fmt.Sprintf("%s could not check %s, which are not counted: %s.", who, plural(nc, "resource", "resources"), refusals(r.NotChecked, d.Identity))
+		return fmt.Sprintf("%s could not check %s, which are not counted: %s.", who, text.Plural(nc, "resource", "resources"), refusals(r.NotChecked, d.Identity))
 	}
 	switch {
 	case n == 0:
@@ -111,28 +115,24 @@ func writers(m map[string]int) string {
 	return strings.Join(parts, ", ")
 }
 
-// printVerify prints a run for the terminal: the result, then the differences by cause.
-func printVerify(w io.Writer, d verifyDocument, root, context string) {
+// printVerify prints a run for the terminal: the result, then the
+// differences by cause.
+func printVerify(w io.Writer, d verifyDocument, root, contextName string) {
 	r := d.Report
 	result := "PASSED"
 	if !d.Passed {
 		result = "FAILED"
 	}
-	fmt.Fprintf(w, "\n%s: %d of %s would not change (%.1f%%; %d%% required)", result, r.Clean, plural(r.Total, "resource", "resources"),
+	fmt.Fprintf(w, "\n%s: %d of %s would not change (%.1f%%; %d%% required)", result, r.Clean, text.Plural(r.Total, "resource", "resources"),
 		r.CleanPercent(), r.RequiredPercent())
 	if u := r.Unexplained(); u > 0 {
-		fmt.Fprintf(w, "; %s", plural(u, "difference unexplained", "differences unexplained"))
+		fmt.Fprintf(w, "; %s", text.Plural(u, "difference unexplained", "differences unexplained"))
 	}
 	if n := len(r.NotChecked); n > 0 {
 		fmt.Fprintf(w, "; %d not checked (no permission)", n)
 	}
 	fmt.Fprintln(w)
-	reasons := make([]string, 0, len(r.Skipped))
-	for k := range r.Skipped {
-		reasons = append(reasons, k)
-	}
-	sort.Strings(reasons)
-	for _, k := range reasons {
+	for _, k := range slices.Sorted(maps.Keys(r.Skipped)) {
 		fmt.Fprintf(w, "Skipped %d: %s\n", r.Skipped[k], k)
 	}
 	if n := len(r.MissingCRDs); n > 0 {
@@ -141,8 +141,8 @@ func printVerify(w io.Writer, d verifyDocument, root, context string) {
 			"Their custom resources show below as types the cluster does not serve. Create them first:\n"+
 			"    kubectl --context %s apply --server-side -k %s\n"+
 			"    kubectl --context %s wait --for condition=established --timeout=60s -k %s\n",
-			plural(n, "CustomResourceDefinition", "CustomResourceDefinitions"), choose(n == 1, "is", "are"),
-			strings.Join(r.MissingCRDs, ", "), context, crds, context, crds)
+			text.Plural(n, "CustomResourceDefinition", "CustomResourceDefinitions"), text.Choose(n == 1, "is", "are"),
+			strings.Join(r.MissingCRDs, ", "), contextName, crds, contextName, crds)
 	}
 	if len(r.Diffs)+len(r.NotChecked) == 0 {
 		return
@@ -152,13 +152,9 @@ func printVerify(w io.Writer, d verifyDocument, root, context string) {
 	} else {
 		fmt.Fprintf(w, "\nWould change (%d):\n", len(r.Diffs))
 	}
+	groups := byCause(r)
 	for _, c := range causes {
-		var group []verify.Diff
-		for _, diff := range allDiffs(r) {
-			if diff.Kind == c.kind {
-				group = append(group, diff)
-			}
-		}
+		group := groups[c.kind]
 		if len(group) == 0 {
 			continue
 		}
@@ -180,27 +176,33 @@ func printVerify(w io.Writer, d verifyDocument, root, context string) {
 			continue
 		}
 		for _, diff := range group {
-			fmt.Fprintf(w, "    %s%s\n", diff.Ref, changedBy(diff))
-			if diff.Explanation != "" {
-				fmt.Fprintf(w, "        explained: %s\n", diff.Explanation)
-			}
-			if len(diff.Fields) > 0 {
-				for i, f := range diff.Fields {
-					if i == 5 {
-						fmt.Fprintf(w, "        ... %d more (in the report)\n", len(diff.Fields)-5)
-						break
-					}
-					fmt.Fprintf(w, "        %s: cluster %s, export %s%s\n", f.Path, value(f.Cluster), value(f.Export), setBy(f.SetBy, "  (set by ", ")"))
-				}
-				continue
-			}
-			for _, p := range diff.Paths {
-				fmt.Fprintf(w, "        %s\n", p)
-			}
+			printVerifyDiff(w, diff)
 		}
 	}
 	if d.LikelyCause != "" {
 		fmt.Fprintf(w, "\nLikely cause: %s\n", d.LikelyCause)
+	}
+}
+
+// printVerifyDiff prints one difference: who wrote it since the export, its
+// explanation, and its fields (up to fieldsShown) or what went wrong.
+func printVerifyDiff(w io.Writer, diff verify.Diff) {
+	fmt.Fprintf(w, "    %s%s\n", diff.Ref, changedBy(diff))
+	if diff.Explanation != "" {
+		fmt.Fprintf(w, "        explained: %s\n", diff.Explanation)
+	}
+	if len(diff.Fields) == 0 {
+		for _, p := range diff.Paths {
+			fmt.Fprintf(w, "        %s\n", p)
+		}
+		return
+	}
+	for i, f := range diff.Fields {
+		if i == fieldsShown {
+			fmt.Fprintf(w, "        ... %d more (in the report)\n", len(diff.Fields)-fieldsShown)
+			break
+		}
+		fmt.Fprintf(w, "        %s: cluster %s, export %s%s\n", f.Path, value(f.Cluster), value(f.Export), setBy(f.SetBy, "  (set by ", ")"))
 	}
 }
 
@@ -218,7 +220,7 @@ func notCheckedLines(group []verify.Diff) []string {
 			}
 		}
 		refused := "may not get"
-		if len(d.Paths) > 0 && strings.Contains(d.Paths[0], "may not patch") {
+		if d.Refused == verify.RefusedPatch {
 			refused = "may not patch, for the dry-run"
 		}
 		k := key{ns, refused}
@@ -230,15 +232,23 @@ func notCheckedLines(group []verify.Diff) []string {
 	sort.SliceStable(order, func(i, j int) bool { return order[i].ns < order[j].ns })
 	out := make([]string, 0, len(order))
 	for _, k := range order {
-		out = append(out, fmt.Sprintf("%s: %s (%s)", k.ns, plural(counts[k], "resource", "resources"), k.refused))
+		out = append(out, fmt.Sprintf("%s: %s (%s)", k.ns, text.Plural(counts[k], "resource", "resources"), k.refused))
 	}
 	return out
 }
 
-// allDiffs are the differences, then the resources not checked.
-func allDiffs(r verify.Report) []verify.Diff {
-	return append(append([]verify.Diff(nil), r.Diffs...), r.NotChecked...)
+// byCause groups the differences, then the resources not checked, by cause
+// in the order causes lists them.
+func byCause(r verify.Report) map[verify.Kind][]verify.Diff {
+	out := map[verify.Kind][]verify.Diff{}
+	for _, d := range append(append([]verify.Diff(nil), r.Diffs...), r.NotChecked...) {
+		out[d.Kind] = append(out[d.Kind], d)
+	}
+	return out
 }
+
+// fieldsShown caps the fields printed per difference; the report has all.
+const fieldsShown = 5
 
 // setBy renders a field's owners: "kubectl via scale, helm".
 func setBy(owners []verify.Owner, before, after string) string {
@@ -313,7 +323,7 @@ func verifyMarkdown(d verifyDocument) []byte {
 	fmt.Fprintf(&b, "| Would not change | %d of %d (%.1f%%; %d%% required) |\n", r.Clean, r.Total, r.CleanPercent(), r.RequiredPercent())
 	fmt.Fprintf(&b, "| Unexplained differences | %d |\n", r.Unexplained())
 	if len(r.NotChecked) > 0 {
-		fmt.Fprintf(&b, "| Not checked (no permission) | %d%s |\n", len(r.NotChecked), choose(d.Identity != "", ", as "+d.Identity, ""))
+		fmt.Fprintf(&b, "| Not checked (no permission) | %d%s |\n", len(r.NotChecked), text.Choose(d.Identity != "", ", as "+d.Identity, ""))
 	}
 	if len(r.Namespaces) > 0 {
 		fmt.Fprintf(&b, "| Namespaces | %s (-n) |\n", strings.Join(r.Namespaces, ", "))
@@ -324,10 +334,10 @@ func verifyMarkdown(d verifyDocument) []byte {
 		fmt.Fprintf(&b, "| Export | from %s, taken %s |\n", d.ExportCluster, d.ExportedAt)
 	}
 	if d.SameCluster != nil {
-		fmt.Fprintf(&b, "| Same cluster as the export | %s |\n", choose(*d.SameCluster, "yes", "no"))
+		fmt.Fprintf(&b, "| Same cluster as the export | %s |\n", text.Choose(*d.SameCluster, "yes", "no"))
 	}
-	for k, n := range r.Skipped {
-		fmt.Fprintf(&b, "| Skipped | %d: %s |\n", n, k)
+	for _, k := range slices.Sorted(maps.Keys(r.Skipped)) {
+		fmt.Fprintf(&b, "| Skipped | %d: %s |\n", r.Skipped[k], k)
 	}
 	if len(r.MissingCRDs) > 0 {
 		fmt.Fprintf(&b, "| CRDs missing from the cluster | %s |\n", strings.Join(r.MissingCRDs, ", "))
@@ -335,13 +345,9 @@ func verifyMarkdown(d verifyDocument) []byte {
 	if d.LikelyCause != "" {
 		fmt.Fprintf(&b, "\n**Likely cause:** %s\n", d.LikelyCause)
 	}
+	groups := byCause(r)
 	for _, c := range causes {
-		var group []verify.Diff
-		for _, diff := range allDiffs(r) {
-			if diff.Kind == c.kind {
-				group = append(group, diff)
-			}
-		}
+		group := groups[c.kind]
 		if len(group) == 0 {
 			continue
 		}
@@ -375,11 +381,4 @@ func verifyMarkdown(d verifyDocument) []byte {
 // mdCell keeps a value inside one Markdown table cell.
 func mdCell(s string) string {
 	return "`" + strings.NewReplacer("|", `\|`, "`", "'", "\n", " ").Replace(s) + "`"
-}
-
-func choose(cond bool, a, b string) string {
-	if cond {
-		return a
-	}
-	return b
 }

@@ -7,7 +7,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -43,7 +42,7 @@ type fakeSecrets map[string]map[string][]byte
 func (f fakeSecrets) Get(_ context.Context, ns, name string) (map[string][]byte, error) {
 	d, ok := f[ns+"/"+name]
 	if !ok {
-		return nil, fs.ErrNotExist
+		return nil, ErrNoSecret
 	}
 	return d, nil
 }
@@ -133,7 +132,10 @@ func TestPlanApplyVerify(t *testing.T) {
 		{Namespace: "argocd", Name: "argocd-secret", Keys: []string{"oidc"}},
 		{Namespace: "shop", Name: "keystore", Keys: []string{"jks"}},
 		{Namespace: "shop", Name: "stale", Keys: []string{"token"}}}
-	keys, _ := RemoteKeys(SecretsManagerID, "prod/{{.Namespace}}/{{.Name}}", "prod", secrets)
+	keys, err := RemoteKeys(SecretsManagerID, "prod/{{.Namespace}}/{{.Name}}", "prod", secrets)
+	if err != nil {
+		t.Fatal(err)
+	}
 	src := fakeSecrets{
 		"shop/db":              {"password": []byte("hunter2")},
 		"argocd/argocd-secret": {"oidc": []byte("x"), "server.secretkey": []byte("generated")},
@@ -141,13 +143,23 @@ func TestPlanApplyVerify(t *testing.T) {
 		"shop/stale":           {"token": []byte("new")},
 	}
 	prov := &fakeProvider{existing: map[string]string{"prod/shop/stale": `{"token":"old"}`}, written: map[string]string{}}
-	plan, err := MakePlan(context.Background(), Remotes(secrets, keys), src, prov, false)
+	remotes, err := Remotes(secrets, keys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := MakePlan(context.Background(), remotes, src, prov, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	by := map[string]*Item{}
 	for _, it := range plan.Items {
 		by[it.Secret] = it
+		// a plan printed in full, as a debug line or a test failure would
+		for _, format := range []string{"%v", "%+v", "%#v"} {
+			if out := fmt.Sprintf(format, *it); strings.Contains(out, "hunter2") {
+				t.Errorf("%s of an Item prints the secret value: %s", format, out)
+			}
+		}
 	}
 	if !by["argocd-secret"].Merge || by["db"].Merge {
 		t.Error("merge: only a Secret with keys beyond the redacted ones")
@@ -183,8 +195,15 @@ func TestPlanApplyVerify(t *testing.T) {
 
 func TestPlanMissing(t *testing.T) {
 	secrets := []Source{{Namespace: "shop", Name: "gone", Keys: []string{"k"}}, {Namespace: "shop", Name: "db", Keys: []string{"password", "user"}}}
-	keys, _ := RemoteKeys(SecretsManagerID, "{{.Namespace}}/{{.Name}}", "prod", secrets)
-	plan, err := MakePlan(context.Background(), Remotes(secrets, keys), fakeSecrets{"shop/db": {"password": []byte("x")}},
+	keys, err := RemoteKeys(SecretsManagerID, "{{.Namespace}}/{{.Name}}", "prod", secrets)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remotes, err := Remotes(secrets, keys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := MakePlan(context.Background(), remotes, fakeSecrets{"shop/db": {"password": []byte("x")}},
 		&fakeProvider{existing: map[string]string{}, written: map[string]string{}}, false)
 	if err != nil {
 		t.Fatal(err)

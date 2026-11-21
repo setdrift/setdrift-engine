@@ -157,17 +157,17 @@ func TestExternalSecretKeyTemplate(t *testing.T) {
 		t.Fatal(err)
 	}
 	root := filepath.Join(dir, "clusters", "prod")
-	b, _ := os.ReadFile(filepath.Join(root, "external-secrets", "namespaces", "shop", "externalsecret.external-secrets.io", "db.yaml"))
+	b := mustRead(t, filepath.Join(root, "external-secrets", "namespaces", "shop", "externalsecret.external-secrets.io", "db.yaml"))
 	for _, want := range []string{"key: /prod/apps/db", "name: secret-store", "property: password"} {
 		if !strings.Contains(string(b), want) {
 			t.Errorf("ExternalSecret lacks %q:\n%s", want, b)
 		}
 	}
-	readme, _ := os.ReadFile(filepath.Join(root, "external-secrets", "README.md"))
+	readme := mustRead(t, filepath.Join(root, "external-secrets", "README.md"))
 	if !strings.Contains(string(readme), "region: eu-west-1") || !strings.Contains(string(readme), "service: ParameterStore") {
 		t.Errorf("README store example:\n%s", readme)
 	}
-	rootKustomization, _ := os.ReadFile(filepath.Join(root, "kustomization.yaml"))
+	rootKustomization := mustRead(t, filepath.Join(root, "kustomization.yaml"))
 	if strings.Contains(string(rootKustomization), "external-secrets") {
 		t.Error("external-secrets/ must not be applied by default")
 	}
@@ -180,7 +180,7 @@ func TestExternalSecretKeyTemplate(t *testing.T) {
 // in the cluster go, and keeps everything else in the output directory.
 // A key template that gives two Secrets one remote secret fails the export.
 func TestExternalSecretKeysUnique(t *testing.T) {
-	es, _ := DefaultExternalSecrets("aws-secrets-manager")
+	es := mustExternalSecrets(t, "aws-secrets-manager")
 	es.KeyTemplate = "{{.Name}}"
 	s := &snapshotv1alpha1.Snapshot{Cluster: &snapshotv1alpha1.Cluster{Name: "prod"}}
 	for _, ns := range []string{"shop", "billing"} {
@@ -204,19 +204,19 @@ func TestExternalSecretStores(t *testing.T) {
 		r.ManifestJson = `{"apiVersion":"v1","kind":"Secret","metadata":{"name":"` + name + `","namespace":"` + ns + `"},"data":{"password":"x"}}`
 		s.Resources = append(s.Resources, r)
 	}
-	es, _ := DefaultExternalSecrets("aws-parameter-store")
+	es := mustExternalSecrets(t, "aws-parameter-store")
 	es.StoreKind = "SecretStore"
 	dir := t.TempDir()
 	if err := (Emitter{ExternalSecrets: es}).Emit(s, dir); err != nil {
 		t.Fatal(err)
 	}
 	root := filepath.Join(dir, "clusters", "prod")
-	readme, _ := os.ReadFile(filepath.Join(root, "external-secrets", "README.md"))
+	readme := mustRead(t, filepath.Join(root, "external-secrets", "README.md"))
 	if !strings.Contains(string(readme), "in each of these namespaces\n   (a SecretStore only serves its own): billing, shop.") ||
 		!strings.Contains(string(readme), "namespace: <namespace>") {
 		t.Errorf("README:\n%s", readme)
 	}
-	restore, _ := os.ReadFile(filepath.Join(root, "platform", "aws", "RESTORE.md"))
+	restore := mustRead(t, filepath.Join(root, "platform", "aws", "RESTORE.md"))
 	if !strings.Contains(string(restore), "aws ssm put-parameter --region \"$REGION\" --type SecureString --name /prod/billing/db-1") ||
 		strings.Contains(string(restore), "aws secretsmanager create-secret") {
 		t.Errorf("RESTORE.md remote secret commands:\n%s", restore)
@@ -281,7 +281,7 @@ func TestFailedExportKeepsPrevious(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, "clusters", "c", "namespaces", "shop", "configmap", "a.yaml")); err != nil {
 		t.Errorf("previous export lost: %v", err)
 	}
-	entries, _ := os.ReadDir(filepath.Join(dir, "clusters"))
+	entries := mustReadDir(t, filepath.Join(dir, "clusters"))
 	if len(entries) != 1 || entries[0].Name() != "c" {
 		var names []string
 		for _, e := range entries {
@@ -318,7 +318,7 @@ func TestEmptyRootKustomization(t *testing.T) {
 	if !strings.Contains(string(b), "resources: []") {
 		t.Errorf("root kustomization:\n%s", b)
 	}
-	readme, _ := os.ReadFile(filepath.Join(dir, "clusters", "c", "redacted", "README.md"))
+	readme := mustRead(t, filepath.Join(dir, "clusters", "c", "redacted", "README.md"))
 	if strings.Contains(string(readme), "../external-secrets/") {
 		t.Error("README points at external-secrets/ without ExternalSecrets")
 	}
@@ -384,7 +384,7 @@ func TestPlatformSet(t *testing.T) {
 	if !strings.Contains(plat, "kind: NodeClass") || !strings.Contains(plat, "name: settings") {
 		t.Errorf("platform set:\n%s", plat)
 	}
-	md, _ := os.ReadFile(filepath.Join(root, "RESTORE.md"))
+	md := mustRead(t, filepath.Join(root, "RESTORE.md"))
 	if !strings.Contains(string(md), "kubectl --context \"$DST\" apply --server-side -k platform/aws/eks") {
 		t.Errorf("RESTORE.md does not say to apply the platform set:\n%s", md)
 	}
@@ -392,7 +392,7 @@ func TestPlatformSet(t *testing.T) {
 
 // On AWS the store is written next to the platform's files, as YAML that applies.
 func TestAWSSecretStoreFile(t *testing.T) {
-	es, _ := DefaultExternalSecrets("auto")
+	es := mustExternalSecrets(t, "auto")
 	r := resource("Secret", "shop", "db", true)
 	r.ManifestJson = `{"apiVersion":"v1","kind":"Secret","metadata":{"name":"db","namespace":"shop"},"data":{"password":"x"}}`
 	s := &snapshotv1alpha1.Snapshot{Cluster: &snapshotv1alpha1.Cluster{Name: "prod", Platform: "eks", ProviderId: "arn:aws:eks:us-east-2:1:cluster/prod"},

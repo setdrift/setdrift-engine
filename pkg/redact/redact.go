@@ -20,6 +20,10 @@ import (
 // Placeholder replaces every redacted value.
 const Placeholder = "SETDRIFT_REDACTED"
 
+// SecretFilledByController is the code of the finding on a Secret a tool
+// created empty and a controller filled in (see filledByController).
+const SecretFilledByController = "SECRET_FILLED_BY_CONTROLLER"
+
 const lastAppliedAnnotation = "kubectl.kubernetes.io/last-applied-configuration"
 
 // SecretRedactor replaces the values of core Secrets with Placeholder, keeping
@@ -61,7 +65,8 @@ func (SecretRedactor) Process(_ context.Context, objs []*resource.Object) ([]*re
 			redactEmbedded(o)
 			continue
 		}
-		if t, _ := o.Object["type"].(string); t == serviceAccountTokenType {
+		secretType, _ := o.Object["type"].(string)
+		if secretType == serviceAccountTokenType {
 			// The token controller writes all of the data. Without it the
 			// Secret is plain configuration (its type and the service
 			// account annotation), and safe to apply.
@@ -69,7 +74,7 @@ func (SecretRedactor) Process(_ context.Context, objs []*resource.Object) ([]*re
 			delete(o.Object, "stringData")
 			continue
 		}
-		if t, _ := o.Object["type"].(string); t == helmReleaseType {
+		if secretType == helmReleaseType {
 			// Before the data is replaced: the chart it runs is the only
 			// thing the restore playbook needs from it.
 			o.HelmRelease = helmRelease(o)
@@ -105,14 +110,14 @@ func filledByController(o *resource.Object) {
 	}
 	var tools []string
 	for _, e := range o.GetManagedFields() {
-		if tool(e.Manager) && !slices.Contains(tools, e.Manager) {
+		if isTool(e.Manager) && !slices.Contains(tools, e.Manager) {
 			tools = append(tools, e.Manager)
 		}
 	}
 	if len(tools) == 0 {
 		return
 	}
-	o.AddFinding(snapshotv1alpha1.Severity_SEVERITY_INFO, "SECRET_FILLED_BY_CONTROLLER",
+	o.AddFinding(snapshotv1alpha1.Severity_SEVERITY_INFO, SecretFilledByController,
 		"was created by %s and its values written by %s, which expects it to exist: the restore creates it empty",
 		strings.Join(tools, ", "), strings.Join(controllers, ", "))
 }

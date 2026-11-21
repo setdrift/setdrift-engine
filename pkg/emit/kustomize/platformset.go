@@ -7,14 +7,20 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
-	"sort"
 	"strings"
 
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"sigs.k8s.io/yaml"
 
+	"setdrift.io/setdrift-engine/internal/kube"
+	"setdrift.io/setdrift-engine/internal/text"
 	"setdrift.io/setdrift-engine/pkg/platform"
 	snapshotv1alpha1 "setdrift.io/setdrift-engine/pkg/snapshot/v1alpha1"
+)
+
+// eksDir is the EKS platform set's directory, and awsDir its cloud's.
+const (
+	eksDir = "platform/aws/eks"
+	awsDir = "platform/aws/"
 )
 
 // exportPlatform is the source's platform and its directory in the export
@@ -23,8 +29,8 @@ import (
 func exportPlatform(s *snapshotv1alpha1.Snapshot) (*platform.Classification, string) {
 	cls := classification(s)
 	dir := cls.Dir()
-	if (cls.Is(platform.EKS) || s.GetInventory().GetAws() != nil) && dir != "platform/aws/eks" {
-		dir = "platform/aws/eks"
+	if cls.Is(platform.EKS) || s.GetInventory().GetAws() != nil {
+		dir = eksDir
 	}
 	return cls, dir
 }
@@ -55,11 +61,7 @@ func platformCRDKinds(s *snapshotv1alpha1.Snapshot) map[schema.GroupKind]bool {
 
 // resourceGroupKind is r's API group and kind.
 func resourceGroupKind(r *snapshotv1alpha1.Resource) schema.GroupKind {
-	g, _, _ := strings.Cut(r.ApiVersion, "/")
-	if !strings.Contains(r.ApiVersion, "/") {
-		g = ""
-	}
-	return schema.GroupKind{Group: g, Kind: r.Kind}
+	return schema.GroupKind{Group: kube.Group(r.ApiVersion), Kind: r.Kind}
 }
 
 // writePlatformSet writes the platform set at dir (platform/<cloud>/<leaf>):
@@ -73,12 +75,8 @@ func writePlatformSet(root, dir string, cls *platform.Classification, generic, b
 	for _, b := range generic {
 		resources = append(resources, up+b)
 	}
-	resources = append(resources, sortedStrings(buckets)...)
-	out, err := yaml.Marshal(kustomization{APIVersion: "kustomize.config.k8s.io/v1beta1", Kind: "Kustomization", Resources: resources})
-	if err != nil {
-		return err
-	}
-	if err := writeFile(filepath.Join(root, dir, "kustomization.yaml"), out); err != nil {
+	resources = append(resources, sortedCopy(buckets)...)
+	if err := writeKustomization(filepath.Join(root, dir), resources); err != nil {
 		return err
 	}
 	return writeFile(filepath.Join(root, dir, "README.md"), []byte(platformReadme(dir, cls, objects)))
@@ -100,14 +98,14 @@ func platformReadme(dir string, cls *platform.Classification, objects int) strin
 		"cluster's directory, which applies to any cluster)", cls.Summary())
 	if objects > 0 {
 		fmt.Fprintf(&b, " and %s that only\n%s serves: custom resources of APIs the platform provides,\n"+
-			"which another cluster would reject.\n\n", pluralize(objects, "object", "objects"), name)
+			"which another cluster would reject.\n\n", text.Plural(objects, "object", "objects"), name)
 	} else {
 		b.WriteString(". This\nexport has no objects that only this platform serves, so the two are the\nsame.\n\n")
 	}
 	fmt.Fprintf(&b, "On %s, point Argo CD or Flux at this directory, or apply it:\n\n"+
 		"    kubectl apply --server-side -k %s\n\n"+
 		"Anywhere else, use the cluster's directory.\n", name, dir)
-	if strings.HasPrefix(dir, "platform/aws/") {
+	if strings.HasPrefix(dir, awsDir) {
 		fmt.Fprintf(&b, "\nRESTORE.md here and in %s/ has the steps for restoring onto\n"+
 			"%s that are not Kubernetes objects; the cluster's RESTORE.md says when.\n", filepath.ToSlash(filepath.Dir(dir)), name)
 	}
@@ -125,10 +123,4 @@ func evidence(cls *platform.Classification) string {
 		return "no evidence recorded"
 	}
 	return strings.Join(parts, "; ")
-}
-
-func sortedStrings(ss []string) []string {
-	out := append([]string(nil), ss...)
-	sort.Strings(out)
-	return out
 }

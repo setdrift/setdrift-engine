@@ -27,7 +27,8 @@ func init() {
 // information: the module version (go install …@v0.1.0, or Go's own
 // pseudo-version for a build in a git checkout) and the VCS commit, with
 // -dirty for uncommitted changes. "dev" and "none" when neither knows.
-func resolve(info *debug.BuildInfo, version, commit string) (string, string) {
+func resolve(info *debug.BuildInfo, setVersion, setCommit string) (version, commit string) {
+	version, commit = setVersion, setCommit
 	if version == "" && info != nil {
 		// "(devel)" is what Go records when it knows no version
 		if v := info.Main.Version; v != "" && v != "(devel)" {

@@ -211,39 +211,7 @@ func Values(v any) (any, []string) {
 func walk(v any, path string, redact func(path, why string)) any {
 	switch n := v.(type) {
 	case map[string]any:
-		// A name/value pair, like an env var: the name says what the value is.
-		pair := false
-		if name, ok := n["name"].(string); ok {
-			if val, ok := n["value"].(string); ok {
-				pair = true
-				p := path + ".value"
-				if why := matchValue(val); why != "" {
-					n["value"] = Placeholder
-					redact(p, why)
-				} else if secretName(name) && plausibleValue(val) {
-					n["value"] = Placeholder
-					redact(p, "secret-like name "+name)
-				}
-			}
-		}
-		for _, k := range sortedKeys(n) {
-			p := path + "." + k
-			if s, ok := n[k].(string); ok {
-				if k == "value" && pair {
-					continue // handled with its name above
-				}
-				if why := matchValue(s); why != "" {
-					n[k] = Placeholder
-					redact(p, why)
-				} else if secretName(k) && plausibleValue(s) {
-					n[k] = Placeholder
-					redact(p, "secret-like key "+k)
-				}
-				continue
-			}
-			n[k] = walk(n[k], p, redact)
-		}
-		return n
+		return walkMap(n, path, redact)
 	case []any:
 		for i, item := range n {
 			label := fmt.Sprint(i)
@@ -264,6 +232,45 @@ func walk(v any, path string, redact func(path, why string)) any {
 	return v
 }
 
+// walkMap is walk for a map. A map holding a name and a value, like an env
+// var, is a pair: the name says whether the value is a secret.
+func walkMap(n map[string]any, path string, redact func(path, why string)) map[string]any {
+	pair := false
+	if name, ok := n["name"].(string); ok {
+		if val, ok := n["value"].(string); ok {
+			pair = true
+			p := path + ".value"
+			if why := matchValue(val); why != "" {
+				n["value"] = Placeholder
+				redact(p, why)
+			} else if secretName(name) && plausibleValue(val) {
+				n["value"] = Placeholder
+				redact(p, "secret-like name "+name)
+			}
+		}
+	}
+	for _, k := range sortedKeys(n) {
+		p := path + "." + k
+		s, ok := n[k].(string)
+		switch {
+		case !ok:
+			n[k] = walk(n[k], p, redact)
+		case k == "value" && pair:
+			// handled with its name above
+		default:
+			if why := matchValue(s); why != "" {
+				n[k] = Placeholder
+				redact(p, why)
+			} else if secretName(k) && plausibleValue(s) {
+				n[k] = Placeholder
+				redact(p, "secret-like key "+k)
+			}
+		}
+	}
+	return n
+}
+
+// sortedKeys returns m's keys, sorted.
 func sortedKeys[V any](m map[string]V) []string {
 	keys := make([]string, 0, len(m))
 	for k := range m {

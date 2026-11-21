@@ -24,7 +24,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/fs"
+	"maps"
+	"slices"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -45,10 +46,14 @@ type Provider interface {
 
 // SecretReader reads a Secret's data from the source cluster.
 type SecretReader interface {
-	// Get returns the Secret's data, decoded; an error wrapping
-	// fs.ErrNotExist when there is no such Secret.
+	// Get returns the Secret's data, decoded; an error wrapping ErrNoSecret
+	// when there is no such Secret.
 	Get(ctx context.Context, namespace, name string) (map[string][]byte, error)
 }
+
+// ErrNoSecret is the error a SecretReader wraps for a Secret that does not
+// exist.
+var ErrNoSecret = errors.New("no such Secret")
 
 // Remote is one remote secret an ExternalSecret reads: a key, and which
 // Secret key each property becomes.
@@ -69,11 +74,19 @@ type Status string
 const (
 	Create    Status = "create"
 	Overwrite Status = "overwrite"
-	Skip      Status = "skip: exists"
+	Skip      Status = "skip"
 	Missing   Status = "missing"
 	Failed    Status = "failed"
 	Done      Status = "done"
 )
+
+// Label is the status as a plan shows it: "skip: exists" for Skip.
+func (s Status) Label() string {
+	if s == Skip {
+		return "skip: exists"
+	}
+	return string(s)
+}
 
 // Item is one remote secret in a plan.
 type Item struct {
@@ -88,8 +101,13 @@ type Item struct {
 	// controller wrote (Argo CD's argocd-secret); its ExternalSecret adds
 	// its keys without owning the Secret (creationPolicy: Merge).
 	Merge bool
-	value string // the JSON to write; never printed
+	// value is the JSON to write: never printed. A pointer, so formatting
+	// an Item (%v, %+v, a test failure) prints an address, not the value.
+	value *secretValue
 }
+
+// secretValue holds a remote secret's value, read from the source Secret.
+type secretValue struct{ json string }
 
 // Plan is what Apply would do.
 type Plan struct {
@@ -97,9 +115,12 @@ type Plan struct {
 	Items    []*Item
 }
 
-// Remotes pairs each Secret with its remote key: every redacted key is a
-// property of the same name.
-func Remotes(secrets []Source, keys []string) []Remote {
+// Remotes pairs each Secret with its remote key, keys[i] for secrets[i]
+// (RemoteKeys' order): every redacted key is a property of the same name.
+func Remotes(secrets []Source, keys []string) ([]Remote, error) {
+	if len(keys) != len(secrets) {
+		return nil, fmt.Errorf("%d remote keys for %d Secrets", len(keys), len(secrets))
+	}
 	out := make([]Remote, len(secrets))
 	for i, src := range secrets {
 		props := make(map[string]string, len(src.Keys))
@@ -108,7 +129,7 @@ func Remotes(secrets []Source, keys []string) []Remote {
 		}
 		out[i] = Remote{Key: keys[i], Namespace: src.Namespace, Secret: src.Name, Properties: props, File: src.File}
 	}
-	return out
+	return out, nil
 }
 
 // MakePlan reads each remote secret's values from the source cluster and
@@ -120,7 +141,7 @@ func MakePlan(ctx context.Context, remotes []Remote, src SecretReader, p Provide
 		plan.Items = append(plan.Items, it)
 		data, err := src.Get(ctx, r.Namespace, r.Secret)
 		switch {
-		case errors.Is(err, fs.ErrNotExist):
+		case errors.Is(err, ErrNoSecret):
 			it.Status, it.Note = Missing, "no Secret "+r.Namespace+"/"+r.Secret+" in the source cluster"
 			continue
 		case err != nil:
@@ -133,7 +154,7 @@ func MakePlan(ctx context.Context, remotes []Remote, src SecretReader, p Provide
 				it.Merge = true
 			}
 		}
-		for _, prop := range sortedKeys(r.Properties) {
+		for _, prop := range slices.Sorted(maps.Keys(r.Properties)) {
 			v, ok := data[r.Properties[prop]]
 			if !ok {
 				absent = append(absent, r.Properties[prop])
@@ -154,7 +175,7 @@ func MakePlan(ctx context.Context, remotes []Remote, src SecretReader, p Provide
 		if err != nil {
 			return nil, err
 		}
-		it.value = string(b)
+		it.value = &secretValue{string(b)}
 		exists, err := p.Exists(ctx, r.Key)
 		switch {
 		case err != nil:
@@ -189,7 +210,7 @@ func (p *Plan) Apply(ctx context.Context, prov Provider) error {
 		if it.Status != Create && it.Status != Overwrite {
 			continue
 		}
-		if err := prov.Put(ctx, it.Key, it.value, it.Status == Overwrite); err != nil {
+		if err := prov.Put(ctx, it.Key, it.value.json, it.Status == Overwrite); err != nil {
 			it.Status, it.Note = Failed, err.Error()
 			if first == nil {
 				first = fmt.Errorf("%s: %w", it.Key, err)
@@ -243,7 +264,7 @@ func (p *Plan) Verify(ctx context.Context, prov Provider) []Check {
 				c.Note = "not a JSON object of keys"
 				break
 			}
-			_ = json.Unmarshal([]byte(it.value), &want)
+			_ = json.Unmarshal([]byte(it.value.json), &want) // our own JSON object of strings
 			for k := range want {
 				if _, ok := remote[k]; !ok {
 					c.Missing = append(c.Missing, k)
@@ -273,13 +294,4 @@ func (p *Plan) Verify(ctx context.Context, prov Provider) []Check {
 		out = append(out, c)
 	}
 	return out
-}
-
-func sortedKeys(m map[string]string) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
 }

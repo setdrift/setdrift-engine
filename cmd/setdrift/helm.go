@@ -1,7 +1,8 @@
 // Copyright The SetDrift Authors
 // SPDX-License-Identifier: Apache-2.0
 
-// just modifies the helm flow to inject a chart-repo annotation into the rendered yaml
+// setdrift helm-postrender: a Helm post-renderer that records the chart
+// repository on what Helm installs.
 
 package main
 
@@ -11,6 +12,7 @@ import (
 	"setdrift.io/setdrift-engine/pkg/helmsource"
 )
 
+// newHelmPostRenderCmd builds the helm-postrender command.
 func newHelmPostRenderCmd() *cobra.Command {
 	var repo string
 	cmd := &cobra.Command{
@@ -37,6 +39,6 @@ credentials is refused.`,
 		},
 	}
 	cmd.Flags().StringVar(&repo, "chart-repo", "", "the chart repository URL, e.g. https://charts.example.com or oci://registry/charts (required)")
-	_ = cmd.MarkFlagRequired("chart-repo")
+	_ = cmd.MarkFlagRequired("chart-repo") // fails only for a flag that does not exist
 	return cmd
 }

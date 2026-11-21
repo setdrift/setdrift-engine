@@ -4,12 +4,12 @@
 package redact
 
 import (
-	"bytes"
 	"sort"
 	"strings"
 
 	"sigs.k8s.io/structured-merge-diff/v6/fieldpath"
 
+	"setdrift.io/setdrift-engine/internal/kube"
 	"setdrift.io/setdrift-engine/pkg/resource"
 )
 
@@ -30,7 +30,9 @@ var (
 		"provider-kubernetes/"}
 )
 
-func tool(manager string) bool {
+// isTool reports whether manager is a person's or an apply tool's field
+// manager, as opposed to a controller's.
+func isTool(manager string) bool {
 	if toolManagers[manager] {
 		return true
 	}
@@ -42,29 +44,40 @@ func tool(manager string) bool {
 	return false
 }
 
+// owners are the field managers of one Secret key.
+type owners struct {
+	managers []string
+	// unknown: a managedFields entry could not be read, so any manager,
+	// a person's included, might own the key
+	unknown bool
+}
+
 // keyOwners returns, for each key under field (data or stringData), the
 // field managers that own it.
-func keyOwners(o *resource.Object, field string) map[string][]string {
-	out := map[string][]string{}
+func keyOwners(o *resource.Object, field string) map[string]*owners {
+	out := map[string]*owners{}
 	m, _ := o.Object[field].(map[string]any)
 	if len(m) == 0 {
 		return out
 	}
+	for k := range m {
+		out[k] = &owners{}
+	}
 	for _, e := range o.GetManagedFields() {
-		if e.FieldsV1 == nil {
-			continue
-		}
-		set := fieldpath.NewSet()
-		if set.FromJSON(bytes.NewReader(e.FieldsV1.Raw)) != nil {
+		set, err := kube.FieldSet(e)
+		if err != nil {
 			// Unreadable: count it as a person, the safe side.
 			for k := range m {
-				out[k] = append(out[k], "unknown")
+				out[k].unknown = true
 			}
 			continue
 		}
+		if set == nil {
+			continue
+		}
 		for k := range m {
-			if set.Has(fieldpath.MakePathOrDie(field, k)) {
-				out[k] = append(out[k], e.Manager)
+			if p, err := fieldpath.MakePath(field, k); err == nil && set.Has(p) {
+				out[k].managers = append(out[k].managers, e.Manager)
 			}
 		}
 	}
@@ -74,15 +87,15 @@ func keyOwners(o *resource.Object, field string) map[string][]string {
 // generated reports whether a key's owners are all controllers, and names
 // them. A key with no recorded owner (manifests read from files) counts as
 // a person's.
-func generated(owners []string) (string, bool) {
-	if len(owners) == 0 {
+func generated(o *owners) (string, bool) {
+	if o == nil || o.unknown || len(o.managers) == 0 {
 		return "", false
 	}
-	for _, m := range owners {
-		if tool(m) || m == "unknown" {
+	for _, m := range o.managers {
+		if isTool(m) {
 			return "", false
 		}
 	}
-	sort.Strings(owners)
-	return strings.Join(owners, ","), true
+	sort.Strings(o.managers)
+	return strings.Join(o.managers, ","), true
 }

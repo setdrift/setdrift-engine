@@ -11,15 +11,16 @@ package main
 
 import (
 	"bufio"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
-	"regexp"
-	"sort"
+	"slices"
 	"strings"
 
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
@@ -33,11 +34,13 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/dynamic"
 
+	"setdrift.io/setdrift-engine/internal/text"
 	"setdrift.io/setdrift-engine/pkg/collect"
 	"setdrift.io/setdrift-engine/pkg/emit/kustomize"
 	"setdrift.io/setdrift-engine/pkg/secretexport"
 )
 
+// secretsExportOptions holds secrets export's flags.
 type secretsExportOptions struct {
 	aws                 bool
 	kubeconfig, context string
@@ -55,6 +58,7 @@ type secretsExportOptions struct {
 	otherCluster        bool
 }
 
+// newSecretsCmd builds the secrets command.
 func newSecretsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "secrets",
@@ -64,6 +68,7 @@ func newSecretsCmd() *cobra.Command {
 	return cmd
 }
 
+// newSecretsExportCmd builds secrets export.
 func newSecretsExportCmd() *cobra.Command {
 	o := &secretsExportOptions{}
 	cmd := &cobra.Command{
@@ -137,10 +142,17 @@ replaces them.`,
 	return cmd
 }
 
+// The statuses of a check.
+const (
+	statusOK      = "ok"
+	statusWarning = "warning"
+	statusFailed  = "failed"
+)
+
 // checkResult is one check, as printed and reported.
 type checkResult struct {
 	Name   string `json:"name"`
-	Status string `json:"status"` // ok, warning, failed
+	Status string `json:"status"` // statusOK, statusWarning, statusFailed
 	Detail string `json:"detail"`
 }
 
@@ -153,6 +165,7 @@ type secretsRun struct {
 	w      io.Writer
 }
 
+// planRow is one remote secret of the plan, as printed and reported.
 type planRow struct {
 	Status string   `json:"status"`
 	Key    string   `json:"key"`
@@ -163,24 +176,24 @@ type planRow struct {
 	Note   string   `json:"note,omitempty"`
 }
 
+// add records and prints a check; it reports whether the check passed.
 func (r *secretsRun) add(name, status, format string, args ...any) bool {
 	c := checkResult{Name: name, Status: status, Detail: fmt.Sprintf(format, args...)}
 	r.Checks = append(r.Checks, c)
 	fmt.Fprintf(r.w, "  %-8s %-13s %s\n", c.Status, c.Name, c.Detail)
-	return status != "failed"
+	return status != statusFailed
 }
 
+// failed returns the names of the checks that failed.
 func (r *secretsRun) failed() []string {
 	var out []string
 	for _, c := range r.Checks {
-		if c.Status == "failed" {
+		if c.Status == statusFailed {
 			out = append(out, c.Name)
 		}
 	}
 	return out
 }
-
-var storeNameRE = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`)
 
 // required lists the settings the run needs and lacks: none is taken from the export.
 func (o *secretsExportOptions) required() error {
@@ -206,6 +219,8 @@ func (o *secretsExportOptions) required() error {
 	return nil
 }
 
+// run checks everything, plans, writes after confirmation, reads each
+// remote secret back, and writes the ExternalSecrets.
 func (o *secretsExportOptions) run(cmd *cobra.Command, dir string) error {
 	if err := o.required(); err != nil {
 		return err
@@ -216,60 +231,99 @@ func (o *secretsExportOptions) run(cmd *cobra.Command, dir string) error {
 	defer o.writeReport(run)
 	fmt.Fprintln(w, "Checks (nothing is read from the cluster's Secrets or written until every check passes):")
 
-	// inputs
 	manager := secretexport.Manager(o.secretManager)
+	inputsOK := o.checkInputs(run, manager)
+	folder, info, keys := o.checkFolder(run, dir, manager, inputsOK)
+	dyn := o.checkSourceCluster(ctx, run, info, folder)
+	prov := o.checkAWS(ctx, run, info, manager, keys)
+	if failed := run.failed(); len(failed) > 0 {
+		return fmt.Errorf("%s failed (%s): nothing was read from the Secrets or written", text.Plural(len(failed), "check", "checks"), strings.Join(failed, ", "))
+	}
+
+	// plan: the values are read now, into memory
+	plan, err := o.plan(ctx, run, folder, keys, dyn, prov)
+	if err != nil {
+		return err
+	}
+	if o.check {
+		return o.verify(ctx, run, plan, prov, "Report (--check: nothing written)")
+	}
+	applyErr, err := o.write(cmd, run, plan, prov)
+	if err != nil {
+		return err
+	}
+	verifyErr := o.verify(ctx, run, plan, prov, "Report (read back from "+prov.Name()+")")
+	if err := o.writeExternalSecrets(w, run, folder, plan, prov, manager); err != nil {
+		return err
+	}
+	return errors.Join(applyErr, verifyErr)
+}
+
+// checkInputs checks the settings; it reports whether they passed.
+func (o *secretsExportOptions) checkInputs(run *secretsRun, manager secretexport.Manager) bool {
 	ok := true
 	switch {
 	case manager != secretexport.SecretsManagerID && manager != secretexport.ParameterStoreID:
-		ok = run.add("inputs", "failed", "--secret-manager %s: use aws-secrets-manager or aws-parameter-store", o.secretManager)
+		ok = run.add("inputs", statusFailed, "--secret-manager %s: use aws-secrets-manager or aws-parameter-store", o.secretManager)
 	case o.storeKind != "ClusterSecretStore" && o.storeKind != "SecretStore":
-		ok = run.add("inputs", "failed", "--store-kind %s: use ClusterSecretStore or SecretStore", o.storeKind)
-	case !storeNameRE.MatchString(o.storeName) || len(o.storeName) > 253:
-		ok = run.add("inputs", "failed", "--store-name %q: a Kubernetes name, lowercase letters, digits, - and .", o.storeName)
+		ok = run.add("inputs", statusFailed, "--store-kind %s: use ClusterSecretStore or SecretStore", o.storeKind)
+	case kustomize.CheckStore(o.storeKind, o.storeName) != nil:
+		ok = run.add("inputs", statusFailed, "--store-name %q: a Kubernetes name, lowercase letters, digits, - and .", o.storeName)
 	}
-	if ok && !o.check {
-		if entries, err := os.ReadDir(o.out); err == nil && len(entries) > 0 && !o.force {
-			ok = run.add("inputs", "failed", "--external-secrets-out %s is not empty: pass --force to replace what is in it, or name a new directory", o.out)
-		} else if err == nil && !o.force {
-			// empty: fine
-		} else if err != nil && !errors.Is(err, os.ErrNotExist) {
-			ok = run.add("inputs", "failed", "--external-secrets-out %s: %v", o.out, err)
-		}
+	if !ok || o.check {
+		return ok
 	}
+	entries, err := os.ReadDir(o.out)
+	switch {
+	case err == nil && len(entries) > 0 && !o.force:
+		ok = run.add("inputs", statusFailed, "--external-secrets-out %s is not empty: pass --force to replace what is in it, or name a new directory", o.out)
+	case err != nil && !errors.Is(err, os.ErrNotExist):
+		ok = run.add("inputs", statusFailed, "--external-secrets-out %s: %v", o.out, err)
+	}
+	return ok
+}
 
-	// folder
+// checkFolder reads the redacted folder and the export it is in, and names
+// each Secret's remote key; with inputsOK, it reports the inputs as ok.
+func (o *secretsExportOptions) checkFolder(run *secretsRun, dir string, manager secretexport.Manager, inputsOK bool) (*secretexport.Folder, *kustomize.ExportInfo, []string) {
 	folder, err := secretexport.LoadRedacted(dir)
-	info, root := exportOf(dir)
-	var keys []string
+	info := exportOf(dir)
 	switch {
 	case err != nil:
-		run.add("folder", "failed", "%v", err)
+		run.add("folder", statusFailed, "%v", err)
 	case info == nil:
-		run.add("folder", "failed", "%s is not in a SetDrift export (no .setdrift-export above it): give the export's redacted/ folder, or a folder in it", dir)
+		run.add("folder", statusFailed, "%s is not in a SetDrift export (no .setdrift-export above it): give the export's redacted/ folder, or a folder in it", dir)
 	case len(folder.Invalid) > 0:
-		run.add("folder", "failed", "%d files are not what an export writes: %s", len(folder.Invalid), strings.Join(folder.Invalid, "; "))
+		run.add("folder", statusFailed, "%d files are not what an export writes: %s", len(folder.Invalid), strings.Join(folder.Invalid, "; "))
 	case len(folder.Secrets) == 0:
-		run.add("folder", "failed", "%s holds no redacted Secrets (an export writes them under redacted/namespaces/<namespace>/secret/)", dir)
+		run.add("folder", statusFailed, "%s holds no redacted Secrets (an export writes them under redacted/namespaces/<namespace>/secret/)", dir)
 	default:
-		detail := fmt.Sprintf("%s in %s, from the export of %s", plural(len(folder.Secrets), "Secret", "Secrets"), dir, info.Cluster)
-		status := "ok"
+		detail := fmt.Sprintf("%s in %s, from the export of %s", text.Plural(len(folder.Secrets), "Secret", "Secrets"), dir, info.Cluster)
+		status := statusOK
 		if len(folder.Others) > 0 {
-			status = "warning"
+			status = statusWarning
 			detail += fmt.Sprintf("; %s hold secret values in their manifests and can't be copied as they are: "+
 				"move each value into a Secret, export again, and copy that: %s",
-				plural(len(folder.Others), "other resource", "other resources"), strings.Join(folder.Others, ", "))
+				text.Plural(len(folder.Others), "other resource", "other resources"), strings.Join(folder.Others, ", "))
 		}
 		run.add("folder", status, "%s", detail)
-		keys, err = secretexport.RemoteKeys(manager, o.keyTemplate, info.Cluster, folder.Secrets)
+		keys, err := secretexport.RemoteKeys(manager, o.keyTemplate, info.Cluster, folder.Secrets)
 		if err != nil {
-			run.add("inputs", "failed", "%v", err)
-		} else if ok {
-			run.add("inputs", "ok", "%s in %s; remote keys like %s; the ExternalSecrets read %s %s%s",
+			run.add("inputs", statusFailed, "%v", err)
+			return folder, info, nil
+		}
+		if inputsOK {
+			run.add("inputs", statusOK, "%s in %s; remote keys like %s; the ExternalSecrets read %s %s%s",
 				manager, o.region, keys[0], o.storeKind, o.storeName, outNote(o))
 		}
+		return folder, info, keys
 	}
+	return folder, info, nil
+}
 
-	// source cluster
+// checkSourceCluster checks the context reaches the export's source
+// cluster, and may get the Secrets; it returns the client to read them with.
+func (o *secretsExportOptions) checkSourceCluster(ctx context.Context, run *secretsRun, info *kustomize.ExportInfo, folder *secretexport.Folder) dynamic.Interface {
 	var dyn dynamic.Interface
 	kc, err := loadConfig(o.kubeconfig, o.context)
 	if err == nil {
@@ -279,32 +333,41 @@ func (o *secretsExportOptions) run(cmd *cobra.Command, dir string) error {
 		dyn, err = dynamic.NewForConfig(kc.config)
 	}
 	if err != nil {
-		run.add("source", "failed", "context %s: %v", o.context, err)
-	} else if info != nil {
-		if msg := o.checkSource(ctx, dyn, info); msg != "" {
-			run.add("source", "failed", "%s", msg)
-		} else if folder != nil {
-			var refused []string
-			for _, ns := range secretNamespaces(folder.Secrets) {
-				if allowed, known := collect.Can(ctx, dyn, "get", "", "secrets", ns); known && !allowed {
-					refused = append(refused, ns)
-				}
-			}
-			if len(refused) > 0 {
-				who := collect.Identity(ctx, dyn)
-				run.add("source", "failed", "%s may not get Secrets in %s: grant get on secrets there "+
-					"(kubectl create rolebinding setdrift-secrets -n %s --clusterrole=view is not enough: view leaves out Secrets; "+
-					"use a role with get on secrets)", orDefault(who, "these credentials"), strings.Join(refused, ", "), refused[0])
-			} else {
-				run.add("source", "ok", "%s is the export's source cluster%s; may get Secrets in %s",
-					o.context, otherNote(o), strings.Join(secretNamespaces(folder.Secrets), ", "))
-			}
+		run.add("source", statusFailed, "context %s: %v", o.context, err)
+		return nil
+	}
+	if info == nil {
+		return dyn
+	}
+	if err := o.checkSource(ctx, dyn, info); err != nil {
+		run.add("source", statusFailed, "%v", err)
+		return dyn
+	}
+	if folder == nil {
+		return dyn
+	}
+	var refused []string
+	for _, ns := range secretNamespaces(folder.Secrets) {
+		if allowed, known := collect.Can(ctx, dyn, "get", "", "secrets", ns); known && !allowed {
+			refused = append(refused, ns)
 		}
 	}
+	if len(refused) > 0 {
+		who := collect.Identity(ctx, dyn)
+		run.add("source", statusFailed, "%s may not get Secrets in %s: grant get on secrets there "+
+			"(kubectl create rolebinding setdrift-secrets -n %s --clusterrole=view is not enough: view leaves out Secrets; "+
+			"use a role with get on secrets)", cmp.Or(who, "these credentials"), strings.Join(refused, ", "), refused[0])
+		return dyn
+	}
+	run.add("source", statusOK, "%s is the export's source cluster%s; may get Secrets in %s",
+		o.context, otherNote(o), strings.Join(secretNamespaces(folder.Secrets), ", "))
+	return dyn
+}
 
-	// AWS identity, store, permissions
-	var prov secretexport.Provider
-	awsOK := false
+// checkAWS checks whose AWS credentials are used, that the secret manager
+// answers in the region (and the KMS key is usable), and that IAM allows
+// the run; it returns the secret manager.
+func (o *secretsExportOptions) checkAWS(ctx context.Context, run *secretsRun, info *kustomize.ExportInfo, manager secretexport.Manager, keys []string) secretexport.Provider {
 	opts := []func(*awsconfig.LoadOptions) error{awsconfig.WithRegion(o.region)}
 	if o.profile != "" {
 		opts = append(opts, awsconfig.WithSharedConfigProfile(o.profile))
@@ -315,74 +378,83 @@ func (o *secretsExportOptions) run(cmd *cobra.Command, dir string) error {
 		caller, err = secretexport.Identity(ctx, sts.NewFromConfig(cfg), iam.NewFromConfig(cfg))
 	}
 	if err != nil {
-		run.add("AWS identity", "failed", "%v (check the profile, or log in: aws sso login)", err)
+		run.add("AWS identity", statusFailed, "%v (check the profile, or log in: aws sso login)", err)
+		return nil
+	}
+	run.add("AWS identity", statusOK, "%s, account %s", caller.ARN, caller.Account)
+	tags := map[string]string{"setdrift.io/source-cluster": ""}
+	if info != nil {
+		tags["setdrift.io/source-cluster"] = info.Cluster
+	}
+	var prov secretexport.Provider
+	var answers func(context.Context) error
+	if manager == secretexport.ParameterStoreID {
+		ps := secretexport.ParameterStore{Client: ssm.NewFromConfig(cfg), KMSKeyID: o.kmsKeyID, Tags: tags}
+		prov, answers = ps, ps.Answers
 	} else {
-		run.add("AWS identity", "ok", "%s, account %s", caller.ARN, caller.Account)
-		tags := map[string]string{"setdrift.io/source-cluster": ""}
-		if info != nil {
-			tags["setdrift.io/source-cluster"] = info.Cluster
+		sm := secretexport.SecretsManager{Client: secretsmanager.NewFromConfig(cfg), KMSKeyID: o.kmsKeyID, Tags: tags}
+		prov, answers = sm, sm.Answers
+	}
+	kmsARN := ""
+	if err := answers(ctx); err != nil {
+		run.add("store", statusFailed, "%s does not answer in %s: %v (check --region)", prov.Name(), o.region, err)
+		return prov
+	}
+	if o.kmsKeyID != "" {
+		if kmsARN, err = secretexport.KMSKey(ctx, kms.NewFromConfig(cfg), o.kmsKeyID); err != nil {
+			run.add("store", statusFailed, "%s answers in %s, but KMS key %s: %v", prov.Name(), o.region, o.kmsKeyID, err)
+			return prov
 		}
-		var answers func(context.Context) error
-		if manager == secretexport.ParameterStoreID {
-			ps := secretexport.ParameterStore{Client: ssm.NewFromConfig(cfg), KMSKeyID: o.kmsKeyID, Tags: tags}
-			prov, answers = ps, ps.Answers
+		run.add("store", statusOK, "%s answers in %s; KMS key %s is enabled", prov.Name(), o.region, kmsARN)
+	} else {
+		run.add("store", statusOK, "%s answers in %s; new secrets use the account's AWS managed key", prov.Name(), o.region)
+	}
+	if len(keys) > 0 {
+		o.checkPermissions(ctx, run, iam.NewFromConfig(cfg), caller, manager, prov, keys, kmsARN)
+	}
+	return prov
+}
+
+// checkPermissions checks IAM allows each action on each key: by IAM's
+// policy simulator, or, without access to it, by probing reads.
+func (o *secretsExportOptions) checkPermissions(ctx context.Context, run *secretsRun, i secretexport.IAMAPI, caller secretexport.Caller,
+	manager secretexport.Manager, prov secretexport.Provider, keys []string, kmsARN string) {
+	perm := secretexport.Simulate(ctx, i, caller, manager, o.region, keys, kmsARN)
+	switch {
+	case len(perm.Denied) > 0:
+		run.add("permissions", statusFailed, "IAM does not allow %s for %s", strings.Join(perm.Denied, "; "), caller.Principal)
+	case perm.Simulated:
+		run.add("permissions", statusOK, "IAM allows %s on all %d keys", strings.Join(secretexport.Actions(manager, kmsARN != ""), ", "), len(keys))
+	default:
+		if denied := secretexport.Probe(ctx, prov, keys); len(denied) > 0 {
+			run.add("permissions", statusFailed, "may not read %d of the %d keys (e.g. %s); and %s", len(denied), len(keys), denied[0], perm.Unverified)
+		} else if o.check {
+			run.add("permissions", statusOK, "may read all %d keys (%s; --check writes nothing)", len(keys), perm.Unverified)
 		} else {
-			sm := secretexport.SecretsManager{Client: secretsmanager.NewFromConfig(cfg), KMSKeyID: o.kmsKeyID, Tags: tags}
-			prov, answers = sm, sm.Answers
-		}
-		kmsARN := ""
-		if err := answers(ctx); err != nil {
-			run.add("store", "failed", "%s does not answer in %s: %v (check --region)", prov.Name(), o.region, err)
-		} else if o.kmsKeyID != "" {
-			if kmsARN, err = secretexport.KMSKey(ctx, kms.NewFromConfig(cfg), o.kmsKeyID); err != nil {
-				run.add("store", "failed", "%s answers in %s, but KMS key %s: %v", prov.Name(), o.region, o.kmsKeyID, err)
-			} else {
-				run.add("store", "ok", "%s answers in %s; KMS key %s is enabled", prov.Name(), o.region, kmsARN)
-				awsOK = true
-			}
-		} else {
-			run.add("store", "ok", "%s answers in %s; new secrets use the account's AWS managed key", prov.Name(), o.region)
-			awsOK = true
-		}
-		if awsOK && len(keys) > 0 {
-			perm := secretexport.Simulate(ctx, iam.NewFromConfig(cfg), caller, manager, o.region, keys, kmsARN)
-			switch {
-			case len(perm.Denied) > 0:
-				run.add("permissions", "failed", "IAM does not allow %s for %s", strings.Join(perm.Denied, "; "), caller.Principal)
-			case perm.Simulated:
-				run.add("permissions", "ok", "IAM allows %s on all %d keys", strings.Join(secretexport.Actions(manager, kmsARN != ""), ", "), len(keys))
-			default:
-				if denied := secretexport.Probe(ctx, prov, keys); len(denied) > 0 {
-					run.add("permissions", "failed", "may not read %d of the %d keys (e.g. %s); and %s", len(denied), len(keys), denied[0], perm.Unverified)
-				} else if o.check {
-					run.add("permissions", "ok", "may read all %d keys (%s; --check writes nothing)", len(keys), perm.Unverified)
-				} else {
-					run.add("permissions", "warning", "may read all %d keys; writes can't be verified in advance: %s. "+
-						"The first refused write stops the run", len(keys), perm.Unverified)
-				}
-			}
+			run.add("permissions", statusWarning, "may read all %d keys; writes can't be verified in advance: %s. "+
+				"The first refused write stops the run", len(keys), perm.Unverified)
 		}
 	}
+}
 
-	if failed := run.failed(); len(failed) > 0 {
-		return fmt.Errorf("%s failed (%s): nothing was read from the Secrets or written", plural(len(failed), "check", "checks"), strings.Join(failed, ", "))
+// plan reads the Secrets' values into memory and prints the plan; an error
+// when a Secret or key the folder names is not in the source cluster.
+func (o *secretsExportOptions) plan(ctx context.Context, run *secretsRun, folder *secretexport.Folder, keys []string,
+	dyn dynamic.Interface, prov secretexport.Provider) (*secretexport.Plan, error) {
+	remotes, err := secretexport.Remotes(folder.Secrets, keys)
+	if err != nil {
+		return nil, err
 	}
-
-	// plan: the values are read now, into memory
-	remotes := secretexport.Remotes(folder.Secrets, keys)
 	plan, err := secretexport.MakePlan(ctx, remotes, secretexport.ClusterSecrets{Client: dyn}, prov, o.overwrite)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	fmt.Fprintf(w, "\nPlan (%s from %s into %s in %s; values are not shown):\n", plural(len(plan.Items), "Secret", "Secrets"), o.context, prov.Name(), o.region)
+	fmt.Fprintf(run.w, "\nPlan (%s from %s into %s in %s; values are not shown):\n", text.Plural(len(plan.Items), "Secret", "Secrets"), o.context, prov.Name(), o.region)
 	for _, it := range plan.Items {
 		row := planRow{Status: string(it.Status), Key: it.Key, Secret: it.Namespace + "/" + it.Secret, Binary: it.Binary, Merge: it.Merge, Note: it.Note}
-		for k := range it.Properties {
-			row.Keys = append(row.Keys, k)
-		}
-		sort.Strings(row.Keys)
+		row.Keys = slices.Sorted(maps.Keys(it.Properties))
 		run.Plan = append(run.Plan, row)
-		line := fmt.Sprintf("  %-14s %s  (%s, from Secret %s)", row.Status, row.Key, strings.Join(row.Keys, ", "), row.Secret)
+		line := fmt.Sprintf("  %-14s %s  (%s, from Secret %s)", it.Status.Label(), row.Key, strings.Join(row.Keys, ", "), row.Secret)
 		if row.Merge {
 			line += "; merge: a controller writes its other keys"
 		}
@@ -392,48 +464,64 @@ func (o *secretsExportOptions) run(cmd *cobra.Command, dir string) error {
 		if row.Note != "" {
 			line += ": " + row.Note
 		}
-		fmt.Fprintln(w, line)
+		fmt.Fprintln(run.w, line)
 	}
 	if bad := planErrors(plan); bad != nil {
-		return fmt.Errorf("%w; the redacted folder names Secrets or keys the source cluster lacks: nothing was written", bad)
+		return nil, fmt.Errorf("%w; the redacted folder names Secrets or keys the source cluster lacks: nothing was written", bad)
 	}
+	return plan, nil
+}
 
-	if o.check {
-		return o.verify(ctx, run, plan, prov, "Report (--check: nothing written)")
-	}
+// write asks for confirmation (unless --yes) and writes the planned remote
+// secrets. err is the run stopping (declined, or no terminal to ask at);
+// applyErr a failed write, after which the run goes on to the report.
+func (o *secretsExportOptions) write(cmd *cobra.Command, run *secretsRun, plan *secretexport.Plan, prov secretexport.Provider) (applyErr, err error) {
 	n := plan.Writes()
-	if n > 0 {
+	if n == 0 {
+		return nil, nil
+	}
+	if !o.yes {
 		interactive := false
 		if f, ok := cmd.InOrStdin().(*os.File); ok {
 			interactive = term.IsTerminal(int(f.Fd()))
 		}
-		if !o.yes {
-			if !interactive {
-				return fmt.Errorf("%s would be written: pass --yes to write them without a prompt", plural(n, "remote secret", "remote secrets"))
-			}
-			fmt.Fprintf(cmd.ErrOrStderr(), "\nWrite %s to %s in %s, and the ExternalSecrets to %s? [y/N] ", plural(n, "remote secret", "remote secrets"), prov.Name(), o.region, o.out)
-			answer, _ := bufio.NewReader(cmd.InOrStdin()).ReadString('\n')
-			if a := strings.ToLower(strings.TrimSpace(answer)); a != "y" && a != "yes" {
-				return errors.New("nothing written")
-			}
+		if !interactive {
+			return nil, fmt.Errorf("%s would be written: pass --yes to write them without a prompt", text.Plural(n, "remote secret", "remote secrets"))
 		}
-		if err := plan.Apply(ctx, prov); err != nil {
-			fmt.Fprintf(w, "\nA write failed: %v\n", err)
+		fmt.Fprintf(cmd.ErrOrStderr(), "\nWrite %s to %s in %s, and the ExternalSecrets to %s? [y/N] ", text.Plural(n, "remote secret", "remote secrets"), prov.Name(), o.region, o.out)
+		// no answer (EOF) is a no
+		answer, _ := bufio.NewReader(cmd.InOrStdin()).ReadString('\n')
+		if a := strings.ToLower(strings.TrimSpace(answer)); a != "y" && a != "yes" {
+			return nil, errors.New("nothing written")
 		}
-		run.Wrote = n
 	}
-	verifyErr := o.verify(ctx, run, plan, prov, "Report (read back from "+prov.Name()+")")
+	if applyErr = plan.Apply(cmd.Context(), prov); applyErr != nil {
+		fmt.Fprintf(run.w, "\nA write failed: %v\n", applyErr)
+	}
+	run.Wrote = n
+	return applyErr, nil
+}
 
-	// the ExternalSecrets, for every Secret now in AWS
-	x := &kustomize.ExternalSecrets{StoreKind: o.storeKind, StoreName: o.storeName, Provider: prov.Name(),
-		Service: map[secretexport.Manager]string{secretexport.SecretsManagerID: "SecretsManager", secretexport.ParameterStoreID: "ParameterStore"}[manager]}
-	var sources []kustomize.SecretSource
-	for i, it := range plan.Items {
-		if i < len(run.Report) && !run.Report[i].Exists {
+// writeExternalSecrets writes, for every Secret now in the secret manager,
+// the ExternalSecret that reads it, and their store.
+func (o *secretsExportOptions) writeExternalSecrets(w io.Writer, run *secretsRun, folder *secretexport.Folder, plan *secretexport.Plan,
+	prov secretexport.Provider, manager secretexport.Manager) error {
+	x := &kustomize.ExternalSecrets{StoreKind: o.storeKind, StoreName: o.storeName, Provider: prov.Name(), Service: esoService(manager)}
+	sources := map[string]secretexport.Source{}
+	for _, src := range folder.Secrets {
+		sources[src.Namespace+"/"+src.Name] = src
+	}
+	exists := map[string]bool{}
+	for _, c := range run.Report {
+		exists[c.Key] = c.Exists
+	}
+	var out []kustomize.SecretSource
+	for _, it := range plan.Items {
+		if !exists[it.Key] {
 			continue
 		}
-		src := folder.Secrets[i]
-		sources = append(sources, kustomize.SecretSource{Namespace: src.Namespace, Name: src.Name, Type: src.Type,
+		src := sources[it.Namespace+"/"+it.Secret]
+		out = append(out, kustomize.SecretSource{Namespace: src.Namespace, Name: src.Name, Type: src.Type,
 			Labels: src.Labels, Annotations: src.Annotations, Keys: src.Keys, RemoteKey: it.Key, Merge: it.Merge, Binary: it.Binary})
 	}
 	if o.force {
@@ -441,13 +529,21 @@ func (o *secretsExportOptions) run(cmd *cobra.Command, dir string) error {
 			return err
 		}
 	}
-	if err := kustomize.WriteExternalSecrets(o.out, x, o.region, sources); err != nil {
+	if err := kustomize.WriteExternalSecrets(o.out, x, o.region, out); err != nil {
 		return fmt.Errorf("writing the ExternalSecrets: %w", err)
 	}
 	fmt.Fprintf(w, "\nWrote %s and their store to %s. In the new cluster, with External Secrets Operator installed and given access to %s: "+
-		"kubectl apply -k %s\n", plural(len(sources), "ExternalSecret", "ExternalSecrets"), o.out, prov.Name(), o.out)
-	_ = root
-	return verifyErr
+		"kubectl apply -k %s\n", text.Plural(len(out), "ExternalSecret", "ExternalSecrets"), o.out, prov.Name(), o.out)
+	return nil
+}
+
+// esoService is External Secrets Operator's spec.provider.aws.service for a
+// secret manager.
+func esoService(m secretexport.Manager) string {
+	if m == secretexport.ParameterStoreID {
+		return "ParameterStore"
+	}
+	return "SecretsManager"
 }
 
 // verify reads every remote secret back and prints the report; an error when any does not hold the Secret's values.
@@ -475,12 +571,13 @@ func (o *secretsExportOptions) verify(ctx context.Context, run *secretsRun, plan
 		fmt.Fprintf(w, "  %-8s %-40s %-28s %s\n", result, c.Key, c.Secret, strings.TrimPrefix(detail, "; "))
 	}
 	if bad > 0 {
-		return fmt.Errorf("%s of %d do not hold the Secret's values in %s", plural(bad, "remote secret", "remote secrets"), len(run.Report), prov.Name())
+		return fmt.Errorf("%s of %d do not hold the Secret's values in %s", text.Plural(bad, "remote secret", "remote secrets"), len(run.Report), prov.Name())
 	}
 	fmt.Fprintf(w, "\nAll %d remote secrets hold their Secret's keys and values.\n", len(run.Report))
 	return nil
 }
 
+// writeReport writes the run as JSON to --report, if given.
 func (o *secretsExportOptions) writeReport(run *secretsRun) {
 	if o.report == "" {
 		return
@@ -494,44 +591,46 @@ func (o *secretsExportOptions) writeReport(run *secretsRun) {
 	}
 }
 
-// exportOf finds the export a folder is in: the nearest .setdrift-export
-// above it (the cluster's directory), and its info.
-func exportOf(dir string) (*kustomize.ExportInfo, string) {
+// exportOf finds the export a folder is in, by the nearest
+// .setdrift-export above it (the cluster's directory), and returns its info.
+func exportOf(dir string) *kustomize.ExportInfo {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
-		return nil, ""
+		return nil
 	}
 	for d := abs; ; d = filepath.Dir(d) {
 		if _, err := os.Stat(filepath.Join(d, kustomize.ExportInfoFile)); err == nil {
 			info, err := kustomize.ReadExportInfo(d)
-			if err != nil || info == nil {
-				return nil, ""
+			if err != nil {
+				return nil
 			}
-			return info, d
+			return info
 		}
 		if filepath.Dir(d) == d {
-			return nil, ""
+			return nil
 		}
 	}
 }
 
 // checkSource refuses a cluster other than the export's source, compared by
 // kube-system UID: its values would restore the wrong secrets.
-func (o *secretsExportOptions) checkSource(ctx context.Context, dyn dynamic.Interface, info *kustomize.ExportInfo) string {
+func (o *secretsExportOptions) checkSource(ctx context.Context, dyn dynamic.Interface, info *kustomize.ExportInfo) error {
 	if o.otherCluster || info.KubeSystemUID == "" {
-		return ""
+		return nil
 	}
 	ns, err := dyn.Resource(namespacesGVR).Get(ctx, "kube-system", metav1.GetOptions{})
 	if err != nil {
-		return "checking this is the export's source cluster: " + err.Error()
+		return fmt.Errorf("checking this is the export's source cluster: %w", err)
 	}
 	if string(ns.GetUID()) != info.KubeSystemUID {
-		return fmt.Sprintf("context %s is not the cluster the export came from (%s): its Secret values would not be the ones the "+
+		return fmt.Errorf("context %s is not the cluster the export came from (%s): its Secret values would not be the ones the "+
 			"export redacted. Use the source cluster's context, or pass --other-cluster to read from this one anyway", o.context, info.Cluster)
 	}
-	return ""
+	return nil
 }
 
+// secretNamespaces returns the Secrets' namespaces, in order (secrets are
+// sorted by namespace).
 func secretNamespaces(secrets []secretexport.Source) []string {
 	var out []string
 	for _, s := range secrets {
@@ -542,6 +641,7 @@ func secretNamespaces(secrets []secretexport.Source) []string {
 	return out
 }
 
+// outNote says where the ExternalSecrets go, unless --check.
 func outNote(o *secretsExportOptions) string {
 	if o.check {
 		return ""
@@ -549,6 +649,7 @@ func outNote(o *secretsExportOptions) string {
 	return ", written to " + o.out
 }
 
+// otherNote marks a run with --other-cluster.
 func otherNote(o *secretsExportOptions) string {
 	if o.otherCluster {
 		return " (or --other-cluster)"
@@ -565,14 +666,7 @@ func planErrors(plan *secretexport.Plan) error {
 		}
 	}
 	if len(bad) > 0 {
-		return fmt.Errorf("%s can't be copied: %s", plural(len(bad), "remote secret", "remote secrets"), strings.Join(bad, ", "))
+		return fmt.Errorf("%s can't be copied: %s", text.Plural(len(bad), "remote secret", "remote secrets"), strings.Join(bad, ", "))
 	}
 	return nil
-}
-
-func orDefault(s, def string) string {
-	if s == "" {
-		return def
-	}
-	return s
 }

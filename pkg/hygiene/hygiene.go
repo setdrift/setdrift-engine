@@ -1,12 +1,17 @@
 // Copyright The SetDrift Authors
 // SPDX-License-Identifier: Apache-2.0
 
-// report only stage, doesnt modify objects runs before ownership to identify garbage collection needed
+// Package hygiene reports what a cluster keeps that it no longer needs:
+// terminated Pods, finished Jobs with no TTL, long CronJob histories and
+// deletions stuck on finalizers. It changes nothing, and runs before the
+// ownership stage drops the children it counts.
 package hygiene
 
 import (
 	"context"
 	"fmt"
+	"maps"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -15,38 +20,42 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 
+	"setdrift.io/setdrift-engine/internal/text"
 	"setdrift.io/setdrift-engine/pkg/lifecycle"
 	"setdrift.io/setdrift-engine/pkg/resource"
 	snapshotv1alpha1 "setdrift.io/setdrift-engine/pkg/snapshot/v1alpha1"
 )
 
-// Kubernetes defaults for CronJob history limits
+// Kubernetes' defaults for CronJob history limits.
 const (
 	defaultSuccessfulJobsHistoryLimit = 3
 	defaultFailedJobsHistoryLimit     = 1
 )
 
-// maxNames caps how many object names a finding lists
+// maxNames caps how many object names a finding lists.
 const maxNames = 5
 
-// Reporter implements resource.Stage
+// Reporter is the hygiene stage. It implements resource.Stage.
 type Reporter struct{}
 
-// Name implements resource.Stage
+// Name implements resource.Stage.
 func (Reporter) Name() string { return "hygiene" }
 
 // stuckAfter is how long deletion must have been waiting before it is
 // reported as stuck.
 const stuckAfter = time.Hour
 
-// Why terminated Pods are still in the cluster, by what owns them.
+// podCause is why a terminated Pod is still in the cluster, by what owns it.
+type podCause int
+
+// The causes, in the order a finding lists them.
 const (
-	keptByCronJob  = iota // a CronJob's history limit keeps their Jobs
-	keptByJobNoTTL        // a finished Job without ttlSecondsAfterFinished
-	keptBare              // no owner: only deleted by hand
-	keptByWorkload        // ReplicaSet, StatefulSet...: evicted or shut down
-	keptOther             // owner not collected
-	cleanedUp             // a TTL or a running Job will remove them
+	keptByCronJob  podCause = iota // a CronJob's history limit keeps their Jobs
+	keptByJobNoTTL                 // a finished Job without ttlSecondsAfterFinished
+	keptBare                       // no owner: only deleted by hand
+	keptByWorkload                 // ReplicaSet, StatefulSet...: evicted or shut down
+	keptOther                      // owner not collected
+	cleanedUp                      // a TTL or a running Job will remove them
 	numCauses
 )
 
@@ -55,7 +64,7 @@ type podCounts struct {
 	byCause           [numCauses]int
 }
 
-// Process implements resource.Stage
+// Process implements resource.Stage.
 func (Reporter) Process(ctx context.Context, objs []*resource.Object) ([]*resource.Object, []*snapshotv1alpha1.Finding, error) {
 	pods := map[string]*podCounts{}
 	noTTL := map[string][]string{}
@@ -88,7 +97,7 @@ func (Reporter) Process(ctx context.Context, objs []*resource.Object) ([]*resour
 			} else {
 				pods[ns].failed++
 			}
-			pods[ns].byCause[podCause(o, jobs)]++
+			pods[ns].byCause[causeOf(o, jobs)]++
 		// check jobs without a controller, missing ttlSecondsAfterFinished
 		case gk.Group == "batch" && gk.Kind == "Job":
 			if o.Partial || metav1.GetControllerOfNoCopy(o) != nil || lifecycle.IsHook(o) {
@@ -99,29 +108,29 @@ func (Reporter) Process(ctx context.Context, objs []*resource.Object) ([]*resour
 			}
 		// check cronjob history against limits, defined below
 		case gk.Group == "batch" && gk.Kind == "CronJob":
-			cronJobHistory(o)
+			flagCronJobHistory(o)
 		}
 	}
 	// 2 Types of findings to report - per namespace (TERMINATED_PODS_TO_CLEANUP, JOBS_WITHOUT_TTL) and per object (CRONJOB_HISTORY_LIMIT)
 	// terminated pods to cleanup
-	for _, ns := range sortedKeys(pods) {
+	for _, ns := range slices.Sorted(maps.Keys(pods)) {
 		if f := terminatedPodsFinding(ns, pods[ns]); f != nil {
 			findings = append(findings, f)
 		}
 	}
 	// jobs without ttl
-	for _, ns := range sortedKeys(noTTL) {
+	for _, ns := range slices.Sorted(maps.Keys(noTTL)) {
 		names := noTTL[ns]
 		sort.Strings(names)
 		findings = append(findings, resource.NewFinding(snapshotv1alpha1.Severity_SEVERITY_INFO, "JOBS_WITHOUT_TTL",
 			"%s in namespace %q %s no ttlSecondsAfterFinished and %s kept after finishing until deleted by hand: %s",
-			resource.Plural(len(names), "Job", "Jobs"), ns, has(len(names)), isAre(len(names)), nameList(names)))
+			text.Plural(len(names), "Job", "Jobs"), ns, text.Word(len(names), "has", "have"), text.Word(len(names), "is", "are"), nameList(names)))
 	}
 	return objs, findings, nil
 }
 
-// podCause says why a terminated Pod is still in the cluster.
-func podCause(pod *resource.Object, jobs map[types.UID]*resource.Object) int {
+// causeOf says why a terminated Pod is still in the cluster.
+func causeOf(pod *resource.Object, jobs map[types.UID]*resource.Object) podCause {
 	owner := metav1.GetControllerOfNoCopy(pod)
 	if owner == nil {
 		return keptBare
@@ -145,20 +154,22 @@ func podCause(pod *resource.Object, jobs map[types.UID]*resource.Object) int {
 	if job.Partial {
 		return keptOther
 	}
-	if _, found, _ := unstructured.NestedInt64(job.Object, "spec", "ttlSecondsAfterFinished"); found || !jobDone(job) {
+	if _, found, _ := unstructured.NestedInt64(job.Object, "spec", "ttlSecondsAfterFinished"); found || !lifecycle.JobFinished(job) {
 		return cleanedUp
 	}
 	return keptByJobNoTTL
 }
 
-func jobDone(job *resource.Object) bool {
-	conds, _, _ := unstructured.NestedSlice(job.Object, "status", "conditions")
-	for _, c := range conds {
-		if m, ok := c.(map[string]any); ok && (m["type"] == "Complete" || m["type"] == "Failed") && m["status"] == "True" {
-			return true
-		}
-	}
-	return false
+// causeText words each cause of kept Pods, in the order findings list them.
+var causeText = []struct {
+	cause podCause
+	text  string
+}{
+	{keptByCronJob, "%d kept by CronJob history limits (see CRONJOB_HISTORY_LIMIT)"},
+	{keptByJobNoTTL, "%d kept by finished Jobs with no ttlSecondsAfterFinished (see JOBS_WITHOUT_TTL)"},
+	{keptBare, "%d with no owner, which only deleting them removes"},
+	{keptByWorkload, "%d from ReplicaSets, StatefulSets or DaemonSets (evicted or shut down), which the Pod garbage collector only removes once the cluster has 12,500 terminated Pods; delete them by hand"},
+	{keptOther, "%d owned by objects not collected"},
 }
 
 // terminatedPodsFinding reports the terminated Pods in one namespace, by
@@ -172,22 +183,15 @@ func terminatedPodsFinding(ns string, c *podCounts) *snapshotv1alpha1.Finding {
 		return nil
 	}
 	var parts []string
-	for cause, text := range map[int]string{
-		keptByCronJob:  "%d kept by CronJob history limits (see CRONJOB_HISTORY_LIMIT)",
-		keptByJobNoTTL: "%d kept by finished Jobs with no ttlSecondsAfterFinished (see JOBS_WITHOUT_TTL)",
-		keptBare:       "%d with no owner, which only deleting them removes",
-		keptByWorkload: "%d from ReplicaSets, StatefulSets or DaemonSets (evicted or shut down), which the Pod garbage collector only removes once the cluster has 12,500 terminated Pods; delete them by hand",
-		keptOther:      "%d owned by objects not collected",
-	} {
-		if n := c.byCause[cause]; n > 0 {
-			parts = append(parts, fmt.Sprintf(text, n))
+	for _, k := range causeText {
+		if n := c.byCause[k.cause]; n > 0 {
+			parts = append(parts, fmt.Sprintf(k.text, n))
 		}
 	}
-	sort.Strings(parts)
 	msg := fmt.Sprintf("%s in namespace %q (%d Succeeded, %d Failed) %s kept in the cluster: %s",
-		resource.Plural(kept, "terminated Pod", "terminated Pods"), ns, c.succeeded, c.failed, isAre(kept), strings.Join(parts, "; "))
+		text.Plural(kept, "terminated Pod", "terminated Pods"), ns, c.succeeded, c.failed, text.Word(kept, "is", "are"), strings.Join(parts, "; "))
 	if n := c.byCause[cleanedUp]; n > 0 {
-		msg += fmt.Sprintf(". %s more will be removed with %s Job (TTL set, or still running)", resource.Plural(n, "Pod", "Pods"), its(n))
+		msg += fmt.Sprintf(". %s more will be removed with %s Job (TTL set, or still running)", text.Plural(n, "Pod", "Pods"), text.Word(n, "its", "their"))
 	}
 	return resource.NewFinding(snapshotv1alpha1.Severity_SEVERITY_INFO, "TERMINATED_PODS_TO_CLEANUP", "%s", msg)
 }
@@ -206,7 +210,7 @@ func stuckDeletions(objs []*resource.Object, now time.Time) []*snapshotv1alpha1.
 		// clear once its contents are gone.
 		out = append(out, resource.NewFinding(snapshotv1alpha1.Severity_SEVERITY_WARNING, "DELETION_STUCK",
 			"%s has been deleting for %s, waiting on %s %s; the controller that added %s must be running to remove %s",
-			o.Ref(), age(now.Sub(ts.Time)), plural(len(fin), "finalizer", "finalizers"), strings.Join(fin, ", "), them(len(fin)), them(len(fin))))
+			o.Ref(), age(now.Sub(ts.Time)), text.Word(len(fin), "finalizer", "finalizers"), strings.Join(fin, ", "), text.Word(len(fin), "it", "them"), text.Word(len(fin), "it", "them")))
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Message < out[j].Message })
 	return out
@@ -223,20 +227,9 @@ func age(d time.Duration) string {
 	}
 }
 
-func plural(n int, singular, pl string) string {
-	if n == 1 {
-		return singular
-	}
-	return pl
-}
-
-func isAre(n int) string { return plural(n, "is", "are") }
-func has(n int) string   { return plural(n, "has", "have") }
-func its(n int) string   { return plural(n, "its", "their") }
-func them(n int) string  { return plural(n, "it", "them") }
-
-// cronJobHistory flags a CronJob whose history limits exceed the defaults, job keeps its pods
-func cronJobHistory(o *resource.Object) {
+// flagCronJobHistory adds a finding to a CronJob whose history limits exceed
+// the defaults: each Job it keeps keeps its Pods too.
+func flagCronJobHistory(o *resource.Object) {
 	success, foundS, _ := unstructured.NestedInt64(o.Object, "spec", "successfulJobsHistoryLimit")
 	failed, foundF, _ := unstructured.NestedInt64(o.Object, "spec", "failedJobsHistoryLimit")
 	if !foundS {
@@ -253,20 +246,10 @@ func cronJobHistory(o *resource.Object) {
 		success, failed, defaultSuccessfulJobsHistoryLimit, defaultFailedJobsHistoryLimit)
 }
 
-// accepts array of names, returns formatted string checked against list limits
+// nameList joins names, at most maxNames of them, saying how many more.
 func nameList(names []string) string {
 	if len(names) <= maxNames {
 		return strings.Join(names, ", ")
 	}
 	return fmt.Sprintf("%s and %d more", strings.Join(names[:maxNames], ", "), len(names)-maxNames)
-}
-
-// takes map, make it a list, sort it alphabetically, return it
-func sortedKeys[V any](m map[string]V) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
 }

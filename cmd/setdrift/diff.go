@@ -21,6 +21,7 @@ import (
 	"github.com/spf13/cobra"
 	"k8s.io/client-go/tools/clientcmd"
 
+	"setdrift.io/setdrift-engine/internal/text"
 	"setdrift.io/setdrift-engine/pkg/collect"
 	"setdrift.io/setdrift-engine/pkg/diff"
 	"setdrift.io/setdrift-engine/pkg/platform"
@@ -29,6 +30,7 @@ import (
 	snapshotv1alpha1 "setdrift.io/setdrift-engine/pkg/snapshot/v1alpha1"
 )
 
+// diffOptions holds diff's flags.
 type diffOptions struct {
 	kubeconfig string
 	namespaces []string
@@ -55,6 +57,7 @@ func (e *exitError) Error() string {
 
 func (e *exitError) Unwrap() error { return e.err }
 
+// newDiffCmd builds the diff command.
 func newDiffCmd() *cobra.Command {
 	o := &diffOptions{}
 	cmd := &cobra.Command{
@@ -113,6 +116,7 @@ with --map-namespace: setdrift diff prod prod --map-namespace shop=shop-prod.`,
 	return cmd
 }
 
+// run compares A and B, and prints or writes the result.
 func (o *diffOptions) run(cmd *cobra.Command, a, b string) error {
 	if o.format != "text" && o.format != "json" {
 		return fmt.Errorf("--format %s: use text or json", o.format)
@@ -264,7 +268,7 @@ func (o *diffOptions) resolve(arg string) (side, error) {
 	if err != nil {
 		return side{}, readError(arg, err)
 	}
-	f.Close()
+	_ = f.Close() // opened only to see that it can be read
 	return side{arg: arg, path: arg}, nil
 }
 
@@ -288,14 +292,14 @@ func (a side) same(b side) bool {
 	return errA == nil && errB == nil && pa == pb
 }
 
-// read loads one side, limited to namespaces when set. file reports a snapshot file.
-func (o *diffOptions) read(cmd *cobra.Command, sd side, namespaces []string) (s *snapshotv1alpha1.Snapshot, file bool, err error) {
+// read loads one side, limited to namespaces when set. file reports a
+// snapshot file.
+func (o *diffOptions) read(cmd *cobra.Command, sd side, namespaces []string) (*snapshotv1alpha1.Snapshot, bool, error) {
 	switch {
 	case sd.dir:
-		eo := &exportOptions{}
 		src := &source{collector: collect.FileSource{Dir: sd.path}, plat: &platform.Stage{},
 			cluster: &snapshotv1alpha1.Cluster{Name: filepath.Base(filepath.Clean(sd.path))}}
-		s, err := eo.capture(cmd.Context(), src)
+		s, err := capture(cmd.Context(), src, captureSettings{}, now().UTC())
 		if err != nil {
 			return nil, false, fmt.Errorf("%s: %w", sd.path, err)
 		}
@@ -312,12 +316,11 @@ func (o *diffOptions) read(cmd *cobra.Command, sd side, namespaces []string) (s 
 		return onlyNamespaces(s, namespaces), true, nil
 	}
 	fmt.Fprintf(cmd.ErrOrStderr(), "Reading %s...\n", sd.context)
-	eo := &exportOptions{kubeconfig: o.kubeconfig, context: sd.context, namespaces: namespaces, ciFieldManagers: o.ciFieldManagers}
-	src, err := eo.open(cmd)
+	src, err := openCluster(cmd.Context(), clusterTarget{kubeconfig: o.kubeconfig, context: sd.context, namespaces: namespaces})
 	if err != nil {
 		return nil, false, fmt.Errorf("context %s: %w", sd.context, err)
 	}
-	s, err = eo.capture(cmd.Context(), src)
+	s, err := capture(cmd.Context(), src, captureSettings{ciFieldManagers: o.ciFieldManagers}, now().UTC())
 	if err != nil {
 		return nil, false, fmt.Errorf("context %s: %w", sd.context, err)
 	}
@@ -333,7 +336,7 @@ func pathLike(arg string) bool {
 func readError(path string, err error) error {
 	if errors.Is(err, os.ErrPermission) {
 		return fmt.Errorf("%s: can't read it (permission denied); check its owner and mode with `ls -l %s` "+
-			"(snapshots are written readable by their owner only)", path, shellArg(path))
+			"(snapshots are written readable by their owner only)", path, text.ShellQuote(path))
 	}
 	return fmt.Errorf("%s: %w", path, err)
 }
@@ -381,6 +384,7 @@ func snapshotNamespaces(s *snapshotv1alpha1.Snapshot) map[string]bool {
 	return out
 }
 
+// listOf lists up to 15 of the set's names, sorted.
 func listOf(set map[string]bool) string {
 	if len(set) == 0 {
 		return "none"
@@ -416,13 +420,14 @@ func when(s *snapshotv1alpha1.Snapshot, name string, file bool) string {
 	return name + " snapshot"
 }
 
-// onlyNamespaces keeps a snapshot's resources in namespaces, as export -n
-// reads them: the namespaced resources and the Namespace objects.
+// onlyNamespaces drops from s the resources outside namespaces, as export
+// -n reads them (the namespaced resources and the Namespace objects), and
+// returns s.
 func onlyNamespaces(s *snapshotv1alpha1.Snapshot, namespaces []string) *snapshotv1alpha1.Snapshot {
 	if len(namespaces) == 0 {
 		return s
 	}
-	kept := s.Resources[:0:0]
+	var kept []*snapshotv1alpha1.Resource
 	for _, r := range s.Resources {
 		if slices.Contains(namespaces, r.GetNamespace()) ||
 			(r.GetKind() == "Namespace" && r.GetApiVersion() == "v1" && slices.Contains(namespaces, r.GetName())) {
@@ -433,7 +438,38 @@ func onlyNamespaces(s *snapshotv1alpha1.Snapshot, namespaces []string) *snapshot
 	return s
 }
 
+// printDiff prints the comparison for the terminal: each side, the counts,
+// then what differs.
 func printDiff(w io.Writer, r diff.Result, maxFields int, nodes bool) {
+	printSides(w, r, nodes)
+	if r.Same() {
+		fmt.Fprintln(w, "\nNo differences.")
+		return
+	}
+	differ, envOnly := r.Counts()
+	if differ > 0 {
+		printChanged(w, r, differ, maxFields)
+	}
+	for _, only := range []struct {
+		label string
+		objs  []diff.Object
+	}{{r.A.Label, r.OnlyA}, {r.B.Label, r.OnlyB}} {
+		if len(only.objs) == 0 {
+			continue
+		}
+		fmt.Fprintf(w, "\nOnly in %s (%d):\n", only.label, len(only.objs))
+		for _, line := range grouped(only.objs) {
+			fmt.Fprintf(w, "  %s\n", line)
+		}
+	}
+	if envOnly > 0 {
+		printEnvOnly(w, r, envOnly)
+	}
+}
+
+// printSides prints what is compared: each side, the counts, what was left
+// out, and, when nodes, the nodes' shape.
+func printSides(w io.Writer, r diff.Result, nodes bool) {
 	la, lb := r.A.Label, r.B.Label
 	fmt.Fprintf(w, "Comparing %s with %s\n", la, lb)
 	width := max(len(la), len(lb)) + 1
@@ -470,51 +506,41 @@ func printDiff(w io.Writer, r diff.Result, maxFields int, nodes bool) {
 	if nodes {
 		printNodes(w, r)
 	}
-	if r.Same() {
-		fmt.Fprintln(w, "\nNo differences.")
-		return
-	}
+}
 
-	if differ > 0 {
-		fmt.Fprintf(w, "\nDiffer (%d):\n", differ)
-		for _, c := range r.Changed {
-			if c.EnvOnly() {
-				continue
-			}
-			fmt.Fprintf(w, "  %s  %s\n", describe(c.A.Key), managers(c.A.Manager, c.B.Manager, la, lb))
-			for _, why := range c.Reasons {
-				fmt.Fprintf(w, "      %s\n", why)
-			}
-			for i, f := range c.Fields {
-				if i == maxFields {
-					fmt.Fprintf(w, "      ... %d more (--format json, or --max-fields)\n", len(c.Fields)-maxFields)
-					break
-				}
-				fmt.Fprintf(w, "      %s: %s -> %s\n", f.Path, value(f.A), value(f.B))
-			}
-		}
-	}
-	for _, only := range []struct {
-		label string
-		objs  []diff.Object
-	}{{la, r.OnlyA}, {lb, r.OnlyB}} {
-		if len(only.objs) == 0 {
+// printChanged prints the resources that differ beyond the clusters' own
+// values, with why and up to maxFields fields each.
+func printChanged(w io.Writer, r diff.Result, differ, maxFields int) {
+	la, lb := r.A.Label, r.B.Label
+	fmt.Fprintf(w, "\nDiffer (%d):\n", differ)
+	for _, c := range r.Changed {
+		if c.EnvOnly() {
 			continue
 		}
-		fmt.Fprintf(w, "\nOnly in %s (%d):\n", only.label, len(only.objs))
-		for _, line := range grouped(only.objs) {
-			fmt.Fprintf(w, "  %s\n", line)
+		fmt.Fprintf(w, "  %s  %s\n", describe(c.A.Key), managers(c.A.Manager, c.B.Manager, la, lb))
+		for _, why := range c.Reasons {
+			fmt.Fprintf(w, "      %s\n", why)
 		}
-	}
-	if envOnly > 0 {
-		var names []string
-		for _, c := range r.Changed {
-			if c.EnvOnly() {
-				names = append(names, describe(c.A.Key))
+		for i, f := range c.Fields {
+			if i == maxFields {
+				fmt.Fprintf(w, "      ... %d more (--format json, or --max-fields)\n", len(c.Fields)-maxFields)
+				break
 			}
+			fmt.Fprintf(w, "      %s: %s -> %s\n", f.Path, value(f.A), value(f.B))
 		}
-		fmt.Fprintf(w, "\nDiffer only in each cluster's own values (%d): %s\n", envOnly, truncate(strings.Join(names, ", "), 300))
 	}
+}
+
+// printEnvOnly lists the resources that differ only in the clusters' own
+// values.
+func printEnvOnly(w io.Writer, r diff.Result, envOnly int) {
+	var names []string
+	for _, c := range r.Changed {
+		if c.EnvOnly() {
+			names = append(names, describe(c.A.Key))
+		}
+	}
+	fmt.Fprintf(w, "\nDiffer only in each cluster's own values (%d): %s\n", envOnly, truncate(strings.Join(names, ", "), 300))
 }
 
 // printNodes shows how the clusters' nodes differ: not counted as a
@@ -540,6 +566,7 @@ func printNodes(w io.Writer, r diff.Result) {
 	}
 }
 
+// describe names a resource: "ns/name Kind.group".
 func describe(k diff.Key) string {
 	kind := k.Kind
 	if k.Group != "" {
@@ -551,6 +578,7 @@ func describe(k diff.Key) string {
 	return k.Namespace + "/" + k.Name + " " + kind
 }
 
+// managers says who manages a resource on each side.
 func managers(a, b, la, lb string) string {
 	if a == b {
 		return "(" + a + ")"
@@ -592,9 +620,12 @@ func grouped(objs []diff.Object) []string {
 	return out
 }
 
-// redactedValue is a redacted Secret value as the snapshot holds it, in data (base64) or stringData.
+// redactedValues are a redacted Secret value as the snapshot holds it, in
+// data (base64) or stringData.
 var redactedValues = map[string]bool{redact.Placeholder: true, base64.StdEncoding.EncodeToString([]byte(redact.Placeholder)): true}
 
+// value renders a field's value for the terminal: (none), (redacted), or
+// its JSON, truncated.
 func value(v any) string {
 	if v == nil {
 		return "(none)"
@@ -609,6 +640,7 @@ func value(v any) string {
 	return truncate(string(b), 70)
 }
 
+// kubeVersion is "Kubernetes 1.35", or "" when unknown.
 func kubeVersion(v string) string {
 	if v == "" {
 		return ""
@@ -616,6 +648,7 @@ func kubeVersion(v string) string {
 	return "Kubernetes " + strings.TrimPrefix(v, "v")
 }
 
+// account is "account 1234", or "" when unknown.
 func account(a string) string {
 	if a == "" {
 		return ""

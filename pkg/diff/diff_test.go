@@ -125,7 +125,7 @@ func TestNamespaceMap(t *testing.T) {
 	}
 
 	// without the map, nothing pairs
-	r, _ = Compare(a, b, Options{})
+	r = mustCompare(t, a, b, Options{})
 	if len(r.OnlyA) != 2 || len(r.OnlyB) != 2 {
 		t.Errorf("without the map: only A %d, only B %d; want 2, 2", len(r.OnlyA), len(r.OnlyB))
 	}
@@ -138,11 +138,11 @@ func TestHelmChartReason(t *testing.T) {
 		s.Inventory = &snapshotv1alpha1.Inventory{HelmReleases: []*snapshotv1alpha1.HelmRelease{{Namespace: "web", Name: "podinfo", Chart: "podinfo", ChartVersion: version}}}
 		return s
 	}
-	r, _ := Compare(mk("6.9.0", "1"), mk("6.8.0", "3"), Options{})
+	r := mustCompare(t, mk("6.9.0", "1"), mk("6.8.0", "3"), Options{})
 	if len(r.Changed) != 1 || len(r.Changed[0].Reasons) != 1 || !strings.Contains(r.Changed[0].Reasons[0], "Helm chart podinfo 6.9.0 in c6.9.0, podinfo 6.8.0 in c6.8.0") {
 		t.Errorf("reasons = %+v", r.Changed)
 	}
-	r, _ = Compare(mk("6.9.0", "1"), mk("6.9.0", "3"), Options{LabelA: "x", LabelB: "y"})
+	r = mustCompare(t, mk("6.9.0", "1"), mk("6.9.0", "3"), Options{LabelA: "x", LabelB: "y"})
 	if len(r.Changed) != 1 || !strings.Contains(r.Changed[0].Reasons[0], "same Helm chart") || r.A.Label != "x" {
 		t.Errorf("same chart: %+v", r)
 	}
@@ -203,7 +203,7 @@ func TestVolumesAndHPA(t *testing.T) {
 		t.Errorf("hpa reasons = %q", web.Reasons)
 	}
 	// both scaled by an HPA: the replicas are left out on both sides, so nothing differs
-	r, _ = Compare(mk("staging", "gp3", true), mk("prod", "gp3", true), Options{})
+	r = mustCompare(t, mk("staging", "gp3", true), mk("prod", "gp3", true), Options{})
 	if !r.Same() {
 		t.Errorf("same classes, HPA on both sides: %+v", r.Changed)
 	}
@@ -225,7 +225,7 @@ func TestNodes(t *testing.T) {
 	b := snap("b", "", "")
 	a.Inventory = &snapshotv1alpha1.Inventory{Nodes: &snapshotv1alpha1.NodeSummary{Count: 3, InstanceTypes: map[string]int32{"m5.large": 3}, Cpu: "6", Memory: "24Gi", Pods: 87}}
 	b.Inventory = &snapshotv1alpha1.Inventory{Nodes: &snapshotv1alpha1.NodeSummary{Count: 4, InstanceTypes: map[string]int32{"m5.large": 2, "m5.xlarge": 2}, Cpu: "12", Memory: "48Gi", Pods: 116}}
-	r, _ := Compare(a, b, Options{})
+	r := mustCompare(t, a, b, Options{})
 	got := map[string]string{}
 	for _, n := range r.Nodes {
 		got[n.What] = n.A + " -> " + n.B
@@ -243,7 +243,7 @@ func TestNodes(t *testing.T) {
 	if !r.Same() {
 		t.Error("node differences count as differences")
 	}
-	r, _ = Compare(a, snap("c", "", ""), Options{})
+	r = mustCompare(t, a, snap("c", "", ""), Options{})
 	if len(r.NodesUnknown) != 1 || r.NodesUnknown[0] != "c" {
 		t.Errorf("nodes unknown = %v", r.NodesUnknown)
 	}
@@ -281,7 +281,17 @@ func TestCompareOnlyWhatBothRead(t *testing.T) {
 	a, b := snap("x", "", ""), snap("y", "", "")
 	a.Scope = &snapshotv1alpha1.ReadScope{Mode: "namespaces", Namespaces: []string{"shop"}}
 	b.Scope = &snapshotv1alpha1.ReadScope{Mode: "namespaces", Namespaces: []string{"shop"}}
-	if r, _ := Compare(a, b, Options{}); len(r.Limited) != 0 {
+	if r := mustCompare(t, a, b, Options{}); len(r.Limited) != 0 {
 		t.Errorf("-n on both sides: %v", r.Limited)
 	}
+}
+
+// mustCompare is Compare, failing the test on an error.
+func mustCompare(t *testing.T, a, b *snapshotv1alpha1.Snapshot, opts Options) Result {
+	t.Helper()
+	r, err := Compare(a, b, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r
 }

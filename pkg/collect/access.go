@@ -9,20 +9,22 @@
 package collect
 
 import (
+	"cmp"
 	"context"
-	"errors"
 	"fmt"
 	"regexp"
 	"slices"
 	"sort"
 	"strings"
-	"sync"
 
+	"golang.org/x/sync/errgroup"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
+
+	"setdrift.io/setdrift-engine/internal/text"
 )
 
 var (
@@ -55,11 +57,12 @@ func Identity(ctx context.Context, dyn dynamic.Interface, errs ...error) string 
 	return ""
 }
 
-// can asks the API server whether the credentials may verb resource in
-// namespace ("" for every namespace), with a SelfSubjectAccessReview, which
-// every authorizer answers (RBAC, and webhooks such as EKS access
-// policies). known is false when the review itself failed.
-func can(ctx context.Context, dyn dynamic.Interface, verb, group, resource, namespace string) (allowed, known bool) {
+// Can asks the API server whether the credentials may verb resource (in
+// group) in namespace ("" for every namespace), with a
+// SelfSubjectAccessReview, which every authorizer answers (RBAC, and
+// webhooks such as EKS access policies). known is false when the review
+// itself failed.
+func Can(ctx context.Context, dyn dynamic.Interface, verb, group, resource, namespace string) (allowed, known bool) {
 	review := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "authorization.k8s.io/v1",
 		"kind":       "SelfSubjectAccessReview",
@@ -79,12 +82,6 @@ func can(ctx context.Context, dyn dynamic.Interface, verb, group, resource, name
 	return allowed, true
 }
 
-// Can asks the API server whether the credentials may verb resource (in
-// group) in namespace; known is false when it could not say.
-func Can(ctx context.Context, dyn dynamic.Interface, verb, group, resource, namespace string) (allowed, known bool) {
-	return can(ctx, dyn, verb, group, resource, namespace)
-}
-
 // readProbes are the types a reader of a namespace can almost always list:
 // the built-in view, edit and admin roles all include them.
 var readProbes = []struct{ group, resource string }{{"", "configmaps"}, {"", "pods"}, {"apps", "deployments"}}
@@ -95,7 +92,7 @@ var readProbes = []struct{ group, resource string }{{"", "configmaps"}, {"", "po
 func CanReadNamespace(ctx context.Context, dyn dynamic.Interface, namespace string) bool {
 	answered := false
 	for _, p := range readProbes {
-		allowed, known := can(ctx, dyn, "list", p.group, p.resource, namespace)
+		allowed, known := Can(ctx, dyn, "list", p.group, p.resource, namespace)
 		if allowed {
 			return true
 		}
@@ -113,6 +110,11 @@ func CanReadCluster(ctx context.Context, dyn dynamic.Interface) bool {
 // NamespaceError is a namespace that was asked for (with -n, or as the
 // kubeconfig context's namespace) but does not exist or can't be read. It
 // is found before anything is read, so nothing is written.
+//
+// This package's access errors (NamespaceError, ReadNothingError,
+// NoAccessError, ScopeError) are written for the person running the CLI,
+// their only reader: whole sentences with the kubectl command that grants
+// the access. Their fields hold the same facts for a program.
 type NamespaceError struct {
 	// Missing do not exist.
 	Missing []string
@@ -134,21 +136,21 @@ func (e *NamespaceError) Error() string {
 		who += " (" + e.Identity + ")"
 	}
 	if len(e.Missing) > 0 {
-		s := fmt.Sprintf("%s %s not exist in this cluster", namespaceList(e.Missing), choose(len(e.Missing) == 1, "does", "do"))
+		s := fmt.Sprintf("%s %s not exist in this cluster", namespaceList(e.Missing), text.Word(len(e.Missing), "does", "do"))
 		if len(e.Existing) > 0 {
 			s += "; its namespaces are " + truncateList(e.Existing, 15)
 		}
 		parts = append(parts, s)
 	}
 	if len(e.Unreadable) > 0 {
-		it := choose(len(e.Unreadable) == 1, "it", "them")
+		it := text.Word(len(e.Unreadable), "it", "them")
 		s := fmt.Sprintf("%s can't read anything in %s", who, namespaceList(e.Unreadable))
 		if e.Context {
 			s += " (the kubeconfig context's namespace)"
 		}
 		s += fmt.Sprintf(": %s, or they have no access to %s. To read %s, they need get and list there; "+
 			"the built-in view role is enough: kubectl create rolebinding setdrift-read -n %s --clusterrole=view %s",
-			choose(len(e.Unreadable) == 1, "it does not exist", "they do not exist"), it, it, e.Unreadable[0], Subject(e.Identity))
+			text.Word(len(e.Unreadable), "it does not exist", "they do not exist"), it, it, e.Unreadable[0], Subject(e.Identity))
 		parts = append(parts, s)
 	}
 	for i, p := range parts {
@@ -163,10 +165,11 @@ func Subject(identity string) string {
 	if rest, ok := strings.CutPrefix(identity, "system:serviceaccount:"); ok {
 		return "--serviceaccount=" + rest
 	}
-	return "--user=" + cmpOr(identity, "<user>")
+	return "--user=" + cmp.Or(identity, "<user>")
 }
 
-// ReadNothingError: the credentials can list namespaces but read none of them.
+// ReadNothingError is the credentials listing the namespaces but reading
+// none of them.
 type ReadNothingError struct {
 	Identity   string
 	Namespaces int
@@ -182,7 +185,7 @@ func (e *ReadNothingError) Error() string {
 		"or bound in the namespaces to read with -n", who, e.Namespaces, Subject(e.Identity))
 }
 
-// NoAccessError: every list was refused (Forbidden), so nothing could be read.
+// NoAccessError is every list refused (Forbidden), so nothing could be read.
 type NoAccessError struct {
 	Identity string
 	// Namespaces read; empty for the whole cluster.
@@ -207,10 +210,10 @@ func (e *NoAccessError) Error() string {
 func (e *NoAccessError) Unwrap() error { return e.Err }
 
 // CheckNamespaces checks namespaces before they are read: each must be
-// readable and, with requireExisting, exist. context marks the kubeconfig
-// context's namespace, for the message.
-func CheckNamespaces(ctx context.Context, dyn dynamic.Interface, namespaces []string, context, requireExisting bool) error {
-	e := &NamespaceError{Context: context}
+// readable and, with requireExisting, exist. fromContext marks the
+// kubeconfig context's namespace, for the message.
+func CheckNamespaces(ctx context.Context, dyn dynamic.Interface, namespaces []string, fromContext, requireExisting bool) error {
+	e := &NamespaceError{Context: fromContext}
 	for _, ns := range dedupe(namespaces) {
 		_, err := dyn.Resource(namespacesGVR).Get(ctx, ns, metav1.GetOptions{})
 		switch {
@@ -253,18 +256,15 @@ func readableNamespaces(ctx context.Context, dyn dynamic.Interface) (readable, u
 	}
 	sort.Strings(names)
 	ok := make([]bool, len(names))
-	var wg sync.WaitGroup
-	sem := make(chan struct{}, 8)
+	var g errgroup.Group
+	g.SetLimit(8)
 	for i, ns := range names {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
+		g.Go(func() error {
 			ok[i] = CanReadNamespace(ctx, dyn, ns)
-		}()
+			return nil
+		})
 	}
-	wg.Wait()
+	_ = g.Wait() // the goroutines return no errors; a cancelled ctx is checked next
 	if err := ctx.Err(); err != nil {
 		return nil, nil, err
 	}
@@ -280,10 +280,7 @@ func readableNamespaces(ctx context.Context, dyn dynamic.Interface) (readable, u
 
 // IsPermission reports whether err is the API server refusing the
 // credentials something (Forbidden), anywhere in its chain.
-func IsPermission(err error) bool {
-	var status apierrors.APIStatus
-	return errors.As(err, &status) && apierrors.IsForbidden(err)
-}
+func IsPermission(err error) bool { return apierrors.IsForbidden(err) }
 
 func dedupe(in []string) []string {
 	var out []string
@@ -307,18 +304,4 @@ func truncateList(items []string, n int) string {
 		return strings.Join(items, ", ")
 	}
 	return strings.Join(items[:n], ", ") + fmt.Sprintf(" and %d more (kubectl get namespaces)", len(items)-n)
-}
-
-func choose(cond bool, a, b string) string {
-	if cond {
-		return a
-	}
-	return b
-}
-
-func cmpOr(a, b string) string {
-	if a != "" {
-		return a
-	}
-	return b
 }

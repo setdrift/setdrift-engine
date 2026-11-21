@@ -7,6 +7,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
@@ -48,10 +50,13 @@ func (SecretsManager) Name() string { return "AWS Secrets Manager" }
 func (s SecretsManager) Exists(ctx context.Context, key string) (bool, error) {
 	_, err := s.Client.DescribeSecret(ctx, &secretsmanager.DescribeSecretInput{SecretId: aws.String(key)})
 	var nf *smtypes.ResourceNotFoundException
-	if errors.As(err, &nf) {
+	switch {
+	case errors.As(err, &nf):
 		return false, nil
+	case err != nil:
+		return false, err
 	}
-	return err == nil, err
+	return true, nil
 }
 
 // Put implements Provider.
@@ -68,7 +73,7 @@ func (s SecretsManager) Put(ctx context.Context, key, value string, overwrite bo
 	if s.KMSKeyID != "" {
 		in.KmsKeyId = aws.String(s.KMSKeyID)
 	}
-	for _, k := range sortedKeys(s.Tags) {
+	for _, k := range slices.Sorted(maps.Keys(s.Tags)) {
 		in.Tags = append(in.Tags, smtypes.Tag{Key: aws.String(k), Value: aws.String(s.Tags[k])})
 	}
 	_, err := s.Client.CreateSecret(ctx, in)
@@ -108,9 +113,11 @@ type ParameterStoreAPI interface {
 // ParameterStore writes SecureString parameters to AWS Systems Manager
 // Parameter Store.
 type ParameterStore struct {
-	Client   ParameterStoreAPI
+	Client ParameterStoreAPI
+	// KMSKeyID encrypts new parameters; empty uses the account's default key.
 	KMSKeyID string
-	Tags     map[string]string
+	// Tags are added to new parameters, e.g. which cluster they came from.
+	Tags map[string]string
 }
 
 // Name implements Provider.
@@ -120,10 +127,13 @@ func (ParameterStore) Name() string { return "AWS Systems Manager Parameter Stor
 func (s ParameterStore) Exists(ctx context.Context, key string) (bool, error) {
 	_, err := s.Client.GetParameter(ctx, &ssm.GetParameterInput{Name: aws.String(key)})
 	var nf *ssmtypes.ParameterNotFound
-	if errors.As(err, &nf) {
+	switch {
+	case errors.As(err, &nf):
 		return false, nil
+	case err != nil:
+		return false, err
 	}
-	return err == nil, err
+	return true, nil
 }
 
 // Get implements Provider.
@@ -164,7 +174,7 @@ func (s ParameterStore) Put(ctx context.Context, key, value string, overwrite bo
 	}
 	// Tags can't be given with Overwrite.
 	if !overwrite {
-		for _, k := range sortedKeys(s.Tags) {
+		for _, k := range slices.Sorted(maps.Keys(s.Tags)) {
 			in.Tags = append(in.Tags, ssmtypes.Tag{Key: aws.String(k), Value: aws.String(s.Tags[k])})
 		}
 	}

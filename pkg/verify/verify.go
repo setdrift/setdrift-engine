@@ -8,7 +8,6 @@
 package verify
 
 import (
-	"context"
 	"strings"
 	"time"
 )
@@ -19,22 +18,34 @@ import (
 // threshold.
 const AcceptancePercent = 95
 
-// The kinds of Diff, by cause.
+// Kind is the cause of a Diff.
+type Kind string
+
+// The kinds of Diff.
 const (
-	// KindChanged: applying the export would change fields of the live object.
-	KindChanged = "changed"
-	// KindNotInCluster: the resource is not in the cluster; applying would create it.
-	KindNotInCluster = "not-in-cluster"
-	// KindNotServed: the cluster does not serve the resource's type (a CRD is missing).
-	KindNotServed = "type-not-served"
-	// KindLost: the live object has spec or data the export lost entirely.
-	KindLost = "lost-fields"
-	// KindRejected: the cluster rejected the dry-run apply.
-	KindRejected = "rejected"
-	// KindNotChecked: the credentials may not get the resource, or may not
-	// patch it for the dry-run, so it could not be checked. Not counted in
-	// Total: it says nothing about the export.
-	KindNotChecked = "not-checked"
+	// KindChanged means applying the export would change fields of the live object.
+	KindChanged Kind = "changed"
+	// KindNotInCluster means the resource is not in the cluster; applying would create it.
+	KindNotInCluster Kind = "not-in-cluster"
+	// KindNotServed means the cluster does not serve the resource's type (a CRD is missing).
+	KindNotServed Kind = "type-not-served"
+	// KindLost means the live object has spec or data the export lost entirely.
+	KindLost Kind = "lost-fields"
+	// KindRejected means the cluster rejected the dry-run apply.
+	KindRejected Kind = "rejected"
+	// KindNotChecked means the credentials may not get the resource, or may
+	// not patch it for the dry-run, so it could not be checked (see
+	// Diff.Refused). Not counted in Total: it says nothing about the export.
+	KindNotChecked Kind = "not-checked"
+)
+
+// What the credentials were refused, for a KindNotChecked Diff.
+const (
+	// RefusedGet means they may not get the resource.
+	RefusedGet = "get"
+	// RefusedPatch means they may get it but not patch it, which the
+	// dry-run needs.
+	RefusedPatch = "patch"
 )
 
 // Diff is a resource that would not come out of the export unchanged: the
@@ -43,7 +54,10 @@ const (
 // export lost its spec or data.
 type Diff struct {
 	Ref  string `json:"ref"`
-	Kind string `json:"kind"`
+	Kind Kind   `json:"kind"`
+	// Refused is what the credentials were refused (RefusedGet,
+	// RefusedPatch), for KindNotChecked.
+	Refused string `json:"refused,omitempty"`
 	// Paths are the first fields that differ, or what went wrong.
 	Paths []string `json:"paths,omitempty"`
 	// Fields are the differing fields with their values, for KindChanged:
@@ -166,7 +180,7 @@ func (r Report) Passed() bool {
 // Analysis summarizes a report's differences, to tell their likely cause.
 type Analysis struct {
 	// ByKind counts the differences by Diff.Kind.
-	ByKind map[string]int `json:"byKind"`
+	ByKind map[Kind]int `json:"byKind"`
 	// ChangedAfterExport counts the differing resources written after the
 	// export, or whose differing fields a kubectl command set by hand.
 	ChangedAfterExport int `json:"changedAfterExport"`
@@ -180,7 +194,7 @@ type Analysis struct {
 
 // Analyze summarizes the report's differences.
 func (r Report) Analyze() Analysis {
-	a := Analysis{ByKind: map[string]int{}, Writers: map[string]int{}}
+	a := Analysis{ByKind: map[Kind]int{}, Writers: map[string]int{}}
 	fields := map[string]int{}
 	changed := 0
 	for _, d := range r.Diffs {
@@ -215,9 +229,4 @@ func (r Report) Analyze() Analysis {
 		}
 	}
 	return a
-}
-
-// Verifier checks an exported repository against a cluster.
-type Verifier interface {
-	Verify(ctx context.Context, repoDir string) (*Report, error)
 }

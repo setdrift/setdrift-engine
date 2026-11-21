@@ -70,12 +70,11 @@ func TestUntouchedDefaultServiceAccount(t *testing.T) {
 }
 
 func TestStatefulSetClaims(t *testing.T) {
-	claims := statefulSetClaims([]*resource.Object{resource.New(&unstructured.Unstructured{Object: map[string]any{
+	idx := newIndex([]*resource.Object{resource.New(&unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "apps/v1", "kind": "StatefulSet",
 		"metadata": map[string]any{"name": "web-db", "namespace": "shop"},
 		"spec":     map[string]any{"volumeClaimTemplates": []any{map[string]any{"metadata": map[string]any{"name": "data"}}}},
 	}})})
-	idx := index{claims: claims}
 	for name, want := range map[string]bool{"data-web-db-0": true, "data-web-db-12": true, "data-web-db-": false, "data-web-db-a": false, "data-web-0": false} {
 		pvc := resource.New(&unstructured.Unstructured{Object: map[string]any{"apiVersion": "v1", "kind": "PersistentVolumeClaim", "metadata": map[string]any{"name": name, "namespace": "shop"}}})
 		if got := generatedBy(pvc, idx) != ""; got != want {

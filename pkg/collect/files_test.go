@@ -94,23 +94,6 @@ func TestFileSourceErrors(t *testing.T) {
 	}
 }
 
-// TestSkipListsInStep: FileSource skips by kind what ClusterCollector skips
-// by resource.
-func TestSkipListsInStep(t *testing.T) {
-	var byResource, byKind []string
-	for gr := range collect.DefaultSkip {
-		byResource = append(byResource, gr.Group)
-	}
-	for gk := range collect.DefaultSkipKinds {
-		byKind = append(byKind, gk.Group)
-	}
-	sort.Strings(byResource)
-	sort.Strings(byKind)
-	if strings.Join(byResource, ",") != strings.Join(byKind, ",") {
-		t.Errorf("DefaultSkip groups %v, DefaultSkipKinds groups %v: keep them in step", byResource, byKind)
-	}
-}
-
 // TestFileSourceKustomize: a Kustomization that only lists files in the tree
 // is skipped, with or without kind; one whose output differs from its files is
 // refused, naming why and the command that renders it.

@@ -1,11 +1,12 @@
 // Copyright The SetDrift Authors
 // SPDX-License-Identifier: Apache-2.0
 
-// snapshot command turns a binary snapshot into readable JSON
+// setdrift snapshot: work with snapshot files.
 
 package main
 
 import (
+	"fmt"
 	"os"
 
 	"github.com/spf13/cobra"
@@ -13,7 +14,8 @@ import (
 	"setdrift.io/setdrift-engine/pkg/snapshot"
 )
 
-// takes snap.pb provided, returns it as JSON format
+// newSnapshotCmd builds the snapshot command and snapshot json, which
+// prints a protobuf snapshot as readable JSON.
 func newSnapshotCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "snapshot",
@@ -30,7 +32,7 @@ func newSnapshotCmd() *cobra.Command {
 			}
 			s, err := snapshot.Unmarshal(b)
 			if err != nil {
-				return err
+				return fmt.Errorf("%s: %w", args[0], err)
 			}
 			out, err := snapshot.MarshalInspectJSON(s)
 			if err != nil {

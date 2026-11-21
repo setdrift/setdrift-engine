@@ -20,7 +20,7 @@ import (
 func copyCorpus(t *testing.T, name string) string {
 	t.Helper()
 	dst := filepath.Join(t.TempDir(), name)
-	if err := os.CopyFS(dst, os.DirFS(filepath.Join("..", "..", "testdata", "corpus", "basic", "input"))); err != nil {
+	if err := os.CopyFS(dst, os.DirFS(corpusInput)); err != nil {
 		t.Fatal(err)
 	}
 	return dst
@@ -28,13 +28,8 @@ func copyCorpus(t *testing.T, name string) string {
 
 func runDiff(t *testing.T, args ...string) (string, error) {
 	t.Helper()
-	var out bytes.Buffer
-	root := newRootCmd()
-	root.SetArgs(append([]string{"diff"}, args...))
-	root.SetOut(&out)
-	root.SetErr(&bytes.Buffer{})
-	err := root.Execute()
-	return out.String(), err
+	out, _, err := runCmd(t, append([]string{"diff"}, args...)...)
+	return out, err
 }
 
 func TestDiffDirectories(t *testing.T) {
@@ -58,7 +53,9 @@ func TestDiffDirectories(t *testing.T) {
 		t.Fatal(err)
 	}
 	secret := filepath.Join(b, "secret.yaml")
-	raw, _ = os.ReadFile(secret)
+	if raw, err = os.ReadFile(secret); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(secret, []byte(strings.Replace(string(raw), "  username: YXBw", "  username: YXBw\n  password_ro: eA==", 1)), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +108,7 @@ func TestDiffSnapshotOverTime(t *testing.T) {
 	dir := t.TempDir()
 	export := func(pb string) {
 		root := newRootCmd()
-		root.SetArgs([]string{"export", "--from-dir", filepath.Join("..", "..", "testdata", "corpus", "basic", "input"),
+		root.SetArgs([]string{"export", "--from-dir", corpusInput,
 			"--cluster-name", "prod", "-o", filepath.Join(dir, filepath.Base(pb)+".out"), "--snapshot", pb})
 		root.SetOut(&bytes.Buffer{})
 		if err := root.Execute(); err != nil {
@@ -170,7 +167,9 @@ func TestDiffArgs(t *testing.T) {
 		}
 	}
 	notSnapshot := filepath.Join(t.TempDir(), "x.pb")
-	_ = os.WriteFile(notSnapshot, []byte("hello"), 0o644)
+	if err := os.WriteFile(notSnapshot, []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	_, err := runDiff(t, a, notSnapshot, "--exit-code")
 	var ee *exitError
 	if !errors.As(err, &ee) || ee.code != 2 || !strings.Contains(err.Error(), "not a snapshot") {
@@ -189,13 +188,19 @@ func TestDiffArgumentChecks(t *testing.T) {
 
 	root := newRootCmd()
 	out := filepath.Join(dir, "out")
-	root.SetArgs([]string{"export", "--from-dir", filepath.Join("..", "..", "testdata", "corpus", "basic", "input"), "--cluster-name", "prod", "-o", out})
+	root.SetArgs([]string{"export", "--from-dir", corpusInput, "--cluster-name", "prod", "-o", out})
 	root.SetOut(&bytes.Buffer{})
 	if err := root.Execute(); err != nil {
 		t.Fatal(err)
 	}
-	pb, _ := filepath.Glob(filepath.Join(out, "snapshots", "*.pb"))
-	js, _ := filepath.Glob(filepath.Join(out, "snapshots", "*.json"))
+	pb, err := filepath.Glob(filepath.Join(out, "snapshots", "*.pb"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	js, err := filepath.Glob(filepath.Join(out, "snapshots", "*.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(pb) != 1 || len(js) != 1 {
 		t.Fatalf("snapshots: %v %v", pb, js)
 	}

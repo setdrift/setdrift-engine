@@ -65,7 +65,7 @@ var raceConfigs = func() []raceConfig {
 		name string
 		fn   func(schema.GroupResource) bool
 	}{
-		{"default", func(gr schema.GroupResource) bool { return collect.DefaultMetadataOnly[gr] }},
+		{"default", func(gr schema.GroupResource) bool { return collect.DefaultMetadataOnly(gr) }},
 		{"all", func(schema.GroupResource) bool { return true }},
 	} {
 		for _, fetch := range []struct {

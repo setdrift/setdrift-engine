@@ -1,10 +1,11 @@
 # Copyright The SetDrift Authors
 # SPDX-License-Identifier: Apache-2.0
 
-# A change to docs/ on main rebuilds preview.setdrift.io, where main's docs
-# are the latest, and setdrift.io (which shows released docs only, or main
-# before the first release). The site's repository (setdrift/setdrift.io)
-# copies these pages at every build. It needs the secret SITE_DISPATCH_TOKEN
+# A change to docs/ or README.md on main (the site builds its docs home and
+# its Install and Usage pages from the README) rebuilds preview.setdrift.io,
+# where main's docs are the latest, and setdrift.io (which shows released
+# docs only, or main before the first release). The site's repository
+# (setdrift/setdrift.io) copies these pages at every build. It needs the secret SITE_DISPATCH_TOKEN
 # (Contents read and write on that repository); without it, this does
 # nothing. release.yaml sends engine-release after each release.
 name: docs
@@ -12,7 +13,7 @@ name: docs
 on:
   push:
     branches: [main]
-    paths: ["docs/**"]
+    paths: ["docs/**", "README.md"]
 
 permissions:
   contents: read

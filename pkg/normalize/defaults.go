@@ -1,22 +1,23 @@
 // Copyright The SetDrift Authors
 // SPDX-License-Identifier: Apache-2.0
 
-// pulls default fields and values set by k8s api server (pkg/api/*/defaults.go in k8s api source code)
+// The defaults the API server and admission set (pkg/apis/*/defaults.go in
+// Kubernetes' source), removed where they equal the default.
+
 package normalize
 
 import (
-	"bytes"
 	"fmt"
 	"reflect"
 	"slices"
 	"strings"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"sigs.k8s.io/structured-merge-diff/v6/fieldpath"
-
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"sigs.k8s.io/structured-merge-diff/v6/fieldpath"
 
+	"setdrift.io/setdrift-engine/internal/kube"
 	"setdrift.io/setdrift-engine/pkg/resource"
 	snapshotv1alpha1 "setdrift.io/setdrift-engine/pkg/snapshot/v1alpha1"
 )
@@ -219,7 +220,7 @@ func podOnlyDefaults(spec map[string]any) {
 	dropIf(spec, "default", "serviceAccountName")
 	var token string
 	if vols, ok := spec["volumes"].([]any); ok {
-		kept := vols[:0:0]
+		var kept []any
 		for _, v := range vols {
 			vm, _ := v.(map[string]any)
 			name, _ := vm["name"].(string)
@@ -239,7 +240,7 @@ func podOnlyDefaults(spec map[string]any) {
 				if !ok {
 					continue
 				}
-				kept := mounts[:0:0]
+				var kept []any
 				for _, m := range mounts {
 					if mm, _ := m.(map[string]any); mm["name"] != token {
 						kept = append(kept, m)
@@ -250,7 +251,7 @@ func podOnlyDefaults(spec map[string]any) {
 		}
 	}
 	if tols, ok := spec["tolerations"].([]any); ok {
-		kept := tols[:0:0]
+		var kept []any
 		for _, t := range tols {
 			if !admissionToleration(t) {
 				kept = append(kept, t)
@@ -371,17 +372,14 @@ func admissionSet(o *resource.Object, path ...string) bool {
 	for i, p := range path {
 		parts[i] = p
 	}
-	fp := fieldpath.MakePathOrDie(parts...)
+	fp, err := fieldpath.MakePath(parts...)
+	if err != nil {
+		return false
+	}
 	for _, e := range entries {
-		if e.FieldsV1 == nil {
-			return false
-		}
-		s := fieldpath.NewSet()
-		if s.FromJSON(bytes.NewReader(e.FieldsV1.Raw)) != nil {
-			return false // unreadable: it might own the field
-		}
-		if s.Has(fp) {
-			return false
+		s, err := kube.FieldSet(e)
+		if err != nil || s == nil || s.Has(fp) {
+			return false // an unreadable entry might own the field
 		}
 	}
 	return true
@@ -414,7 +412,7 @@ func priorityClassDefaults(o *resource.Object) {
 // a kind (StorageObjectInUseProtection admission).
 func dropFinalizer(o *resource.Object, name string) {
 	fin := o.GetFinalizers()
-	kept := fin[:0:0]
+	var kept []string
 	for _, f := range fin {
 		if f != name {
 			kept = append(kept, f)
@@ -435,11 +433,11 @@ func dropFinalizer(o *resource.Object, name string) {
 func injectedCABundles(o *resource.Object) {
 	injected := false
 	for _, e := range o.GetManagedFields() {
-		if e.FieldsV1 == nil {
+		s, err := kube.FieldSet(e)
+		if err != nil || s == nil {
 			continue
 		}
-		raw := string(e.FieldsV1.Raw)
-		if strings.Contains(raw, `"f:caBundle"`) && !strings.Contains(raw, `"f:service"`) && !strings.Contains(raw, `"f:url"`) {
+		if ownsField(s, "caBundle") && !ownsField(s, "service") && !ownsField(s, "url") {
 			injected = true
 		}
 	}
@@ -453,20 +451,35 @@ func injectedCABundles(o *resource.Object) {
 	unstructured.RemoveNestedField(o.Object, "spec", "conversion", "webhook", "clientConfig", "caBundle")
 }
 
-// hpaTargets returns "<group>/<kind> <namespace>/<name>" of each
-// HorizontalPodAutoscaler's target.
-func hpaTargets(objs []*resource.Object) map[string]bool {
-	out := map[string]bool{}
+// ownsField reports whether s holds a field named name, at any depth.
+func ownsField(s *fieldpath.Set, name string) bool {
+	found := false
+	s.Iterate(func(p fieldpath.Path) {
+		for _, pe := range p {
+			if pe.FieldName != nil && *pe.FieldName == name {
+				found = true
+			}
+		}
+	})
+	return found
+}
+
+// scaleTarget is the object a HorizontalPodAutoscaler scales.
+type scaleTarget struct {
+	gk        schema.GroupKind
+	namespace string
+	name      string
+}
+
+// hpaTargets returns each HorizontalPodAutoscaler's target.
+func hpaTargets(objs []*resource.Object) map[scaleTarget]bool {
+	out := map[scaleTarget]bool{}
 	for _, o := range objs {
 		if gvk := o.GroupVersionKind(); gvk.Group != "autoscaling" || gvk.Kind != "HorizontalPodAutoscaler" {
 			continue
 		}
 		ref, _, _ := unstructured.NestedStringMap(o.Object, "spec", "scaleTargetRef")
-		group, _, _ := strings.Cut(ref["apiVersion"], "/")
-		if !strings.Contains(ref["apiVersion"], "/") {
-			group = ""
-		}
-		out[group+"/"+ref["kind"]+" "+o.GetNamespace()+"/"+ref["name"]] = true
+		out[scaleTarget{schema.GroupKind{Group: kube.Group(ref["apiVersion"]), Kind: ref["kind"]}, o.GetNamespace(), ref["name"]}] = true
 	}
 	return out
 }
@@ -598,11 +611,10 @@ func setLabels(o *resource.Object, labels map[string]string) {
 func nodePorts(o *resource.Object, spec map[string]any) {
 	applied := fieldpath.NewSet()
 	for _, e := range o.GetManagedFields() {
-		if e.Operation != metav1.ManagedFieldsOperationApply || e.FieldsV1 == nil {
+		if e.Operation != metav1.ManagedFieldsOperationApply {
 			continue
 		}
-		s := fieldpath.NewSet()
-		if s.FromJSON(bytes.NewReader(e.FieldsV1.Raw)) == nil {
+		if s, err := kube.FieldSet(e); err == nil && s != nil {
 			applied = applied.Union(s)
 		}
 	}
@@ -618,16 +630,16 @@ func nodePorts(o *resource.Object, spec map[string]any) {
 		if protocol == "" {
 			protocol = "TCP"
 		}
-		path := fieldpath.MakePathOrDie("spec", "ports", fieldpath.KeyByFields("port", p["port"], "protocol", protocol), "nodePort")
-		if applied.Has(path) || lastAppliedPortSets(lastSpec, p["port"], protocol) {
-			continue
+		path, err := fieldpath.MakePath("spec", "ports", fieldpath.KeyByFields("port", p["port"], "protocol", protocol), "nodePort")
+		if err != nil || applied.Has(path) || lastAppliedPortSets(lastSpec, p["port"], protocol) {
+			continue // a port that makes no path can't be judged: kept
 		}
 		delete(p, "nodePort")
 		dropped = append(dropped, fmt.Sprint(np))
 	}
 	if hc, ok := spec["healthCheckNodePort"]; ok {
 		_, inLast := lastSpec["healthCheckNodePort"]
-		if !inLast && !applied.Has(fieldpath.MakePathOrDie("spec", "healthCheckNodePort")) {
+		if !inLast && !applied.Has(fieldpath.MakePathOrDie("spec", "healthCheckNodePort")) { // constant path: cannot panic
 			delete(spec, "healthCheckNodePort")
 			dropped = append(dropped, fmt.Sprintf("%v (health check)", hc))
 		}

@@ -1,15 +1,18 @@
 // Copyright The SetDrift Authors
 // SPDX-License-Identifier: Apache-2.0
 
-// classifies which system manages each object: Argo CD, Flux, Helm, an operator, or nothing (kubectl apply)
+// Package provenance classifies which system manages each object: Argo CD,
+// Flux, Helm, an operator, a CI/CD pipeline, the platform, or nothing (a
+// person's kubectl apply).
 package provenance
 
 import (
 	"context"
+	"maps"
 	"slices"
-	"sort"
 	"strings"
 
+	"setdrift.io/setdrift-engine/internal/text"
 	"setdrift.io/setdrift-engine/pkg/platform"
 	"setdrift.io/setdrift-engine/pkg/resource"
 	snapshotv1alpha1 "setdrift.io/setdrift-engine/pkg/snapshot/v1alpha1"
@@ -67,9 +70,9 @@ const (
 // TODO: detect operator-managed objects from managedFields managers (needs
 // real cluster dumps to learn the manager names), and resolve Argo
 // Applications to their Git source.
-
-// override default argo instance label
 type LabelClassifier struct {
+	// ArgoInstanceLabel is the label Argo CD's label tracking uses, if not
+	// DefaultArgoInstanceLabel (application.instanceLabelKey in argocd-cm).
 	ArgoInstanceLabel string
 	// CIFieldManagers are the kubectl field managers of CI/CD pipelines
 	// (kubectl apply --field-manager=github-actions): an object one of them
@@ -82,10 +85,16 @@ type LabelClassifier struct {
 	Platform *platform.Stage
 }
 
-// Name implements resource.Stage
+// ManagerNotFound is the code of the finding on an object whose markers name
+// a manager (an Argo CD Application, a Flux object, a Helm release) that is
+// not in the cluster.
+const ManagerNotFound = "MANAGER_NOT_FOUND"
+
+// Name implements resource.Stage.
 func (LabelClassifier) Name() string { return "provenance" }
 
-// classifies provenance, prioritized by specificity e.g. an argo project that deploys a helm chart will be classified as argo
+// Process implements resource.Stage. The most specific evidence wins: an
+// Argo CD Application that deploys a Helm chart makes its objects Argo CD's.
 func (c LabelClassifier) Process(_ context.Context, objs []*resource.Object) ([]*resource.Object, []*snapshotv1alpha1.Finding, error) {
 	idx := newManagerIndex(objs)
 	out := make([]*resource.Object, 0, len(objs))
@@ -96,17 +105,16 @@ func (c LabelClassifier) Process(_ context.Context, objs []*resource.Object) ([]
 			releases[o.GetNamespace()]++
 			continue
 		}
-		o.Provenance = c.classify(o, c.platformResult())
+		o.Provenance = c.fromMarkers(o, c.platformResult())
 		idx.check(o)
 		o.Provenance = c.pipeline(o, o.Provenance)
 		out = append(out, o)
 	}
-	// attach findings scoped to namespace if relvant
 	var findings []*snapshotv1alpha1.Finding
-	for _, ns := range sortedKeys(releases) {
+	for _, ns := range slices.Sorted(maps.Keys(releases)) {
 		findings = append(findings, resource.NewFinding(snapshotv1alpha1.Severity_SEVERITY_INFO, "HELM_RELEASE_RECORDS_SKIPPED",
 			"%s in namespace %q %s not exported (Helm's release history; applying it would corrupt Helm's state)",
-			resource.Plural(releases[ns], "Helm release record", "Helm release records"), ns, resource.Verb(releases[ns])))
+			text.Plural(releases[ns], "Helm release record", "Helm release records"), ns, text.Word(releases[ns], "was", "were")))
 	}
 	return out, findings, nil
 }
@@ -118,9 +126,10 @@ func (c LabelClassifier) platformResult() *platform.Classification {
 	return c.Platform.Result
 }
 
-// Classify provenance from labels and annotations, attaches metadata to object
+// Classify returns o's provenance from its labels, annotations and field
+// managers, as Process does, without the checks against the other objects.
 func (c LabelClassifier) Classify(o *resource.Object) *snapshotv1alpha1.Provenance {
-	return c.pipeline(o, c.classify(o, c.platformResult()))
+	return c.pipeline(o, c.fromMarkers(o, c.platformResult()))
 }
 
 // The annotations a CI/CD pipeline stamps on what it deploys, so its
@@ -241,7 +250,9 @@ func (c LabelClassifier) pipeline(o *resource.Object, p *snapshotv1alpha1.Proven
 	return p
 }
 
-func (c LabelClassifier) classify(o *resource.Object, cls *platform.Classification) *snapshotv1alpha1.Provenance {
+// fromMarkers classifies o from the markers GitOps tools, Helm, operators and
+// the platform leave, in the order LabelClassifier describes.
+func (c LabelClassifier) fromMarkers(o *resource.Object, cls *platform.Classification) *snapshotv1alpha1.Provenance {
 	labels, ann := o.GetLabels(), o.GetAnnotations()
 	instanceLabel := c.ArgoInstanceLabel
 	// use default argo identifier if none provided
@@ -346,28 +357,28 @@ var eksCRDGroups = []string{"eks.amazonaws.com", "vpcresources.k8s.aws", "networ
 // apply on any cluster. kind's add-ons were applied with kubectl and are known
 // only by name: those rules apply only on a cluster classified as kind.
 func platformObject(o *resource.Object, cls *platform.Classification) (string, map[string]string) {
-	if ev := eks(o); ev != nil {
+	if ev := eksEvidence(o); ev != nil {
 		return "eks", ev
 	}
-	if ev := kubeadm(o, cls); ev != nil {
+	if ev := kubeadmEvidence(o, cls); ev != nil {
 		return "kubeadm", ev
 	}
 	if cls.Is(platform.Kind) {
-		if ev := kind(o); ev != nil {
+		if ev := kindEvidence(o); ev != nil {
 			return "kind", ev
 		}
 	}
 	return "", nil
 }
 
-// kubeadm returns the evidence that kubeadm created o and nothing changed it
+// kubeadmEvidence returns the evidence that kubeadm created o and nothing changed it
 // since: its only field manager is kubeadm (besides Kubernetes' own). An
 // object kubeadm created that someone changed (a CoreDNS Corefile edit) is
 // the user's configuration: it is exported, with a finding saying so.
 //
 // On a cluster known to be built with kubeadm (kubeadm, kind, minikube), the
 // service accounts kubeadm creates without a field manager count too.
-func kubeadm(o *resource.Object, cls *platform.Classification) map[string]string {
+func kubeadmEvidence(o *resource.Object, cls *platform.Classification) map[string]string {
 	var managers, others []string
 	for _, m := range o.GetManagedFields() {
 		if coreManagers[m.Manager] {
@@ -398,10 +409,10 @@ func kubeadm(o *resource.Object, cls *platform.Classification) map[string]string
 // kubeadmServiceAccounts are created by kubeadm without a field manager.
 var kubeadmServiceAccounts = map[string]bool{"coredns": true, "kube-proxy": true, "bootstrap-signer": true}
 
-// kind returns the evidence that o is one of kind's own add-ons: the kindnet
+// kindEvidence returns the evidence that o is one of kind's own add-ons: the kindnet
 // network plugin and the local-path storage provisioner, with its namespace
 // and its "standard" StorageClass.
-func kind(o *resource.Object) map[string]string {
+func kindEvidence(o *resource.Object) map[string]string {
 	gk := o.GroupVersionKind().GroupKind()
 	name, ns := o.GetName(), o.GetNamespace()
 	switch {
@@ -419,11 +430,11 @@ func kind(o *resource.Object) map[string]string {
 	return nil
 }
 
-// eks returns the evidence that EKS manages o, or nil. EKS creates these
+// eksEvidence returns the evidence that EKS manages o, or nil. EKS creates these
 // objects in every cluster (or with an add-on) and keeps them up to date;
 // exported, they would carry the old cluster's values (webhook CA bundles,
 // endpoints) and some are rejected on apply.
-func eks(o *resource.Object) map[string]string {
+func eksEvidence(o *resource.Object) map[string]string {
 	if v := o.GetLabels()[managedByLabel]; strings.EqualFold(v, "eks") {
 		return map[string]string{managedByLabel: v}
 	}
@@ -624,7 +635,7 @@ func (idx *managerIndex) check(o *resource.Object) {
 	default:
 		return
 	}
-	o.AddFinding(snapshotv1alpha1.Severity_SEVERITY_WARNING, "MANAGER_NOT_FOUND",
+	o.AddFinding(snapshotv1alpha1.Severity_SEVERITY_WARNING, ManagerNotFound,
 		"carries the markers of %s, which is not in the cluster; it was probably deleted without deleting this object, so nothing manages it now",
 		missing)
 }
@@ -644,16 +655,6 @@ func join(ns, name string) string {
 		return name
 	}
 	return ns + "/" + name
-}
-
-// create sorted array
-func sortedKeys[V any](m map[string]V) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
 }
 
 // customGroup reports whether an API group is a custom resource group, k8s own groups have no dot (apps, batch) or end in .k8s.io

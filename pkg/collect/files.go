@@ -57,7 +57,11 @@ func (f FileSource) Collect(ctx context.Context) (*Result, error) {
 		// read as manifests, a patch and its base would be the same object twice, and the export would keep the
 		// base's values.
 		if !d.IsDir() && kustomizationFiles[d.Name()] {
-			if reason := f.kustomization(path); reason != "" {
+			reason, err := f.kustomization(path)
+			if err != nil {
+				return err
+			}
+			if reason != "" {
 				return &KustomizeError{Dir: filepath.Dir(path), Reason: reason}
 			}
 			return nil
@@ -96,7 +100,7 @@ func (f FileSource) Collect(ctx context.Context) (*Result, error) {
 			case gk.Group == kustomizeGroup:
 				// Kustomization and Component files describe how to build
 				// manifests; they are not cluster objects.
-			case DefaultSkipKinds[gk]:
+			case DefaultSkipKind(gk):
 				// The same runtime-state types the cluster collector skips.
 				skipped[gk.Kind]++
 			default:
@@ -134,16 +138,16 @@ func (e *KustomizeError) Error() string {
 		"render it into a directory of its own and export that, e.g. kubectl kustomize %s > rendered/all.yaml", e.Dir, e.Reason, e.Dir)
 }
 
-// kustomization says why the Kustomization at path builds something other than the files in the tree, or "" when
-// it only lists them.
-func (f FileSource) kustomization(path string) string {
+// kustomization says why the Kustomization at path builds something other
+// than the files in the tree, or "" when it only lists them.
+func (f FileSource) kustomization(path string) (reason string, err error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return err.Error()
+		return "", err
 	}
 	var k map[string]any
 	if err := yaml.Unmarshal(data, &k); err != nil {
-		return "it does not parse"
+		return "it does not parse", nil
 	}
 	var other []string
 	for key := range k {
@@ -155,27 +159,30 @@ func (f FileSource) kustomization(path string) string {
 	}
 	if len(other) > 0 {
 		sort.Strings(other)
-		return "it sets " + strings.Join(other, ", ")
+		return "it sets " + strings.Join(other, ", "), nil
 	}
 	resources, _ := k["resources"].([]any)
-	root, _ := filepath.Abs(f.Dir)
+	root, err := filepath.Abs(f.Dir)
+	if err != nil {
+		return "", err
+	}
 	for _, r := range resources {
 		ref, _ := r.(string)
 		if strings.Contains(ref, "://") || strings.Contains(ref, "?ref=") || strings.HasPrefix(ref, "github.com/") {
-			return "it pulls in " + ref
+			return "it pulls in " + ref, nil
 		}
 		abs, err := filepath.Abs(filepath.Join(filepath.Dir(path), ref))
 		if err != nil {
-			return "it pulls in " + ref
+			return "it pulls in " + ref, nil
 		}
 		if rel, err := filepath.Rel(root, abs); err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			return "it pulls in " + ref + ", outside the directory read"
+			return "it pulls in " + ref + ", outside the directory read", nil
 		}
 	}
-	return ""
+	return "", nil
 }
 
-// objectsWord is "object was" or "objects were", for a count
+// objectsWord is "object was" or "objects were", for a count.
 func objectsWord(n int) string {
 	if n == 1 {
 		return "object was"
@@ -183,7 +190,8 @@ func objectsWord(n int) string {
 	return "objects were"
 }
 
-// four step process to convert YAML to resource.Object - Read YAML > Convert to JSON > Decode Schema > Unstructured / UnstructuredList
+// readFile reads the objects in a YAML or JSON file: each document, as an
+// object or a List of them.
 func readFile(path string) ([]*resource.Object, error) {
 	file, err := os.Open(path)
 	if err != nil {
@@ -233,7 +241,10 @@ func readFile(path string) ([]*resource.Object, error) {
 			out = append(out, resource.New(o))
 		case *unstructured.UnstructuredList:
 			err := o.EachListItem(func(item runtime.Object) error {
-				u := item.(*unstructured.Unstructured)
+				u, ok := item.(*unstructured.Unstructured)
+				if !ok {
+					return fmt.Errorf("unexpected list item type %T", item)
+				}
 				if u.GetAPIVersion() == "" {
 					return errors.New("list item has no apiVersion")
 				}
@@ -249,7 +260,7 @@ func readFile(path string) ([]*resource.Object, error) {
 	}
 }
 
-// decodeError describes a decode error without the document
+// decodeError describes a decode error without the document.
 func decodeError(err error) error {
 	switch {
 	case runtime.IsMissingKind(err):

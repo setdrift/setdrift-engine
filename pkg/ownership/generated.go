@@ -31,10 +31,16 @@ type index struct {
 }
 
 func newIndex(objs []*resource.Object) index {
-	return index{services: servicesWithSelector(objs), claims: statefulSetClaims(objs)}
+	claims := map[string]bool{}
+	for prefix := range resource.ClaimTemplatePrefixes(objs) {
+		claims[prefix] = true
+	}
+	return index{services: servicesWithSelector(objs), claims: claims}
 }
 
 // generatedBy returns what generates o, or "" if o is configuration.
+//
+//revive:disable-next-line:cognitive-complexity one independent rule per kind, clearest as one switch
 func generatedBy(o *resource.Object, idx index) string {
 	gvk := o.GroupVersionKind()
 	labels, ann := o.GetLabels(), o.GetAnnotations()
@@ -173,26 +179,6 @@ func servicesWithSelector(objs []*resource.Object) map[string]bool {
 		}
 		if sel, _, _ := unstructured.NestedMap(o.Object, "spec", "selector"); len(sel) > 0 {
 			out[o.GetNamespace()+"/"+o.GetName()] = true
-		}
-	}
-	return out
-}
-
-// statefulSetClaims returns the claim name prefixes of every StatefulSet's
-// volume claim templates, for index.claims.
-func statefulSetClaims(objs []*resource.Object) map[string]bool {
-	out := map[string]bool{}
-	for _, o := range objs {
-		gvk := o.GroupVersionKind()
-		if gvk.Group != "apps" || gvk.Kind != "StatefulSet" {
-			continue
-		}
-		templates, _, _ := unstructured.NestedSlice(o.Object, "spec", "volumeClaimTemplates")
-		for _, t := range templates {
-			tm, _ := t.(map[string]any)
-			if name, _, _ := unstructured.NestedString(tm, "metadata", "name"); name != "" {
-				out[o.GetNamespace()+"/"+name+"-"+o.GetName()+"-"] = true
-			}
 		}
 	}
 	return out

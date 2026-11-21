@@ -1,9 +1,10 @@
 // Copyright The SetDrift Authors
 // SPDX-License-Identifier: Apache-2.0
 
-// What the CLI says when the kubeconfig or the cluster can't be used: what
-// is wrong, in the user's terms, and what to do about it. client-go's own
-// messages assume its internals (KUBERNETES_MASTER, discovery).
+// Reading the kubeconfig, and what the CLI says when it or the cluster can't
+// be used: what is wrong, in the user's terms, and what to do about it.
+// client-go's own messages assume its internals (KUBERNETES_MASTER,
+// discovery).
 
 package main
 
@@ -11,11 +12,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 
@@ -24,6 +26,11 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
+
+	"setdrift.io/setdrift-engine/internal/text"
+	"setdrift.io/setdrift-engine/internal/version"
+	"setdrift.io/setdrift-engine/pkg/platform"
+	snapshotv1alpha1 "setdrift.io/setdrift-engine/pkg/snapshot/v1alpha1"
 )
 
 // reachTimeout bounds the first request: a server that drops packets
@@ -52,15 +59,15 @@ func explainKubeconfig(err error, rules *clientcmd.ClientConfigLoadingRules, raw
 		case statErr == nil && fi.IsDir():
 			return fmt.Errorf("%s %s is a directory, not a kubeconfig file: give the file in it, e.g. %s", source, p, filepath.Join(p, "config"))
 		case statErr == nil:
-			if f, openErr := os.Open(p); openErr != nil {
-				if errors.Is(openErr, os.ErrPermission) {
-					return fmt.Errorf("%s %s: can't read it (permission denied). Check its owner and mode with `ls -l %s`; "+
-						"a kubeconfig is normally readable by you only: chmod 600 %s", source, p, shellArg(p), shellArg(p))
-				}
-				return fmt.Errorf("%s %s: %w", source, p, openErr)
-			} else {
-				f.Close()
+			f, openErr := os.Open(p)
+			if errors.Is(openErr, os.ErrPermission) {
+				return fmt.Errorf("%s %s: can't read it (permission denied). Check its owner and mode with `ls -l %s`; "+
+					"a kubeconfig is normally readable by you only: chmod 600 %s", source, p, text.ShellQuote(p), text.ShellQuote(p))
 			}
+			if openErr != nil {
+				return fmt.Errorf("%s %s: %w", source, p, openErr)
+			}
+			_ = f.Close() // opened only to see that it can be read
 		}
 	}
 	contexts := sortedContexts(raw)
@@ -94,9 +101,10 @@ func expandHome(path string) string {
 func lookedIn(rules *clientcmd.ClientConfigLoadingRules) string {
 	var out []string
 	for _, p := range rules.GetLoadingPrecedence() {
-		if _, err := os.Stat(p); errors.Is(err, os.ErrNotExist) {
+		switch fi, err := os.Stat(p); {
+		case errors.Is(err, os.ErrNotExist):
 			p += " (missing)"
-		} else if fi, err := os.Stat(p); err == nil && fi.Size() == 0 {
+		case err == nil && fi.Size() == 0:
 			p += " (empty)"
 		}
 		out = append(out, p)
@@ -107,13 +115,9 @@ func lookedIn(rules *clientcmd.ClientConfigLoadingRules) string {
 	return strings.Join(out, ", ")
 }
 
+// sortedContexts returns the kubeconfig's context names, sorted.
 func sortedContexts(raw clientcmdapi.Config) []string {
-	names := make([]string, 0, len(raw.Contexts))
-	for n := range raw.Contexts {
-		names = append(names, n)
-	}
-	sort.Strings(names)
-	return names
+	return slices.Sorted(maps.Keys(raw.Contexts))
 }
 
 // listContexts lists up to ten context names.
@@ -133,22 +137,23 @@ func checkReachable(ctx context.Context, kc *kubeContext) error {
 	if err != nil {
 		return err
 	}
-	done := make(chan error, 1)
-	go func() { _, err := dc.ServerVersion(); done <- err }()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case err = <-done:
-	}
+	// GET /version, as ServerVersion does, but with ctx: Ctrl-C ends the wait
+	err = dc.RESTClient().Get().AbsPath("/version").Do(ctx).Error()
 	if err == nil {
 		return nil
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
 	}
 	return explainUnreachable(err, kc.name, kc.config.Host)
 }
 
-// explainUnreachable says why the first request to the cluster failed.
+// explainUnreachable says why the first request to the cluster failed. Some
+// causes are told apart by the error's text: client-go wraps a credential
+// plugin's, a refused connection's and a certificate's failures without a
+// type to check.
 func explainUnreachable(err error, contextName, host string) error {
-	check := fmt.Sprintf("check that `kubectl --context %s get namespaces` works", shellArg(contextName))
+	check := fmt.Sprintf("check that `kubectl --context %s get namespaces` works", text.ShellQuote(contextName))
 	var netErr net.Error
 	var dnsErr *net.DNSError
 	msg := err.Error()
@@ -180,6 +185,7 @@ func explainUnreachable(err error, contextName, host string) error {
 	return fmt.Errorf("can't reach the API server of context %s at %s: %w; %s", contextName, host, err, check)
 }
 
+// capitalize returns s with its first letter upper-cased (s is ASCII).
 func capitalize(s string) string {
 	if s == "" {
 		return s
@@ -187,12 +193,137 @@ func capitalize(s string) string {
 	return strings.ToUpper(s[:1]) + s[1:]
 }
 
-// shellArg quotes s for a shell command shown to the user.
-func shellArg(s string) string {
-	if s != "" && strings.IndexFunc(s, func(r rune) bool {
-		return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("-_./:@", r))
-	}) < 0 {
-		return s
+// kubeContext is what the CLI takes from the kubeconfig.
+type kubeContext struct {
+	config *rest.Config
+	name   string
+	// namespace is the context's namespace; empty if it sets none.
+	namespace string
+	// EKS cluster name and region and the AWS profile, when the context
+	// shows them (an EKS ARN, `aws eks get-token` credentials, or an EKS
+	// API server address).
+	eksName, eksRegion, awsProfile string
+	// what the platform classifier reads from the context (its first pass)
+	platform platform.Kubeconfig
+}
+
+// loadConfig reads the kubeconfig at kubeconfig (or the default ones), for
+// the context contextName (or the current one).
+func loadConfig(kubeconfig, contextName string) (*kubeContext, error) {
+	rules := clientcmd.NewDefaultClientConfigLoadingRules()
+	if kubeconfig != "" {
+		rules.ExplicitPath = expandHome(kubeconfig)
 	}
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+	cc := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(rules, &clientcmd.ConfigOverrides{CurrentContext: contextName})
+	raw, err := cc.RawConfig()
+	if err != nil {
+		// unparseable YAML, or a file that can't be read
+		return nil, explainKubeconfig(err, rules, raw, contextName)
+	}
+	cfg, err := cc.ClientConfig()
+	if err != nil {
+		return nil, explainKubeconfig(err, rules, raw, contextName)
+	}
+	cfg.QPS, cfg.Burst = 50, 100
+	cfg.UserAgent = "setdrift/" + version.Version
+	// API deprecation warnings (e.g. v1 Endpoints, listed by discovery) are not the user's to act on
+	cfg.WarningHandler = rest.NoWarnings{}
+	if contextName == "" {
+		contextName = raw.CurrentContext
+	}
+	kc := &kubeContext{config: cfg, name: contextName, platform: platform.Kubeconfig{Context: contextName, Server: cfg.Host}}
+	// Read from the context itself, ClientConfig().Namespace() gives "default" when the context sets none
+	if kctx := raw.Contexts[contextName]; kctx != nil {
+		kc.namespace = kctx.Namespace
+		if user := raw.AuthInfos[kctx.AuthInfo]; user != nil && user.Exec != nil {
+			kc.eksName, kc.eksRegion, kc.awsProfile = eksExec(user.Exec.Command, user.Exec.Args, user.Exec.Env)
+			kc.platform.ExecCmd, kc.platform.ExecArgs = user.Exec.Command, user.Exec.Args
+		}
+	}
+	if region, name, ok := eksARN(contextName); ok {
+		kc.eksRegion, kc.eksName = region, name
+	}
+	if kc.eksRegion == "" {
+		kc.eksRegion = eksServerRegion(cfg.Host)
+	}
+	return kc, nil
+}
+
+// eksExec reads the EKS cluster name, region and AWS profile from a
+// kubeconfig's `aws eks get-token` credential plugin.
+func eksExec(command string, args []string, env []clientcmdapi.ExecEnvVar) (name, region, profile string) {
+	// aws, or aws.exe on Windows, possibly as a full path
+	if strings.TrimSuffix(filepath.Base(command), ".exe") != "aws" {
+		return "", "", ""
+	}
+	for i := 0; i < len(args); i++ {
+		// both --region us-east-2 and --region=us-east-2
+		flag, value, hasValue := strings.Cut(args[i], "=")
+		if !hasValue {
+			if i+1 >= len(args) {
+				break
+			}
+			value = args[i+1]
+		}
+		switch flag {
+		case "--cluster-name", "--cluster-id":
+			name = value
+		case "--region":
+			region = value
+		case "--profile":
+			profile = value
+		}
+	}
+	// AWS_PROFILE only when there's no --profile, which wins in the AWS CLI
+	if profile == "" {
+		for _, e := range env {
+			if e.Name == "AWS_PROFILE" {
+				profile = e.Value
+			}
+		}
+	}
+	return name, region, profile
+}
+
+// eksARN returns the region and name of an EKS cluster ARN.
+func eksARN(s string) (region, name string, ok bool) {
+	parts := strings.SplitN(s, ":", 6)
+	if len(parts) != 6 || parts[0] != "arn" || parts[2] != "eks" || !strings.HasPrefix(parts[5], "cluster/") {
+		return "", "", false
+	}
+	return parts[3], strings.TrimPrefix(parts[5], "cluster/"), true
+}
+
+// eksServerRegion returns the region of an EKS API server address.
+func eksServerRegion(host string) string {
+	host = strings.TrimPrefix(strings.TrimPrefix(host, "https://"), "http://")
+	host, _, _ = strings.Cut(host, ":")
+	host, _, _ = strings.Cut(host, "/")
+	parts := strings.Split(host, ".")
+	if n := len(parts); n >= 4 && strings.HasSuffix(host, ".eks.amazonaws.com") {
+		return parts[n-4]
+	}
+	return ""
+}
+
+// applyContext fills in cluster details from the kubeconfig context.
+func applyContext(c *snapshotv1alpha1.Cluster, kc *kubeContext) {
+	contextName := kc.name
+	if kc.eksName != "" || kc.eksRegion != "" {
+		c.Platform = "eks"
+	}
+	if _, name, ok := eksARN(contextName); ok {
+		c.Platform = "eks"
+		c.ProviderId = contextName
+		if c.Name == "" {
+			c.Name = name
+		}
+	}
+	if c.Name == "" {
+		// An aliased EKS context, the credentials name the cluster
+		c.Name = kc.eksName
+	}
+	if c.Name == "" {
+		c.Name = contextName
+	}
 }

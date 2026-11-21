@@ -1,8 +1,10 @@
 // Copyright The SetDrift Authors
 // SPDX-License-Identifier: Apache-2.0
 
-// drop event based objects
-
+// Package lifecycle drops what is finished or temporary from the export:
+// objects being deleted, terminated Pods, and Helm and Argo CD hooks. It
+// keeps finished Jobs in the snapshot, as a record of what ran, and marks
+// them so the emitter leaves them out of the repository.
 package lifecycle
 
 import (
@@ -13,11 +15,13 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
+	"setdrift.io/setdrift-engine/internal/text"
 	"setdrift.io/setdrift-engine/pkg/resource"
 	snapshotv1alpha1 "setdrift.io/setdrift-engine/pkg/snapshot/v1alpha1"
 )
 
-// annotations added to signify ad hoc events, helm and argo common annotations
+// hookAnnotations mark Helm and Argo CD hooks: objects a sync creates and
+// runs, not configuration.
 var hookAnnotations = []string{"helm.sh/hook", "argocd.argoproj.io/hook"}
 
 // Filter drops what is finished or temporary, and marks the Jobs that ran
@@ -32,7 +36,7 @@ const RanOnce = "RAN_ONCE"
 // Name implements resource.Stage.
 func (Filter) Name() string { return "lifecycle" }
 
-// counts dropped objects per namespace
+// skipCounts counts dropped objects per namespace.
 type skipCounts map[string]int
 
 // Process implements resource.Stage.
@@ -67,11 +71,11 @@ func (f Filter) Process(_ context.Context, objs []*resource.Object) ([]*resource
 		case isPod && podTerminated(o):
 			terminated[ns]++
 		// a finished Job: kept for the record, never written (it would run again)
-		case isJob && jobFinished(o):
+		case isJob && JobFinished(o):
 			finished[ns]++
 			o.AddFinding(snapshotv1alpha1.Severity_SEVERITY_INFO, RanOnce,
 				"finished Job (%s): kept in the snapshot, not written to the export, as applying it would run it again; RESTORE.md lists it to re-run by hand if a new cluster needs it",
-				jobResult(o))
+				jobOutcome(o))
 			out = append(out, o)
 		default:
 			// add warning to pods with no controllers, different than pods with missing controller
@@ -99,7 +103,7 @@ func (f Filter) Process(_ context.Context, objs []*resource.Object) ([]*resource
 	return out, findings, nil
 }
 
-// aggregate skip counts from namespace
+// findings reports the counts, one finding per namespace.
 func (c skipCounts) findings(code, singular, plural, hint string) []*snapshotv1alpha1.Finding {
 	namespaces := make([]string, 0, len(c))
 	for ns := range c {
@@ -109,12 +113,12 @@ func (c skipCounts) findings(code, singular, plural, hint string) []*snapshotv1a
 	out := make([]*snapshotv1alpha1.Finding, 0, len(namespaces))
 	for _, ns := range namespaces {
 		out = append(out, resource.NewFinding(snapshotv1alpha1.Severity_SEVERITY_INFO, code,
-			"%s %s %s not exported%s", resource.Plural(c[ns], singular, plural), where(ns), resource.Verb(c[ns]), hint))
+			"%s %s %s not exported%s", text.Plural(c[ns], singular, plural), where(ns), text.Word(c[ns], "was", "were"), hint))
 	}
 	return out
 }
 
-// if non-namespaced obbject, return cluster scope
+// where says where objects are: in a namespace, or at cluster scope.
 func where(ns string) string {
 	if ns == "" {
 		return "at cluster scope"
@@ -122,7 +126,7 @@ func where(ns string) string {
 	return fmt.Sprintf("in namespace %q", ns)
 }
 
-// checks if object has hook annotation as defined above
+// IsHook reports whether o carries a Helm or Argo CD hook annotation.
 func IsHook(o *resource.Object) bool {
 	ann := o.GetAnnotations()
 	for _, a := range hookAnnotations {
@@ -133,20 +137,23 @@ func IsHook(o *resource.Object) bool {
 	return false
 }
 
-// reports whether deletion has started, can exist for a long time if finalizer never completes
+// beingDeleted reports whether deletion has started; an object can stay so
+// for a long time if a finalizer never completes.
 func beingDeleted(o *resource.Object) bool {
 	return o.GetDeletionTimestamp() != nil
 }
 
-// check pod status for succeeded or failed, signifies not running
+// podTerminated reports whether a Pod has Succeeded or Failed.
 func podTerminated(o *resource.Object) bool {
 	phase, _, _ := unstructured.NestedString(o.Object, "status", "phase")
 	return phase == "Succeeded" || phase == "Failed"
 }
 
-// check job for completion status
-// jobResult is a finished Job's outcome: Complete or Failed.
-func jobResult(o *resource.Object) string {
+// JobResult is a finished Job's outcome, "Complete" or "Failed", from its
+// conditions, and whether it has finished at all. SuccessCriteriaMet and
+// FailureTarget (Kubernetes 1.31+) come first, while the Job's Pods are
+// still being terminated.
+func JobResult(o *resource.Object) (result string, finished bool) {
 	conds, _, _ := unstructured.NestedSlice(o.Object, "status", "conditions")
 	for _, c := range conds {
 		m, ok := c.(map[string]any)
@@ -155,31 +162,24 @@ func jobResult(o *resource.Object) string {
 		}
 		switch m["type"] {
 		case "Failed", "FailureTarget":
-			return "Failed"
+			return "Failed", true
 		case "Complete", "SuccessCriteriaMet":
-			return "Complete"
+			return "Complete", true
 		}
 	}
-	return "finished"
+	return "", false
 }
 
-func jobFinished(o *resource.Object) bool {
-	conds, _, _ := unstructured.NestedSlice(o.Object, "status", "conditions")
-	for _, c := range conds {
-		m, ok := c.(map[string]any)
-		if !ok {
-			continue
-		}
-		// SuccessCriteriaMet and FailureTarget (Kubernetes 1.31+) come
-		// first, while the Job's Pods are still being terminated.
-		switch m["type"] {
-		case "Complete", "Failed", "SuccessCriteriaMet", "FailureTarget":
-			if m["status"] == "True" {
-				return true
-			}
-		}
-	}
-	return false
+// JobFinished reports whether a Job has finished, completed or failed.
+func JobFinished(o *resource.Object) bool {
+	_, finished := JobResult(o)
+	return finished
+}
+
+// jobOutcome is JobResult's result, for a message: "Complete", "Failed".
+func jobOutcome(o *resource.Object) string {
+	result, _ := JobResult(o)
+	return result
 }
 
 // runOnceWarning flags exported objects that run once. Committed to Git, a

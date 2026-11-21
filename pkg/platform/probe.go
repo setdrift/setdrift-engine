@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/dynamic"
@@ -46,23 +47,10 @@ func Probe(ctx context.Context, d discovery.DiscoveryInterface, dyn dynamic.Inte
 	}
 	nodes := make([]Node, 0, len(list.Items))
 	for _, n := range list.Items {
-		id, _, _ := unstructuredString(n.Object, "spec", "providerID")
+		id, _, _ := unstructured.NestedString(n.Object, "spec", "providerID")
 		nodes = append(nodes, Node{Name: n.GetName(), ProviderID: id, Labels: n.GetLabels()})
 	}
 	return append(signals, FromNodes(nodes)...), notes
-}
-
-func unstructuredString(obj map[string]any, path ...string) (string, bool, error) {
-	var cur any = obj
-	for _, p := range path {
-		m, ok := cur.(map[string]any)
-		if !ok {
-			return "", false, nil
-		}
-		cur = m[p]
-	}
-	s, ok := cur.(string)
-	return s, ok, nil
 }
 
 func shortError(err error) string {
@@ -130,8 +118,12 @@ func (c *Classification) Proto() *snapshotv1alpha1.Platform {
 		InfraConfidence: string(c.InfraConfidence),
 		Conflicts:       c.Conflicts,
 	}
-	if c.Managed != nil {
-		p.Managed = map[bool]string{true: "managed", false: "self-managed"}[*c.Managed]
+	switch {
+	case c.Managed == nil:
+	case *c.Managed:
+		p.Managed = "managed"
+	default:
+		p.Managed = "self-managed"
 	}
 	for _, e := range c.Evidence {
 		p.Evidence = append(p.Evidence, &snapshotv1alpha1.PlatformEvidence{

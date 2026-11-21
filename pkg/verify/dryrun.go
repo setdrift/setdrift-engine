@@ -6,9 +6,9 @@ package verify
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"golang.org/x/sync/errgroup"
-
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -29,6 +28,7 @@ import (
 	"sigs.k8s.io/kustomize/api/krusty"
 	"sigs.k8s.io/kustomize/kyaml/filesys"
 
+	"setdrift.io/setdrift-engine/internal/kube"
 	sdiff "setdrift.io/setdrift-engine/pkg/diff"
 	"setdrift.io/setdrift-engine/pkg/emit/kustomize"
 )
@@ -121,7 +121,7 @@ type DryRunVerifier struct {
 	Namespaces []string
 }
 
-// Verify implements Verifier. repoDir is a cluster's directory
+// Verify checks the export at repoDir: a cluster's directory
 // (clusters/<cluster>, with a kustomization.yaml) or an export holding one
 // cluster.
 func (v DryRunVerifier) Verify(ctx context.Context, repoDir string) (*Report, error) {
@@ -153,10 +153,7 @@ func (v DryRunVerifier) Verify(ctx context.Context, repoDir string) (*Report, er
 	if err != nil {
 		return nil, err
 	}
-	for _, crd := range missing {
-		report.MissingCRDs = append(report.MissingCRDs, crd)
-	}
-	sort.Strings(report.MissingCRDs)
+	report.MissingCRDs = slices.Sorted(maps.Values(missing))
 
 	n := v.Concurrency
 	if n <= 0 {
@@ -259,8 +256,11 @@ func Ref(obj *unstructured.Unstructured) string {
 func (v DryRunVerifier) check(ctx context.Context, obj *unstructured.Unstructured, missingCRDs map[schema.GroupKind]string) (*Diff, error) {
 	gvk := obj.GroupVersionKind()
 	ref := Ref(obj)
-	diff := func(kind, explanation string, paths ...string) (*Diff, error) {
+	diff := func(kind Kind, explanation string, paths ...string) (*Diff, error) {
 		return &Diff{Ref: ref, Kind: kind, Paths: paths, Explanation: explanation}, nil
+	}
+	notChecked := func(refused, why string) (*Diff, error) {
+		return &Diff{Ref: ref, Kind: KindNotChecked, Refused: refused, Paths: []string{why}}, nil
 	}
 
 	mapping, err := v.Mapper.RESTMapping(gvk.GroupKind(), gvk.Version)
@@ -273,10 +273,10 @@ func (v DryRunVerifier) check(ctx context.Context, obj *unstructured.Unstructure
 	live, err := v.Cluster.Get(ctx, mapping.Resource, obj.GetNamespace(), obj.GetName())
 	switch {
 	case apierrors.IsForbidden(err):
-		return diff(KindNotChecked, "", "these credentials may not get it: "+err.Error())
+		return notChecked(RefusedGet, "these credentials may not get it: "+err.Error())
 	case apierrors.IsNotFound(err):
 		return diff(KindNotInCluster, "", "not in the cluster: applying would create it")
-	case err != nil && resourceError(err):
+	case err != nil && kube.IsObjectError(err):
 		return diff(KindRejected, "", err.Error())
 	case err != nil:
 		return nil, fmt.Errorf("%s: %w", ref, err)
@@ -289,13 +289,13 @@ func (v DryRunVerifier) check(ctx context.Context, obj *unstructured.Unstructure
 	result, err := v.Cluster.DryRunApply(ctx, mapping.Resource, obj)
 	switch {
 	case apierrors.IsForbidden(err):
-		return diff(KindNotChecked, "", "these credentials may not patch it, which the dry-run needs (it changes nothing): "+err.Error())
-	case err != nil && resourceError(err):
+		return notChecked(RefusedPatch, "these credentials may not patch it, which the dry-run needs (it changes nothing): "+err.Error())
+	case err != nil && kube.IsObjectError(err):
 		return diff(KindRejected, explainApplyError(gvk, err), err.Error())
 	case err != nil:
 		return nil, fmt.Errorf("%s: %w", ref, err)
 	}
-	fields := sdiff.Fields(comparable(live.Object), comparable(result.Object))
+	fields := sdiff.Fields(applyComparable(live.Object), applyComparable(result.Object))
 	if len(fields) == 0 {
 		return nil, nil
 	}
@@ -327,7 +327,10 @@ func (v DryRunVerifier) check(ctx context.Context, obj *unstructured.Unstructure
 }
 
 // fieldOwners is a live object's managedFields, decoded.
-type fieldOwners []struct {
+type fieldOwners []fieldOwner
+
+// fieldOwner is one field manager and the fields it owns, as fieldsV1.
+type fieldOwner struct {
 	owner  Owner
 	fields map[string]any
 }
@@ -341,13 +344,10 @@ func ownership(live *unstructured.Unstructured) fieldOwners {
 			continue
 		}
 		var f map[string]any
-		if json.Unmarshal(m.FieldsV1.Raw, &f) != nil {
+		if json.Unmarshal(m.FieldsV1.GetRawBytes(), &f) != nil {
 			continue
 		}
-		out = append(out, struct {
-			owner  Owner
-			fields map[string]any
-		}{Owner{Manager: m.Manager, Operation: string(m.Operation), Subresource: m.Subresource}, f})
+		out = append(out, fieldOwner{Owner{Manager: m.Manager, Operation: string(m.Operation), Subresource: m.Subresource}, f})
 	}
 	return out
 }
@@ -438,7 +438,7 @@ func (v DryRunVerifier) missingCRDs(ctx context.Context, objs []*unstructured.Un
 			group, _, _ := unstructured.NestedString(o.Object, "spec", "group")
 			kind, _, _ := unstructured.NestedString(o.Object, "spec", "names", "kind")
 			missing[schema.GroupKind{Group: group, Kind: kind}] = o.GetName()
-		case err != nil && !resourceError(err):
+		case err != nil && !kube.IsObjectError(err):
 			return nil, fmt.Errorf("%s: %w", Ref(o), err)
 		}
 	}
@@ -481,18 +481,9 @@ func emptyField(v any) bool {
 	return false
 }
 
-// resourceError reports whether err is the API server's answer about one
-// resource, as opposed to cancellation or a credential problem.
-func resourceError(err error) bool {
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || apierrors.IsUnauthorized(err) {
-		return false
-	}
-	var status apierrors.APIStatus
-	return errors.As(err, &status)
-}
-
 // explainApplyError names known reasons an apply of an unchanged export is
-// rejected.
+// rejected. It matches the API server's message: the Invalid error carries
+// no structured cause for it.
 func explainApplyError(gvk schema.GroupVersionKind, err error) string {
 	if gvk.Group == "" && gvk.Kind == "Pod" && apierrors.IsInvalid(err) && strings.Contains(err.Error(), "pod updates may not change") {
 		return "Pods can't be updated in place; a bare Pod in Git is recreated, not applied"
@@ -500,9 +491,9 @@ func explainApplyError(gvk schema.GroupVersionKind, err error) string {
 	return ""
 }
 
-// comparable drops what an apply always changes: field ownership and the
+// applyComparable drops what an apply always changes: field ownership and the
 // resource version. generation is kept; it only moves when the spec does.
-func comparable(obj map[string]any) map[string]any {
+func applyComparable(obj map[string]any) map[string]any {
 	c := (&unstructured.Unstructured{Object: obj}).DeepCopy().Object
 	unstructured.RemoveNestedField(c, "metadata", "managedFields")
 	unstructured.RemoveNestedField(c, "metadata", "resourceVersion")
@@ -512,6 +503,7 @@ func comparable(obj map[string]any) map[string]any {
 	return c
 }
 
+// countRedacted counts the reference-only files under dir.
 func countRedacted(dir string) (int, error) {
 	n := 0
 	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {

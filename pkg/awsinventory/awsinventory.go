@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"slices"
 	"sort"
 	"strings"
 
@@ -27,8 +28,8 @@ import (
 	snapshotv1alpha1 "setdrift.io/setdrift-engine/pkg/snapshot/v1alpha1"
 )
 
-// interfaces used for passing fake clients to run without aws for testing, cmd/setdrift passes in the real sdk clients
-// EKS is the part of the EKS client Collect uses
+// EKS is the part of the EKS client Collect uses. The CLI passes the AWS
+// SDK's clients; tests pass fakes, so they run without AWS.
 type EKS interface {
 	DescribeCluster(context.Context, *eks.DescribeClusterInput, ...func(*eks.Options)) (*eks.DescribeClusterOutput, error)
 	ListPodIdentityAssociations(context.Context, *eks.ListPodIdentityAssociationsInput, ...func(*eks.Options)) (*eks.ListPodIdentityAssociationsOutput, error)
@@ -40,24 +41,24 @@ type EKS interface {
 	DescribeAddon(context.Context, *eks.DescribeAddonInput, ...func(*eks.Options)) (*eks.DescribeAddonOutput, error)
 }
 
-// IAM is the part of the IAM client Collect uses
+// IAM is the part of the IAM client Collect uses.
 type IAM interface {
 	GetRole(context.Context, *iam.GetRoleInput, ...func(*iam.Options)) (*iam.GetRoleOutput, error)
 }
 
-// EC2 is the part of the EC2 client Collect uses
+// EC2 is the part of the EC2 client Collect uses.
 type EC2 interface {
 	DescribeVolumes(context.Context, *ec2.DescribeVolumesInput, ...func(*ec2.Options)) (*ec2.DescribeVolumesOutput, error)
 }
 
-// Clients are the AWS clients Collect calls
+// Clients are the AWS clients Collect calls.
 type Clients struct {
 	EKS EKS
 	IAM IAM
 	EC2 EC2
 }
 
-// irsaAnnotation names the IAM role a ServiceAccount assumes with IRSA
+// irsaAnnotation names the IAM role a ServiceAccount assumes with IRSA.
 const irsaAnnotation = "eks.amazonaws.com/role-arn"
 
 // Collect reads the AWS side of cluster, records it in snap.Inventory.Aws, and the EBS details of snap's volumes.
@@ -109,13 +110,11 @@ func Collect(ctx context.Context, c Clients, cluster, region string, snap *snaps
 	addons(ctx, c.EKS, cluster, inv, fail)
 	volumes(ctx, c.EC2, snap.Inventory.Volumes, fail)
 	// after a Ctrl-C every call fails at once; stop the export rather than write an inventory of "context canceled"
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	return nil
+	return ctx.Err()
 }
 
-// list and describe every pod identity association, sorts results into namespace/ServiceAccount
+// podIdentity lists and describes every Pod Identity association, sorted by
+// namespace and ServiceAccount, and adds their roles to roles.
 func podIdentity(ctx context.Context, c EKS, cluster string, inv *snapshotv1alpha1.AwsInventory, roles map[string]bool, fail func(string, error)) {
 	var token *string
 	for {
@@ -158,7 +157,8 @@ type trustPolicy struct {
 	} `json:"Statement"`
 }
 
-// GetRole for each role, sorted
+// iamRoles reads each role's trust policy, in ARN order: which OIDC
+// providers it trusts (IRSA), and whether it trusts Pod Identity.
 func iamRoles(ctx context.Context, c IAM, roles map[string]bool, inv *snapshotv1alpha1.AwsInventory, fail func(string, error)) {
 	arns := make([]string, 0, len(roles))
 	for arn := range roles {
@@ -175,29 +175,40 @@ func iamRoles(ctx context.Context, c IAM, roles map[string]bool, inv *snapshotv1
 			continue
 		}
 		role := &snapshotv1alpha1.IamRole{Arn: arn}
-		doc, err := url.QueryUnescape(aws.ToString(out.Role.AssumeRolePolicyDocument))
-		if err == nil {
-			var tp trustPolicy
-			if json.Unmarshal([]byte(doc), &tp) == nil {
-				for _, st := range tp.Statement {
-					for _, f := range strs(st.Principal.Federated) {
-						if _, provider, ok := strings.Cut(f, ":oidc-provider/"); ok {
-							role.OidcProviders = append(role.OidcProviders, provider)
-						}
-					}
-					for _, s := range strs(st.Principal.Service) {
-						if s == "pods.eks.amazonaws.com" {
-							role.TrustsPodIdentity = true
-						}
-					}
-				}
-			}
+		if role.OidcProviders, role.TrustsPodIdentity, err = parseTrust(aws.ToString(out.Role.AssumeRolePolicyDocument)); err != nil {
+			fail("trust policy of IAM role "+name, err)
 		}
 		inv.IamRoles = append(inv.IamRoles, role)
 	}
 }
 
-// list and describe principals (type, kubernetes groups) and list access policies with their scope (cluster or namespaces)
+// parseTrust reads a role's trust policy (URL-encoded JSON, as IAM returns
+// it): the OIDC providers it trusts, and whether it trusts Pod Identity.
+func parseTrust(doc string) (oidcProviders []string, podIdentity bool, err error) {
+	raw, err := url.QueryUnescape(doc)
+	if err != nil {
+		return nil, false, err
+	}
+	var tp trustPolicy
+	if err := json.Unmarshal([]byte(raw), &tp); err != nil {
+		return nil, false, err
+	}
+	for _, st := range tp.Statement {
+		for _, f := range strs(st.Principal.Federated) {
+			if _, provider, ok := strings.Cut(f, ":oidc-provider/"); ok {
+				oidcProviders = append(oidcProviders, provider)
+			}
+		}
+		if slices.Contains(strs(st.Principal.Service), "pods.eks.amazonaws.com") {
+			podIdentity = true
+		}
+	}
+	return oidcProviders, podIdentity, nil
+}
+
+// accessEntries lists and describes the access entries (type, Kubernetes
+// groups) and their access policies, with each policy's scope (the cluster,
+// or namespaces).
 func accessEntries(ctx context.Context, c EKS, cluster string, inv *snapshotv1alpha1.AwsInventory, fail func(string, error)) {
 	var token *string
 	var principals []string
@@ -249,7 +260,8 @@ func accessEntries(ctx context.Context, c EKS, cluster string, inv *snapshotv1al
 	}
 }
 
-// list and describe the add-ons, the ServiceAccount role, and configuration values
+// addons lists and describes the add-ons: version, ServiceAccount role and
+// configuration values (redacted).
 func addons(ctx context.Context, c EKS, cluster string, inv *snapshotv1alpha1.AwsInventory, fail func(string, error)) {
 	var token *string
 	var names []string
@@ -304,7 +316,11 @@ func addonConfig(config string) (string, []string) {
 	return string(out), paths
 }
 
-// volumes fills in the EBS details of the volumes with an EBS volume ID
+// describeVolumesBatch is how many volume IDs one DescribeVolumes call
+// asks for: under the API's 500, so one call's response stays small.
+const describeVolumesBatch = 200
+
+// volumes fills in the EBS details of the volumes with an EBS volume ID.
 func volumes(ctx context.Context, c EC2, vols []*snapshotv1alpha1.Volume, fail func(string, error)) {
 	byID := map[string][]*snapshotv1alpha1.Volume{}
 	var ids []string
@@ -318,8 +334,8 @@ func volumes(ctx context.Context, c EC2, vols []*snapshotv1alpha1.Volume, fail f
 	}
 	// DescribeVolumes takes up to 500 IDs, one missing ID fails the whole call, so fall back to one call per ID.
 	// Only then: any other failure (e.g. access denied) would fail every ID too, so it is recorded once.
-	for start := 0; start < len(ids); start += 200 {
-		batch := ids[start:min(start+200, len(ids))]
+	for start := 0; start < len(ids); start += describeVolumesBatch {
+		batch := ids[start:min(start+describeVolumesBatch, len(ids))]
 		out, err := c.DescribeVolumes(ctx, &ec2.DescribeVolumesInput{VolumeIds: batch})
 		if err != nil {
 			if !notFound(err) {
@@ -340,13 +356,14 @@ func volumes(ctx context.Context, c EC2, vols []*snapshotv1alpha1.Volume, fail f
 	}
 }
 
-// notFound reports whether err is EC2's error for a volume that doesn't exist
+// notFound reports whether err is EC2's error for a volume that doesn't exist.
 func notFound(err error) bool {
 	var api smithy.APIError
 	return errors.As(err, &api) && api.ErrorCode() == "InvalidVolume.NotFound"
 }
 
-// record copies each described volume's attributes onto the snapshot volumes with its ID
+// record copies each described volume's attributes onto the snapshot
+// volumes with its ID.
 func record(out *ec2.DescribeVolumesOutput, byID map[string][]*snapshotv1alpha1.Volume) {
 	for _, ev := range out.Volumes {
 		a := &snapshotv1alpha1.AwsVolume{
@@ -365,18 +382,19 @@ func record(out *ec2.DescribeVolumesOutput, byID map[string][]*snapshotv1alpha1.
 	}
 }
 
-// annotation reads one annotation from a manifest's JSON
+// annotation reads one annotation from a manifest's JSON; "" if the
+// manifest has none or does not parse.
 func annotation(manifest, key string) string {
 	var m struct {
 		Metadata struct {
 			Annotations map[string]string `json:"annotations"`
 		} `json:"metadata"`
 	}
-	_ = json.Unmarshal([]byte(manifest), &m)
+	_ = json.Unmarshal([]byte(manifest), &m) // a snapshot's manifest: JSON the export wrote
 	return m.Metadata.Annotations[key]
 }
 
-// strs returns a policy principal as a list
+// strs returns a policy principal, a string or a list of them, as a list.
 func strs(v any) []string {
 	switch t := v.(type) {
 	case string:
@@ -393,7 +411,7 @@ func strs(v any) []string {
 	return nil
 }
 
-// short returns an AWS error's code and message, without request IDs
+// short returns an AWS error's code and message, without request IDs.
 func short(err error) string {
 	var api smithy.APIError
 	if errors.As(err, &api) {

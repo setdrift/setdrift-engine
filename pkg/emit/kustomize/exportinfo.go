@@ -69,7 +69,7 @@ func exportInfo(s *snapshotv1alpha1.Snapshot) ExportInfo {
 func writeExportInfo(root string, s *snapshotv1alpha1.Snapshot, secretManager string) error {
 	info := exportInfo(s)
 	info.SecretManager = secretManager
-	if r := region(s); r != "<region>" {
+	if r, ok := regionOf(s); ok {
 		info.Region = r
 	}
 	out, err := yaml.Marshal(info)

@@ -1,7 +1,8 @@
 // Copyright The SetDrift Authors
 // SPDX-License-Identifier: Apache-2.0
 
-// defines the object that flows through pipeline
+// Package resource defines the object that flows through the pipeline, and
+// the Stage interface each pipeline step implements.
 package resource
 
 import (
@@ -16,8 +17,6 @@ import (
 
 // Object is a Kubernetes object plus the metadata SetDrift attaches to it as it
 // moves through the pipeline.
-
-// k8s object + app specific metadata
 type Object struct {
 	*unstructured.Unstructured
 
@@ -54,29 +53,33 @@ type Object struct {
 type OwnerStatus int
 
 const (
-	// OwnerUnknown: not checked, e.g. for manifests read from files.
+	// OwnerUnknown means not checked, e.g. for manifests read from files.
 	OwnerUnknown OwnerStatus = iota
-	// OwnerDeleted: the owner was deleted, or replaced by a new object of
-	// the same name. The object is garbage the garbage collector is
+	// OwnerDeleted means the owner was deleted, or replaced by a new object
+	// of the same name. The object is garbage the garbage collector is
 	// deleting.
 	OwnerDeleted
-	// OwnerNotCollected: the owner's type was not collected (skipped,
+	// OwnerNotCollected means the owner's type was not collected (skipped,
 	// cluster-scoped while namespaces were requested, not readable, or
 	// failed to list).
 	OwnerNotCollected
 )
 
-// used to wrap manifest in an Object struct, only used by Collectors, everything else gets Objects
+// New wraps a manifest in an Object. Collectors create Objects; every later
+// stage receives them.
 func New(u *unstructured.Unstructured) *Object {
 	return &Object{Unstructured: u}
 }
 
-// attaches a finding to the object, used if object wont be dropped from the snapshot
+// AddFinding attaches a finding to the object, for an object that stays in
+// the snapshot.
 func (o *Object) AddFinding(sev snapshotv1alpha1.Severity, code, format string, args ...any) {
 	o.Findings = append(o.Findings, NewFinding(sev, code, format, args...))
 }
 
-// constructs reference used in error messages,e.g. apps/Deployment shop/web or ClusterRole system:aggregate-to-shop
+// Ref names the object for messages and as its identity in a snapshot:
+// [group/]Kind [namespace/]name, e.g. apps/Deployment shop/web or
+// ClusterRole system:aggregate-to-shop.
 func (o *Object) Ref() string {
 	gvk := o.GroupVersionKind()
 	gk := gvk.Kind
@@ -89,38 +92,48 @@ func (o *Object) Ref() string {
 	return gk + " " + o.GetName()
 }
 
-// stage is a step of the pipeline that modifies objects in place, it returns the object to be passed to the next pipeline step
+// Stage is a step of the pipeline. It may change objects in place, and
+// returns the objects to pass to the next step, with findings about the
+// whole run.
 type Stage interface {
 	Name() string
 	Process(ctx context.Context, objs []*Object) ([]*Object, []*snapshotv1alpha1.Finding, error)
 }
 
-// cluster wide finding, a finding for a resource that will be dropped before the Snapshot is produced
+// NewFinding builds a finding about the run as a whole, or about objects the
+// stage drops before the snapshot is built.
 func NewFinding(sev snapshotv1alpha1.Severity, code, format string, args ...any) *snapshotv1alpha1.Finding {
 	return &snapshotv1alpha1.Finding{Severity: sev, Code: code, Message: fmt.Sprintf(format, args...)}
 }
 
-// Plural formats n with the singular or plural form of a noun, for finding
-// messages: Plural(1, "Pod", "Pods") is "1 Pod".
-func Plural(n int, singular, plural string) string {
-	if n == 1 {
-		return fmt.Sprintf("%d %s", n, singular)
+// ClaimTemplatePrefixes returns, for every StatefulSet volume claim template
+// in objs, the name prefix of the claims it creates ("<namespace>/<template>-
+// <statefulset>-", the claim's name without its ordinal), mapped to the
+// StatefulSet's name.
+func ClaimTemplatePrefixes(objs []*Object) map[string]string {
+	out := map[string]string{}
+	for _, o := range objs {
+		gvk := o.GroupVersionKind()
+		if gvk.Group != "apps" || gvk.Kind != "StatefulSet" {
+			continue
+		}
+		templates, _, _ := unstructured.NestedSlice(o.Object, "spec", "volumeClaimTemplates")
+		for _, t := range templates {
+			tm, _ := t.(map[string]any)
+			if name, _, _ := unstructured.NestedString(tm, "metadata", "name"); name != "" {
+				out[o.GetNamespace()+"/"+name+"-"+o.GetName()+"-"] = o.GetName()
+			}
+		}
 	}
-	return fmt.Sprintf("%d %s", n, plural)
-}
-
-// Verb returns "was" for n == 1 and "were" otherwise.
-func Verb(n int) string {
-	if n == 1 {
-		return "was"
-	}
-	return "were"
+	return out
 }
 
 type captureTimeKey struct{}
 
 // WithCaptureTime returns a context carrying the time of the capture, so
-// stages can tell how old a timestamp in an object is.
+// stages can tell how old a timestamp in an object is. A context value
+// rather than a Stage parameter: it is the run's, set once, and only the
+// stages that judge ages read it.
 func WithCaptureTime(ctx context.Context, t time.Time) context.Context {
 	return context.WithValue(ctx, captureTimeKey{}, t)
 }

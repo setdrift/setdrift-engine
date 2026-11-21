@@ -47,3 +47,31 @@ func TestWriteExternalSecrets(t *testing.T) {
 		t.Errorf("README:\n%s", r)
 	}
 }
+
+// A store kind or name that is not a Kubernetes one fails Validate, before
+// anything is written: the name goes into every ExternalSecret and the store
+// files.
+func TestValidateStore(t *testing.T) {
+	for _, c := range []struct{ kind, name string }{
+		{"ClusterSecretStore", "bad: name"},
+		{"ClusterSecretStore", "Upper"},
+		{"ClusterSecretStore", "multi\nline"},
+		{"Store", "secret-store"},
+	} {
+		x, err := DefaultExternalSecrets("generic")
+		if err != nil {
+			t.Fatal(err)
+		}
+		x.StoreKind, x.StoreName = c.kind, c.name
+		if err := x.Validate(); err == nil {
+			t.Errorf("kind %q name %q: no error", c.kind, c.name)
+		}
+	}
+	x, err := DefaultExternalSecrets("generic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := x.Validate(); err != nil {
+		t.Errorf("the defaults: %v", err)
+	}
+}

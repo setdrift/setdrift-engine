@@ -1,7 +1,9 @@
 // Copyright The SetDrift Authors
 // SPDX-License-Identifier: Apache-2.0
 
-// checks export against a live cluster, prove 95% of resources would not change & <5% of changes have explanation
+// setdrift verify: checks an export against a live cluster with a
+// server-side dry-run.
+
 package main
 
 import (
@@ -20,6 +22,7 @@ import (
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/restmapper"
 
+	"setdrift.io/setdrift-engine/internal/text"
 	"setdrift.io/setdrift-engine/pkg/collect"
 	"setdrift.io/setdrift-engine/pkg/emit/kustomize"
 	"setdrift.io/setdrift-engine/pkg/platform"
@@ -27,7 +30,7 @@ import (
 	"setdrift.io/setdrift-engine/pkg/verify"
 )
 
-// only flags related to verify functions
+// verifyOptions holds verify's flags.
 type verifyOptions struct {
 	kubeconfig string
 	context    string
@@ -42,7 +45,7 @@ type verifyOptions struct {
 	namespaces []string
 }
 
-// server side apply with dryRun=All comparing DIR to live object
+// newVerifyCmd builds the verify command.
 func newVerifyCmd() *cobra.Command {
 	o := &verifyOptions{}
 	cmd := &cobra.Command{
@@ -87,10 +90,10 @@ is applied to a new cluster.`,
 	return cmd
 }
 
-// loadconfig, build clients, executes check, generates result
+// run checks the export in dir against the cluster, prints the result and
+// writes the report. DIR is checked before the kubeconfig, so a wrong DIR is
+// reported as such.
 func (o *verifyOptions) run(cmd *cobra.Command, dir string) error {
-	// resolve DIR to one cluster folder, fails if no kustomization or more then one cluster
-	// checked before the kubeconfig, so a wrong DIR is reported as such
 	if o.threshold < 0 || o.threshold > 100 {
 		return fmt.Errorf("--threshold %d: give a percent from 0 to 100", o.threshold)
 	}
@@ -140,7 +143,7 @@ func (o *verifyOptions) run(cmd *cobra.Command, dir string) error {
 		}
 	}
 	started := time.Now().UTC()
-	set, why, err := o.chooseSet(cmd.Context(), root, kc, dc, dyn)
+	set, why, err := o.chooseSet(cmd.Context(), info, kc, dc, dyn)
 	if err != nil {
 		return err
 	}
@@ -173,7 +176,7 @@ func (o *verifyOptions) run(cmd *cobra.Command, dir string) error {
 			msg = "nothing to verify: the export has no resources in " + strings.Join(o.namespaces, ", ")
 		}
 		if n := skippedTotal(report); n > 0 {
-			msg += fmt.Sprintf(" (%s skipped)", plural(n, "redacted file", "redacted files"))
+			msg += fmt.Sprintf(" (%s skipped)", text.Plural(n, "redacted file", "redacted files"))
 		}
 		return errors.New(msg)
 	}
@@ -218,11 +221,7 @@ var namespacesGVR = schema.GroupVersionResource{Version: "v1", Resource: "namesp
 // platform set when the target is classified as the export's platform (the
 // same directory, platform/aws/eks), else the generic set, which applies to
 // any cluster.
-func (o *verifyOptions) chooseSet(ctx context.Context, root string, kc *kubeContext, dc discovery.DiscoveryInterface, dyn dynamic.Interface) (string, string, error) {
-	info, err := kustomize.ReadExportInfo(root)
-	if err != nil {
-		return "", "", err
-	}
+func (o *verifyOptions) chooseSet(ctx context.Context, info *kustomize.ExportInfo, kc *kubeContext, dc discovery.DiscoveryInterface, dyn dynamic.Interface) (set, why string, err error) {
 	platDir := ""
 	if info != nil {
 		platDir = info.PlatformDir
@@ -290,10 +289,10 @@ func failReason(r *verify.Report) string {
 		why = append(why, fmt.Sprintf("%.1f%% would not change, %d%% required", r.CleanPercent(), r.RequiredPercent()))
 	}
 	if n := len(r.NotChecked); n > 0 {
-		why = append(why, plural(n, "resource", "resources")+" not checked (no permission)")
+		why = append(why, text.Plural(n, "resource", "resources")+" not checked (no permission)")
 	}
 	if unexplained := r.Unexplained(); unexplained > 0 {
-		why = append(why, plural(unexplained, "unexplained difference", "unexplained differences"))
+		why = append(why, text.Plural(unexplained, "unexplained difference", "unexplained differences"))
 	}
 	return strings.Join(why, "; ")
 }
@@ -305,14 +304,14 @@ func notCheckedError(r *verify.Report, identity string) error {
 	if identity != "" {
 		who += " (" + identity + ")"
 	}
-	return fmt.Errorf("%s could check none of the %s: %s", who, plural(len(r.NotChecked), "resource", "resources"), refusals(r.NotChecked, identity))
+	return fmt.Errorf("%s could check none of the %s: %s", who, text.Plural(len(r.NotChecked), "resource", "resources"), refusals(r.NotChecked, identity))
 }
 
 // refusals says why resources could not be checked, by what was refused.
 func refusals(notChecked []verify.Diff, identity string) string {
 	patch, get := 0, 0
 	for _, d := range notChecked {
-		if len(d.Paths) > 0 && strings.Contains(d.Paths[0], "may not patch") {
+		if d.Refused == verify.RefusedPatch {
 			patch++
 		} else {
 			get++
@@ -322,17 +321,18 @@ func refusals(notChecked []verify.Diff, identity string) string {
 	if patch > 0 {
 		parts = append(parts, fmt.Sprintf("%s may be read but not patched, and verify's dry-run apply needs patch "+
 			"(dryRun=All: the cluster changes nothing); the built-in edit role is enough, e.g. "+
-			"kubectl create rolebinding setdrift-verify -n <namespace> --clusterrole=edit %s", plural(patch, "resource", "resources"), collect.Subject(identity)))
+			"kubectl create rolebinding setdrift-verify -n <namespace> --clusterrole=edit %s", text.Plural(patch, "resource", "resources"), collect.Subject(identity)))
 	}
 	if get > 0 {
 		parts = append(parts, fmt.Sprintf("%s may not be read at all (verify needs get; the view role leaves out RBAC objects, "+
 			"and namespace-scoped access leaves out cluster-scoped resources): check fewer with -n <namespace>, or use credentials with access",
-			plural(get, "resource", "resources")))
+			text.Plural(get, "resource", "resources")))
 	}
 	return strings.Join(parts, "; ")
 }
 
-// adds up the skipped counts for the "nothing to verify" message
+// skippedTotal adds up the skipped counts, for the "nothing to verify"
+// message.
 func skippedTotal(r *verify.Report) int {
 	n := 0
 	for _, c := range r.Skipped {

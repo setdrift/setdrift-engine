@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"setdrift.io/setdrift-engine/internal/text"
 	snapshotv1alpha1 "setdrift.io/setdrift-engine/pkg/snapshot/v1alpha1"
 )
 
@@ -50,8 +51,7 @@ func TestChartOf(t *testing.T) {
 		"chart-0.1.0":             {"chart", "0.1.0"},
 		"nginx":                   {"nginx", ""},
 	} {
-		r := &snapshotv1alpha1.Resource{ManifestJson: `{"metadata":{"labels":{"helm.sh/chart":"` + label + `"}}}`}
-		if c, v := chartOf(r); c != want[0] || v != want[1] {
+		if c, v := chartOf(label); c != want[0] || v != want[1] {
 			t.Errorf("%s: %s %s", label, c, v)
 		}
 	}
@@ -59,7 +59,7 @@ func TestChartOf(t *testing.T) {
 
 func TestShellQuote(t *testing.T) {
 	for in, want := range map[string]string{"web": "web", "a b": "'a b'", "it's": `'it'\''s'`, "": "''", "arn:aws:iam::1:role/x": "arn:aws:iam::1:role/x"} {
-		if got := shellQuote(in); got != want {
+		if got := text.ShellQuote(in); got != want {
 			t.Errorf("%q: %s, want %s", in, got, want)
 		}
 	}
@@ -170,13 +170,13 @@ func TestGeneratedSecrets(t *testing.T) {
 				Redactions:   []*snapshotv1alpha1.Redaction{gen("data.server.secretkey"), val("data.webhook.github.secret")}},
 		},
 	}
-	es, _ := DefaultExternalSecrets("aws-secrets-manager")
+	es := mustExternalSecrets(t, "aws-secrets-manager")
 	dir := t.TempDir()
 	if err := (Emitter{ExternalSecrets: es}).Emit(s, dir); err != nil {
 		t.Fatal(err)
 	}
 	root := ClusterDir(dir, "prod")
-	md, _ := os.ReadFile(filepath.Join(root, "RESTORE.md"))
+	md := mustRead(t, filepath.Join(root, "RESTORE.md"))
 	for _, want := range []string{
 		"- Secret argocd/argocd-redis, by argocd-server",
 		"(Secret argocd/argocd-secret, merge: argocd-server writes the other keys)",
@@ -306,7 +306,7 @@ func TestHelmRepoFromGitOps(t *testing.T) {
 	if err := (Emitter{}).Emit(s, dir); err != nil {
 		t.Fatal(err)
 	}
-	b, _ := os.ReadFile(filepath.Join(ClusterDir(dir, "prod"), "RESTORE.md"))
+	b := mustRead(t, filepath.Join(ClusterDir(dir, "prod"), "RESTORE.md"))
 	md := string(b)
 	for _, want := range []string{
 		"install prom kube-prometheus-stack --repo https://prometheus-community.github.io/helm-charts",
@@ -341,7 +341,7 @@ func TestSecretsFilledByController(t *testing.T) {
 	if err := (Emitter{}).Emit(s, dir); err != nil {
 		t.Fatal(err)
 	}
-	b, _ := os.ReadFile(filepath.Join(ClusterDir(dir, "prod"), "RESTORE.md"))
+	b := mustRead(t, filepath.Join(ClusterDir(dir, "prod"), "RESTORE.md"))
 	md := string(b)
 	for _, want := range []string{
 		"**Create these empty.**",
@@ -370,8 +370,8 @@ func readFile(t *testing.T, root, rel string) string {
 
 // RESTORE.md's secrets export command gives every setting, from the export's own.
 func TestSecretsExportCommand(t *testing.T) {
-	x, _ := DefaultExternalSecrets("aws-parameter-store")
-	got := strings.Join(restoreData{secretSettings: x}.secretsExportCommand("us-east-2"), "\n")
+	x := mustExternalSecrets(t, "aws-parameter-store")
+	got := strings.Join((&restoreData{secretSettings: x}).secretsExportCommand("us-east-2"), "\n")
 	for _, want := range []string{"setdrift secrets export --aws redacted", `--context "$SRC" --region us-east-2`,
 		"--secret-manager aws-parameter-store --secret-key-template '/{{.Cluster}}/{{.Namespace}}/{{.Name}}'",
 		"--store-kind ClusterSecretStore --store-name secret-store", "--external-secrets-out external-secrets --force"} {
@@ -379,4 +379,34 @@ func TestSecretsExportCommand(t *testing.T) {
 			t.Errorf("lacks %q:\n%s", want, got)
 		}
 	}
+}
+
+// mustRead returns the file at path, failing the test if it can't be read.
+func mustRead(t *testing.T, path string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+// mustReadDir returns the entries of dir, failing the test if it can't be read.
+func mustReadDir(t *testing.T, dir string) []os.DirEntry {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return entries
+}
+
+// mustExternalSecrets is DefaultExternalSecrets, failing the test on an error.
+func mustExternalSecrets(t *testing.T, provider string) *ExternalSecrets {
+	t.Helper()
+	x, err := DefaultExternalSecrets(provider)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return x
 }

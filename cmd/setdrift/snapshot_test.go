@@ -21,7 +21,7 @@ func TestSnapshotJSON(t *testing.T) {
 	dir := t.TempDir()
 	pb, js := filepath.Join(dir, "snap.pb"), filepath.Join(dir, "snap.json")
 	root := newRootCmd()
-	root.SetArgs([]string{"export", "--from-dir", filepath.Join("..", "..", "testdata", "corpus", "basic", "input"),
+	root.SetArgs([]string{"export", "--from-dir", corpusInput,
 		"-o", filepath.Join(dir, "out"), "--snapshot", pb, "--snapshot-json", js})
 	root.SetOut(&bytes.Buffer{})
 	if err := root.Execute(); err != nil {

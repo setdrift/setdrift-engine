@@ -15,14 +15,19 @@ package diff
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"reflect"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 
 	"k8s.io/apimachinery/pkg/api/resource"
 
+	"setdrift.io/setdrift-engine/internal/kube"
+	"setdrift.io/setdrift-engine/pkg/normalize"
+	"setdrift.io/setdrift-engine/pkg/snapshot"
 	snapshotv1alpha1 "setdrift.io/setdrift-engine/pkg/snapshot/v1alpha1"
 )
 
@@ -200,8 +205,8 @@ func Compare(a, b *snapshotv1alpha1.Snapshot, opts Options) (Result, error) {
 		return Result{}, fmt.Errorf("%s: %w", res.B.Label, err)
 	}
 	as, bs := ia.entries, ib.entries
-	res.Limited = limitToCommon(a.GetScope(), b.GetScope(), back, res.A.Label, res.B.Label, as, bs)
-	if n := dropUnread(a.GetScope(), b.GetScope(), back, as, bs); n != "" {
+	res.Limited = pruneToCommon(a.GetScope(), b.GetScope(), back, res.A.Label, res.B.Label, as, bs)
+	if n := pruneUnread(a.GetScope(), b.GetScope(), back, as, bs); n != "" {
 		res.Limited = append(res.Limited, n)
 	}
 	res.A.PlatformObjects, res.B.PlatformObjects = ia.platform, ib.platform
@@ -215,7 +220,7 @@ func Compare(a, b *snapshotv1alpha1.Snapshot, opts Options) (Result, error) {
 			res.OnlyA = append(res.OnlyA, ea.obj)
 			continue
 		}
-		raw := compare("", ea.manifest, eb.manifest, nil)
+		raw := compareKeys("", nil, ea.manifest, eb.manifest, nil)
 		vol, volWhy := compareVolumes(ea, eb, raw, ia.mounts[ea.obj.Namespace+"/"+ea.obj.Key.Name], res.A.Label, res.B.Label)
 		if len(raw) == 0 && len(vol) == 0 {
 			res.Identical++
@@ -302,11 +307,7 @@ func index(s *snapshotv1alpha1.Snapshot, back map[string]string) (indexed, error
 		if err := json.Unmarshal([]byte(r.GetManifestJson()), &m); err != nil {
 			return indexed{}, fmt.Errorf("%s %s/%s: %w", r.GetKind(), r.GetNamespace(), r.GetName(), err)
 		}
-		g, _, found := strings.Cut(r.GetApiVersion(), "/")
-		if !found {
-			g = ""
-		}
-		k := Key{Group: g, Kind: r.GetKind(), Namespace: r.GetNamespace(), Name: r.GetName()}
+		k := Key{Group: kube.Group(r.GetApiVersion()), Kind: r.GetKind(), Namespace: r.GetNamespace(), Name: r.GetName()}
 		if ns, ok := back[k.Namespace]; ok {
 			k.Namespace = ns
 		}
@@ -336,7 +337,7 @@ func index(s *snapshotv1alpha1.Snapshot, back map[string]string) (indexed, error
 			e.volume = volumes[r.GetNamespace()+"/"+r.GetName()]
 		}
 		for _, f := range r.GetFindings() {
-			if f.GetCode() == "REPLICAS_FROM_HPA" {
+			if f.GetCode() == normalize.ReplicasFromHPA {
 				e.hpa = true
 			}
 		}
@@ -501,7 +502,7 @@ func counts(m map[string]int32) string {
 // snapshot's names (back maps the second's); nil means the whole cluster.
 func readNamespaces(sc *snapshotv1alpha1.ReadScope, back map[string]string) map[string]bool {
 	switch sc.GetMode() {
-	case "namespaces", "context-namespace", "readable-namespaces":
+	case snapshot.ScopeNamespaces, snapshot.ScopeContextNamespace, snapshot.ScopeReadableNamespaces:
 	default:
 		return nil
 	}
@@ -515,9 +516,9 @@ func readNamespaces(sc *snapshotv1alpha1.ReadScope, back map[string]string) map[
 	return out
 }
 
-// limitToCommon drops from both sides what only one side read, and says
-// what was left out.
-func limitToCommon(sa, sb *snapshotv1alpha1.ReadScope, back map[string]string, la, lb string, as, bs map[Key]entry) []string {
+// pruneToCommon deletes from as and bs what only one side read, and
+// returns notes on what was left out.
+func pruneToCommon(sa, sb *snapshotv1alpha1.ReadScope, back map[string]string, la, lb string, as, bs map[Key]entry) []string {
 	na, nb := readNamespaces(sa, nil), readNamespaces(sb, back)
 	if na == nil && nb == nil {
 		return nil
@@ -553,7 +554,7 @@ func limitToCommon(sa, sb *snapshotv1alpha1.ReadScope, back map[string]string, l
 	}
 	// -n on both sides alike is what was asked: nothing to say
 	limitedBy := func(sc *snapshotv1alpha1.ReadScope) bool {
-		return sc.GetMode() == "context-namespace" || sc.GetMode() == "readable-namespaces"
+		return sc.GetMode() == snapshot.ScopeContextNamespace || sc.GetMode() == snapshot.ScopeReadableNamespaces
 	}
 	sameSets := na == nil || nb == nil || len(na) == len(nb) && len(common) == len(na)
 	if !limitedBy(sa) && !limitedBy(sb) && sameSets {
@@ -568,12 +569,7 @@ func limitToCommon(sa, sb *snapshotv1alpha1.ReadScope, back map[string]string, l
 		if side.read == nil {
 			continue
 		}
-		why := map[string]string{
-			"namespaces":          "as asked (-n)",
-			"context-namespace":   "its credentials may not list namespaces, so its kubeconfig context's namespace",
-			"readable-namespaces": "the ones its credentials can read",
-		}[side.sc.GetMode()]
-		n := fmt.Sprintf("%s read only namespaces %s (%s)", side.label, strings.Join(sortedStrings(side.read), ", "), why)
+		n := fmt.Sprintf("%s read only namespaces %s (%s)", side.label, strings.Join(slices.Sorted(maps.Keys(side.read)), ", "), scopeReason(side.sc.GetMode()))
 		if len(side.sc.GetUnreadable()) > 0 {
 			n += fmt.Sprintf("; not readable there: %s", strings.Join(side.sc.GetUnreadable(), ", "))
 		}
@@ -583,15 +579,28 @@ func limitToCommon(sa, sb *snapshotv1alpha1.ReadScope, back map[string]string, l
 		notes = append(notes, "the two sides read no namespace in common, so nothing was compared")
 	} else {
 		notes = append(notes, fmt.Sprintf("compared namespaces %s only, and no cluster-scoped resources; %d resources outside them were left out",
-			strings.Join(sortedStrings(common), ", "), dropped))
+			strings.Join(slices.Sorted(maps.Keys(common)), ", "), dropped))
 	}
 	return notes
 }
 
-// dropUnread drops from both sides the resources of a type either side
+// scopeReason says why a side read only some namespaces.
+func scopeReason(mode string) string {
+	switch mode {
+	case snapshot.ScopeNamespaces:
+		return "as asked (-n)"
+	case snapshot.ScopeContextNamespace:
+		return "its credentials may not list namespaces, so its kubeconfig context's namespace"
+	case snapshot.ScopeReadableNamespaces:
+		return "the ones its credentials can read"
+	}
+	return ""
+}
+
+// pruneUnread deletes from as and bs the resources of a type either side
 // could not list (where it could not), so they don't show as in one side
-// only, and says what was dropped.
-func dropUnread(sa, sb *snapshotv1alpha1.ReadScope, back map[string]string, as, bs map[Key]entry) string {
+// only, and returns a note on what was dropped.
+func pruneUnread(sa, sb *snapshotv1alpha1.ReadScope, back map[string]string, as, bs map[Key]entry) string {
 	type gk struct{ group, kind string }
 	all := map[gk]bool{}
 	in := map[gk]map[string]bool{}
@@ -704,9 +713,8 @@ func reasons(a, b entry, la, lb string) []string {
 // volumes) by name.
 func Fields(a, b any) []Field { return compareKeys("", nil, a, b, nil) }
 
-// compare lists the fields that differ between a and b, in path order.
-func compare(path string, a, b any, out []Field) []Field { return compareKeys(path, nil, a, b, out) }
-
+// compareKeys appends to out the fields that differ between a and b under
+// path, in path order; steps are path's managedFields keys (Field.Keys).
 func compareKeys(path string, steps []string, a, b any, out []Field) []Field {
 	if reflect.DeepEqual(a, b) {
 		return out
@@ -724,7 +732,7 @@ func compareKeys(path string, steps []string, a, b any, out []Field) []Field {
 		for k := range bv {
 			keys[k] = true
 		}
-		for _, k := range sortedStrings(keys) {
+		for _, k := range slices.Sorted(maps.Keys(keys)) {
 			out = compareKeys(join(path, k), step(steps, "f:"+k), av[k], bv[k], out)
 		}
 		return out
@@ -742,7 +750,7 @@ func compareKeys(path string, steps []string, a, b any, out []Field) []Field {
 			for k := range nb {
 				names[k] = true
 			}
-			for _, n := range sortedStrings(names) {
+			for _, n := range slices.Sorted(maps.Keys(names)) {
 				out = compareKeys(path+"["+n+"]", step(steps, "n:"+n), na[n], nb[n], out)
 			}
 			return out
@@ -805,7 +813,10 @@ func join(path, k string) string {
 
 // substitution replaces a cluster's own values in strings with placeholders,
 // so that values differing only in them compare equal.
-type substitution []struct {
+type substitution []replacement
+
+// replacement is one value of a cluster's and its placeholder.
+type replacement struct {
 	re   *regexp.Regexp
 	with string
 }
@@ -821,10 +832,7 @@ func substitutions(s Side, nsMap map[string]string, first bool) substitution {
 			return
 		}
 		with := "\x00" + strings.Repeat("\x01", slot+1) + "\x00"
-		sub = append(sub, struct {
-			re   *regexp.Regexp
-			with string
-		}{regexp.MustCompile(`(^|[^A-Za-z0-9])` + regexp.QuoteMeta(value) + `($|[^A-Za-z0-9])`), "${1}" + with + "${2}"})
+		sub = append(sub, replacement{regexp.MustCompile(`(^|[^A-Za-z0-9])` + regexp.QuoteMeta(value) + `($|[^A-Za-z0-9])`), "${1}" + with + "${2}"})
 	}
 	add(s.Account, 0)
 	add(s.Region, 1)
@@ -890,13 +898,4 @@ func sortedKeys(m map[Key]entry) []Key {
 		return a.Name < b.Name
 	})
 	return keys
-}
-
-func sortedStrings(m map[string]bool) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
 }

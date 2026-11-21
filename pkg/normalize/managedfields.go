@@ -1,23 +1,26 @@
 // Copyright The SetDrift Authors
 // SPDX-License-Identifier: Apache-2.0
 
-// remove fields written by other objects or systems, not by user
+// Fields a controller wrote and no person or tool owns: removed, as a new
+// cluster's controllers write them again.
+
 package normalize
 
 import (
-	"bytes"
 	"sort"
 	"strings"
 
 	"sigs.k8s.io/structured-merge-diff/v6/fieldpath"
 	"sigs.k8s.io/structured-merge-diff/v6/value"
 
+	"setdrift.io/setdrift-engine/internal/kube"
 	"setdrift.io/setdrift-engine/pkg/resource"
 	snapshotv1alpha1 "setdrift.io/setdrift-engine/pkg/snapshot/v1alpha1"
 )
 
-// k8s default field managers
-var DefaultControllerManagers = map[string]bool{
+// defaultControllerManagers are the field managers of Kubernetes' own
+// components, whose fields are removed when no one else owns them.
+var defaultControllerManagers = map[string]bool{
 	"kube-controller-manager":  true,
 	"cloud-controller-manager": true,
 	"kube-scheduler":           true,
@@ -25,7 +28,7 @@ var DefaultControllerManagers = map[string]bool{
 	"kube-apiserver":           true,
 }
 
-// remove fields that only controller managers own
+// pruneControllerFields removes the fields only controllers own.
 func pruneControllerFields(o *resource.Object, controllers map[string]bool) {
 	entries := o.GetManagedFields()
 	if len(entries) == 0 {
@@ -34,14 +37,13 @@ func pruneControllerFields(o *resource.Object, controllers map[string]bool) {
 	managers := map[string]bool{}
 	controller, user := fieldpath.NewSet(), fieldpath.NewSet()
 	for _, e := range entries {
-		// status is written by controllers revision annotation
-		if e.FieldsV1 == nil {
-			continue
-		}
-		s := fieldpath.NewSet()
-		if err := s.FromJSON(bytes.NewReader(e.FieldsV1.Raw)); err != nil {
-			// Unreadable entry's count as user defined
+		s, err := kube.FieldSet(e)
+		if err != nil {
+			// an unreadable entry might own anything: prune nothing
 			return
+		}
+		if s == nil {
+			continue
 		}
 		if controllers[e.Manager] {
 			controller = controller.Union(s)

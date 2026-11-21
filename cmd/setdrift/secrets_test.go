@@ -4,7 +4,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"os"
 	"path/filepath"
@@ -21,13 +20,8 @@ import (
 
 func runSecrets(t *testing.T, args ...string) (string, error) {
 	t.Helper()
-	var out bytes.Buffer
-	cmd := newRootCmd()
-	cmd.SetArgs(append([]string{"secrets", "export"}, args...))
-	cmd.SetOut(&out)
-	cmd.SetErr(&bytes.Buffer{})
-	err := cmd.Execute()
-	return out.String(), err
+	out, _, err := runCmd(t, append([]string{"secrets", "export"}, args...)...)
+	return out, err
 }
 
 // --aws first, then every setting, none taken from the export.
@@ -81,15 +75,15 @@ func TestSecretsExportChecksSource(t *testing.T) {
 	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(),
 		map[schema.GroupVersionResource]string{namespacesGVR: "NamespaceList"}, ns)
 	info := &kustomize.ExportInfo{Cluster: "prod", KubeSystemUID: "uid-source"}
-	if msg := (&secretsExportOptions{}).checkSource(context.Background(), dyn, info); !strings.Contains(msg, "not the cluster the export came from") {
-		t.Errorf("other cluster: %q", msg)
+	if err := (&secretsExportOptions{}).checkSource(context.Background(), dyn, info); err == nil || !strings.Contains(err.Error(), "not the cluster the export came from") {
+		t.Errorf("other cluster: %v", err)
 	}
-	if msg := (&secretsExportOptions{otherCluster: true}).checkSource(context.Background(), dyn, info); msg != "" {
-		t.Errorf("--other-cluster: %q", msg)
+	if err := (&secretsExportOptions{otherCluster: true}).checkSource(context.Background(), dyn, info); err != nil {
+		t.Errorf("--other-cluster: %v", err)
 	}
 	info.KubeSystemUID = "uid-other"
-	if msg := (&secretsExportOptions{}).checkSource(context.Background(), dyn, info); msg != "" {
-		t.Errorf("source cluster: %q", msg)
+	if err := (&secretsExportOptions{}).checkSource(context.Background(), dyn, info); err != nil {
+		t.Errorf("source cluster: %v", err)
 	}
 }
 
@@ -103,11 +97,10 @@ func TestExportOf(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(cluster, kustomize.ExportInfoFile), []byte("cluster: prod\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	info, root := exportOf(filepath.Join(cluster, "redacted", "namespaces", "shop"))
-	if info == nil || info.Cluster != "prod" || root != cluster {
-		t.Errorf("%+v %s", info, root)
+	if info := exportOf(filepath.Join(cluster, "redacted", "namespaces", "shop")); info == nil || info.Cluster != "prod" {
+		t.Errorf("exportOf = %+v, want the export of prod", info)
 	}
-	if info, _ := exportOf(t.TempDir()); info != nil {
+	if info := exportOf(t.TempDir()); info != nil {
 		t.Error("a folder outside an export")
 	}
 }
