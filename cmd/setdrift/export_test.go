@@ -192,7 +192,6 @@ func TestBadFlagsFailBeforeReading(t *testing.T) {
 		flag string
 		args []string
 	}{
-		{"--group-by", []string{"--group-by", "apps"}},
 		{"--external-secrets", []string{"--external-secrets", "vault"}},
 		{"--secret-store-kind", []string{"--secret-store-kind", "Store"}},
 		{"--secret-key-template", []string{"--secret-key-template", "{{.Name"}},

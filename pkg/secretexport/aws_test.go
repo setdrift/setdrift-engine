@@ -35,6 +35,15 @@ func (f *fakeSM) PutSecretValue(_ context.Context, in *secretsmanager.PutSecretV
 	f.put = append(f.put, aws.ToString(in.SecretId))
 	return &secretsmanager.PutSecretValueOutput{}, nil
 }
+func (f *fakeSM) GetSecretValue(_ context.Context, in *secretsmanager.GetSecretValueInput, _ ...func(*secretsmanager.Options)) (*secretsmanager.GetSecretValueOutput, error) {
+	if aws.ToString(in.SecretId) == "exists" {
+		return &secretsmanager.GetSecretValueOutput{SecretString: aws.String(`{"k":"v"}`)}, nil
+	}
+	return nil, &smtypes.ResourceNotFoundException{Message: aws.String("not found")}
+}
+func (f *fakeSM) ListSecrets(context.Context, *secretsmanager.ListSecretsInput, ...func(*secretsmanager.Options)) (*secretsmanager.ListSecretsOutput, error) {
+	return &secretsmanager.ListSecretsOutput{}, nil
+}
 
 func TestSecretsManager(t *testing.T) {
 	f := &fakeSM{}
@@ -47,6 +56,15 @@ func TestSecretsManager(t *testing.T) {
 	}
 	_ = p.Put(context.Background(), "new", "{}", false)
 	_ = p.Put(context.Background(), "exists", "{}", true)
+	if v, ok, err := p.Get(context.Background(), "exists"); !ok || err != nil || v != `{"k":"v"}` {
+		t.Errorf("get: %q %v %v", v, ok, err)
+	}
+	if _, ok, err := p.Get(context.Background(), "new"); ok || err != nil {
+		t.Errorf("get missing: %v %v", ok, err)
+	}
+	if err := p.Answers(context.Background()); err != nil {
+		t.Errorf("answers: %v", err)
+	}
 	if len(f.created) != 1 || f.created[0] != "new" || len(f.put) != 1 || f.put[0] != "exists" || len(f.tags) != 1 {
 		t.Errorf("created %v put %v tags %v", f.created, f.put, f.tags)
 	}
@@ -63,6 +81,9 @@ func (f *fakeSSM) GetParameter(_ context.Context, in *ssm.GetParameterInput, _ .
 func (f *fakeSSM) PutParameter(_ context.Context, in *ssm.PutParameterInput, _ ...func(*ssm.Options)) (*ssm.PutParameterOutput, error) {
 	f.in = in
 	return &ssm.PutParameterOutput{}, nil
+}
+func (f *fakeSSM) DescribeParameters(context.Context, *ssm.DescribeParametersInput, ...func(*ssm.Options)) (*ssm.DescribeParametersOutput, error) {
+	return &ssm.DescribeParametersOutput{}, nil
 }
 
 func TestParameterStore(t *testing.T) {

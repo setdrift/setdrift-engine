@@ -66,12 +66,10 @@ type exportOptions struct {
 	force        bool
 	yes          bool
 	// export settings
-	includeFinishedJobs bool
-	fullList            bool
-	argoInstanceLabel   string
-	unmanagedOnly       bool
-	ciFieldManagers     []string
-	groupBy             string
+	fullList          bool
+	argoInstanceLabel string
+	unmanagedOnly     bool
+	ciFieldManagers   []string
 	// secret settings
 	externalSecrets   string
 	secretStore       string
@@ -123,9 +121,7 @@ under redacted/, outside every kustomization.yaml.`,
 	f.BoolVar(&o.noSnapshot, "no-snapshot", false, "write no snapshot files")
 	f.BoolVar(&o.force, "force", false, "write into a non-empty output directory, replacing clusters/<cluster>/ in it (asks first)")
 	f.BoolVarP(&o.yes, "yes", "y", false, "with --force, replace without asking")
-	f.BoolVar(&o.includeFinishedJobs, "include-finished-jobs", false, "export Jobs that have completed or failed")
 	f.StringVar(&o.argoInstanceLabel, "argocd-instance-label", provenance.DefaultArgoInstanceLabel, "label Argo CD's label tracking uses (application.instanceLabelKey in argocd-cm)")
-	f.StringVar(&o.groupBy, "group-by", string(kustomize.GroupByKind), "directories within each namespace: kind, or app (one directory and kustomization.yaml per Argo CD app, Flux Kustomization, Helm release or app label)")
 	f.StringVar(&o.externalSecrets, "external-secrets", "auto", "secret manager the ExternalSecrets written for redacted Secrets read from: "+strings.Join(kustomize.ExternalSecretProviders, ", ")+
 		", or none (auto: AWS Secrets Manager on a cluster on AWS, otherwise generic, with store examples for the common secret managers)")
 	f.StringVar(&o.secretStore, "secret-store", "", "name of the External Secrets store the ExternalSecrets reference (default "+kustomize.DefaultStoreName+")")
@@ -405,7 +401,7 @@ func (o *exportOptions) capture(ctx context.Context, src *source) (*snapshotv1al
 		return nil, err
 	}
 	p := pipeline.New(src.collector)
-	p.Lifecycle = lifecycle.Filter{IncludeFinishedJobs: o.includeFinishedJobs}
+	p.Lifecycle = lifecycle.Filter{}
 	p.Platform = src.plat
 	p.Provenance = provenance.LabelClassifier{ArgoInstanceLabel: o.argoInstanceLabel, Platform: src.plat, CIFieldManagers: o.ciFieldManagers}
 	p.Normalizer = normalize.Normalizer{ArgoInstanceLabel: o.argoInstanceLabel, KeepSourceDefaults: o.keepSourceDefaults}
@@ -680,11 +676,8 @@ func eksServerRegion(host string) string {
 
 // emitter converts flags to Kustomize writer's settings
 func (o *exportOptions) emitter(cmd *cobra.Command) (kustomize.Emitter, error) {
-	e := kustomize.Emitter{Force: o.force, UnmanagedOnly: o.unmanagedOnly, GroupBy: kustomize.GroupBy(o.groupBy)}
+	e := kustomize.Emitter{Force: o.force, UnmanagedOnly: o.unmanagedOnly}
 	// groupby is picky, only accepts kind or app
-	if e.GroupBy != kustomize.GroupByKind && e.GroupBy != kustomize.GroupByApp {
-		return e, fmt.Errorf("--group-by must be kind or app, not %q", o.groupBy)
-	}
 	// read and check the --helm-repos file now, so a bad entry fails before the read
 	if o.helmRepos != "" {
 		repos, err := helmsource.LoadRepos(o.helmRepos)
@@ -826,7 +819,7 @@ func printSummary(cmd *cobra.Command, s *snapshotv1alpha1.Snapshot, out string, 
 		for _, f := range r.Findings {
 			suggestions[f.Code] = append(suggestions[f.Code], fmt.Sprintf("%s %s/%s %s", r.Kind, r.Namespace, r.Name, f.Message))
 		}
-		if kustomize.Platform(r) || (unmanagedOnly && !kustomize.Unmanaged(r)) {
+		if kustomize.NotWritten(r) || (unmanagedOnly && !kustomize.Unmanaged(r)) {
 			continue
 		}
 		written++

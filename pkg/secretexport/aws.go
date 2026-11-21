@@ -28,6 +28,8 @@ type SecretsManagerAPI interface {
 	DescribeSecret(context.Context, *secretsmanager.DescribeSecretInput, ...func(*secretsmanager.Options)) (*secretsmanager.DescribeSecretOutput, error)
 	CreateSecret(context.Context, *secretsmanager.CreateSecretInput, ...func(*secretsmanager.Options)) (*secretsmanager.CreateSecretOutput, error)
 	PutSecretValue(context.Context, *secretsmanager.PutSecretValueInput, ...func(*secretsmanager.Options)) (*secretsmanager.PutSecretValueOutput, error)
+	GetSecretValue(context.Context, *secretsmanager.GetSecretValueInput, ...func(*secretsmanager.Options)) (*secretsmanager.GetSecretValueOutput, error)
+	ListSecrets(context.Context, *secretsmanager.ListSecretsInput, ...func(*secretsmanager.Options)) (*secretsmanager.ListSecretsOutput, error)
 }
 
 // SecretsManager writes to AWS Secrets Manager.
@@ -73,10 +75,34 @@ func (s SecretsManager) Put(ctx context.Context, key, value string, overwrite bo
 	return err
 }
 
+// Get implements Provider.
+func (s SecretsManager) Get(ctx context.Context, key string) (string, bool, error) {
+	out, err := s.Client.GetSecretValue(ctx, &secretsmanager.GetSecretValueInput{SecretId: aws.String(key)})
+	var nf *smtypes.ResourceNotFoundException
+	if errors.As(err, &nf) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return aws.ToString(out.SecretString), true, nil
+}
+
+// Answers checks the service answers in the client's region: a list of at
+// most one secret. Refused access still means the region is right.
+func (s SecretsManager) Answers(ctx context.Context) error {
+	_, err := s.Client.ListSecrets(ctx, &secretsmanager.ListSecretsInput{MaxResults: aws.Int32(1)})
+	if err != nil && !IsAccessDenied(err) {
+		return err
+	}
+	return nil
+}
+
 // ParameterStoreAPI is the part of the SSM client used.
 type ParameterStoreAPI interface {
 	GetParameter(context.Context, *ssm.GetParameterInput, ...func(*ssm.Options)) (*ssm.GetParameterOutput, error)
 	PutParameter(context.Context, *ssm.PutParameterInput, ...func(*ssm.Options)) (*ssm.PutParameterOutput, error)
+	DescribeParameters(context.Context, *ssm.DescribeParametersInput, ...func(*ssm.Options)) (*ssm.DescribeParametersOutput, error)
 }
 
 // ParameterStore writes SecureString parameters to AWS Systems Manager
@@ -98,6 +124,28 @@ func (s ParameterStore) Exists(ctx context.Context, key string) (bool, error) {
 		return false, nil
 	}
 	return err == nil, err
+}
+
+// Get implements Provider.
+func (s ParameterStore) Get(ctx context.Context, key string) (string, bool, error) {
+	out, err := s.Client.GetParameter(ctx, &ssm.GetParameterInput{Name: aws.String(key), WithDecryption: aws.Bool(true)})
+	var nf *ssmtypes.ParameterNotFound
+	if errors.As(err, &nf) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return aws.ToString(out.Parameter.Value), true, nil
+}
+
+// Answers checks the service answers in the client's region.
+func (s ParameterStore) Answers(ctx context.Context) error {
+	_, err := s.Client.DescribeParameters(ctx, &ssm.DescribeParametersInput{MaxResults: aws.Int32(1)})
+	if err != nil && !IsAccessDenied(err) {
+		return err
+	}
+	return nil
 }
 
 // Put implements Provider. Values over 4 KB use the advanced tier, which

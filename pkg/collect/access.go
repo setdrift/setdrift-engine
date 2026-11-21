@@ -79,6 +79,12 @@ func can(ctx context.Context, dyn dynamic.Interface, verb, group, resource, name
 	return allowed, true
 }
 
+// Can asks the API server whether the credentials may verb resource (in
+// group) in namespace; known is false when it could not say.
+func Can(ctx context.Context, dyn dynamic.Interface, verb, group, resource, namespace string) (allowed, known bool) {
+	return can(ctx, dyn, verb, group, resource, namespace)
+}
+
 // readProbes are the types a reader of a namespace can almost always list:
 // the built-in view, edit and admin roles all include them.
 var readProbes = []struct{ group, resource string }{{"", "configmaps"}, {"", "pods"}, {"apps", "deployments"}}

@@ -5,6 +5,7 @@ package lifecycle
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -53,8 +54,22 @@ func TestFilter(t *testing.T) {
 	for _, o := range out {
 		kept[o.GetName()] = o
 	}
-	if len(kept) != 2 || kept["running"] == nil || kept["hook-config"] == nil {
-		t.Fatalf("kept %v, want running and hook-config", kept)
+	// finished Jobs stay for the snapshot, marked as ran once, with their outcome; the hook Workflow goes
+	if len(kept) != 5 || kept["running"] == nil || kept["hook-config"] == nil || kept["migrate"] != nil {
+		t.Fatalf("kept %v, want the Jobs and hook-config", kept)
+	}
+	for name, result := range map[string]string{"done": "Complete", "succeeding": "Complete", "failing": "Failed"} {
+		o := kept[name]
+		if o == nil || !codes(o)[RanOnce] || codes(o)["RUN_ONCE_EXPORTED"] {
+			t.Errorf("%s: findings %v, want RAN_ONCE only", name, codes(o))
+			continue
+		}
+		if msg := o.Findings[0].Message; !strings.HasPrefix(msg, "finished Job ("+result+")") {
+			t.Errorf("%s: %q, want its result %s", name, msg, result)
+		}
+	}
+	if codes(kept["running"])[RanOnce] {
+		t.Error("a running Job marked as ran once")
 	}
 	if !codes(kept["running"])["RUN_ONCE_EXPORTED"] {
 		t.Error("running Job not flagged RUN_ONCE_EXPORTED")

@@ -161,6 +161,65 @@ func Unmarshal(b []byte) (*snapshotv1alpha1.Snapshot, error) {
 	}
 }
 
+// Parse decodes a snapshot in either format export writes: protobuf, or the
+// JSON of MarshalInspectJSON (the .json beside each .pb).
+func Parse(b []byte) (*snapshotv1alpha1.Snapshot, error) {
+	if t := bytes.TrimSpace(b); len(t) > 0 && t[0] == '{' {
+		return UnmarshalInspectJSON(b)
+	}
+	return Unmarshal(b)
+}
+
+// UnmarshalInspectJSON decodes the JSON of MarshalInspectJSON: each
+// resource's inlined manifest goes back to its manifestJson string. Like
+// Unmarshal, it refuses another schema version.
+func UnmarshalInspectJSON(b []byte) (*snapshotv1alpha1.Snapshot, error) {
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(b, &doc); err != nil {
+		return nil, fmt.Errorf("not a snapshot: %w", err)
+	}
+	if raw, ok := doc["resources"]; ok {
+		var resources []map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &resources); err != nil {
+			return nil, fmt.Errorf("not a snapshot: resources: %w", err)
+		}
+		for _, r := range resources {
+			if m, ok := r["manifest"]; ok {
+				compact := &bytes.Buffer{}
+				if err := json.Compact(compact, m); err != nil {
+					return nil, fmt.Errorf("not a snapshot: manifest: %w", err)
+				}
+				str, err := json.Marshal(compact.String())
+				if err != nil {
+					return nil, err
+				}
+				r["manifestJson"] = str
+				delete(r, "manifest")
+			}
+		}
+		var err error
+		if doc["resources"], err = json.Marshal(resources); err != nil {
+			return nil, err
+		}
+	}
+	back, err := json.Marshal(doc)
+	if err != nil {
+		return nil, err
+	}
+	s := &snapshotv1alpha1.Snapshot{}
+	if err := protojson.Unmarshal(back, s); err != nil {
+		return nil, fmt.Errorf("not a snapshot: %w", err)
+	}
+	switch v := s.GetSchemaVersion(); v {
+	case SchemaVersion:
+		return s, nil
+	case "":
+		return nil, errors.New("not a snapshot: no schema version")
+	default:
+		return nil, fmt.Errorf("snapshot schema %s is not supported by this version of setdrift (supported: %s)", v, SchemaVersion)
+	}
+}
+
 // MarshalInspectJSON renders a snapshot as indented, stable JSON, with each
 // resource's manifest inlined as an object instead of an escaped string.
 func MarshalInspectJSON(s *snapshotv1alpha1.Snapshot) ([]byte, error) {

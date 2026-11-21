@@ -2,17 +2,17 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package secretexport copies the values of an export's redacted Secrets
-// from the source cluster straight into a secret manager, so the
-// ExternalSecrets the export wrote can restore them in another cluster.
+// from the source cluster straight into a secret manager, so External
+// Secrets Operator can restore them in another cluster.
 //
 // It is the one part of SetDrift that handles secret values, and it is
-// separate from the export: `setdrift export` never reads a value, and
-// writes ExternalSecrets that name, for each Secret, a remote key and its
-// properties. This package reads those ExternalSecrets, reads each Secret's
-// live values with the user's own credentials, and writes them into the
-// secret manager with the user's own cloud credentials. Values are held in
-// memory only, never written to disk or printed: plans and reports show
-// remote keys, property names and Secret names.
+// separate from the export: `setdrift export` never reads a value. This
+// package reads which Secrets to copy from the export's redacted files,
+// names each one's remote secret as the user says, reads the live values
+// with the user's own credentials, writes them into the secret manager with
+// the user's own cloud credentials, and checks what the secret manager then
+// holds. Values are held in memory only, never written to disk or printed:
+// plans and reports show remote keys, property names and Secret names.
 //
 // Remote secrets that already exist are skipped unless overwriting is asked
 // for; the plan says which.
@@ -25,13 +25,9 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"unicode/utf8"
-
-	"sigs.k8s.io/yaml"
 )
 
 // Provider is a secret manager.
@@ -43,6 +39,8 @@ type Provider interface {
 	// Put writes value (a JSON object, one property per Secret key) under
 	// key, creating it, or replacing its value when overwrite is set.
 	Put(ctx context.Context, key, value string, overwrite bool) error
+	// Get returns the remote secret's value, and whether it exists.
+	Get(ctx context.Context, key string) (string, bool, error)
 }
 
 // SecretReader reads a Secret's data from the source cluster.
@@ -85,7 +83,11 @@ type Item struct {
 	// base64-encoded, and the ExternalSecret decodes them (decodingStrategy).
 	Binary []string
 	// Note explains a Missing or Failed status.
-	Note  string
+	Note string
+	// Merge: the live Secret has keys beyond the redacted ones, which a
+	// controller wrote (Argo CD's argocd-secret); its ExternalSecret adds
+	// its keys without owning the Secret (creationPolicy: Merge).
+	Merge bool
 	value string // the JSON to write; never printed
 }
 
@@ -95,73 +97,18 @@ type Plan struct {
 	Items    []*Item
 }
 
-// Load reads the remote secrets named by the ExternalSecrets in an export's
-// external-secrets/ directory (root is the cluster's directory).
-func Load(root string) ([]Remote, error) {
-	dir := filepath.Join(root, "external-secrets")
-	var out []Remote
-	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
+// Remotes pairs each Secret with its remote key: every redacted key is a
+// property of the same name.
+func Remotes(secrets []Source, keys []string) []Remote {
+	out := make([]Remote, len(secrets))
+	for i, src := range secrets {
+		props := make(map[string]string, len(src.Keys))
+		for _, k := range src.Keys {
+			props[k] = k
 		}
-		if d.IsDir() || filepath.Ext(path) != ".yaml" || d.Name() == "kustomization.yaml" {
-			return nil
-		}
-		b, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		var es struct {
-			Kind     string `json:"kind"`
-			Metadata struct {
-				Name      string `json:"name"`
-				Namespace string `json:"namespace"`
-			} `json:"metadata"`
-			Spec struct {
-				Target struct {
-					Name string `json:"name"`
-				} `json:"target"`
-				Data []struct {
-					SecretKey string `json:"secretKey"`
-					RemoteRef struct {
-						Key      string `json:"key"`
-						Property string `json:"property"`
-					} `json:"remoteRef"`
-				} `json:"data"`
-			} `json:"spec"`
-		}
-		if err := yaml.Unmarshal(b, &es); err != nil {
-			return fmt.Errorf("%s: %w", path, err)
-		}
-		if es.Kind != "ExternalSecret" {
-			return nil
-		}
-		rel, _ := filepath.Rel(root, path)
-		byKey := map[string]*Remote{}
-		var keys []string
-		for _, d := range es.Spec.Data {
-			r := byKey[d.RemoteRef.Key]
-			if r == nil {
-				target := es.Spec.Target.Name
-				if target == "" {
-					target = es.Metadata.Name
-				}
-				r = &Remote{Key: d.RemoteRef.Key, Namespace: es.Metadata.Namespace, Secret: target, Properties: map[string]string{}, File: filepath.ToSlash(rel)}
-				byKey[d.RemoteRef.Key] = r
-				keys = append(keys, d.RemoteRef.Key)
-			}
-			r.Properties[d.RemoteRef.Property] = d.SecretKey
-		}
-		for _, k := range keys {
-			out = append(out, *byKey[k])
-		}
-		return nil
-	})
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, fmt.Errorf("%s has no external-secrets/ directory: export again with --external-secrets (not none)", root)
+		out[i] = Remote{Key: keys[i], Namespace: src.Namespace, Secret: src.Name, Properties: props, File: src.File}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
-	return out, err
+	return out
 }
 
 // MakePlan reads each remote secret's values from the source cluster and
@@ -181,6 +128,11 @@ func MakePlan(ctx context.Context, remotes []Remote, src SecretReader, p Provide
 		}
 		value := map[string]string{}
 		var absent []string
+		for k := range data {
+			if _, ok := r.Properties[k]; !ok {
+				it.Merge = true
+			}
+		}
 		for _, prop := range sortedKeys(r.Properties) {
 			v, ok := data[r.Properties[prop]]
 			if !ok {
@@ -229,11 +181,9 @@ func (p *Plan) Writes() int {
 	return n
 }
 
-// Apply writes the planned values. Binary values are stored base64-encoded,
-// so it also adds decodingStrategy: Base64 to their entries in the
-// ExternalSecret files (under root, the cluster's directory). It goes on
-// after a failed write and returns the first error.
-func (p *Plan) Apply(ctx context.Context, root string, prov Provider) error {
+// Apply writes the planned values. It goes on after a failed write and
+// returns the first error.
+func (p *Plan) Apply(ctx context.Context, prov Provider) error {
 	var first error
 	for _, it := range p.Items {
 		if it.Status != Create && it.Status != Overwrite {
@@ -246,46 +196,83 @@ func (p *Plan) Apply(ctx context.Context, root string, prov Provider) error {
 			}
 			continue
 		}
-		it.value = ""
 		it.Status = Done
-		if len(it.Binary) > 0 {
-			if err := markBase64(filepath.Join(root, filepath.FromSlash(it.File)), it.Key, it.Binary); err != nil && first == nil {
-				first = err
-			}
-		}
 	}
 	return first
 }
 
-// markBase64 adds decodingStrategy: Base64 to the remoteRefs of key's
-// binary properties in an ExternalSecret file.
-func markBase64(path, key string, props []string) error {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return err
-	}
-	var es map[string]any
-	if err := yaml.Unmarshal(b, &es); err != nil {
-		return err
-	}
-	spec, _ := es["spec"].(map[string]any)
-	data, _ := spec["data"].([]any)
-	for _, d := range data {
-		m, _ := d.(map[string]any)
-		ref, _ := m["remoteRef"].(map[string]any)
-		if ref["key"] == key {
-			for _, p := range props {
-				if ref["property"] == p {
-					ref["decodingStrategy"] = "Base64"
+// Check is what the secret manager holds for one remote secret, compared
+// with the source Secret.
+type Check struct {
+	Key     string   `json:"key"`
+	Secret  string   `json:"secret"` // namespace/name
+	Exists  bool     `json:"exists"`
+	Keys    bool     `json:"keysMatch"`
+	Values  bool     `json:"valuesMatch"`
+	Missing []string `json:"missingKeys,omitempty"`
+	Extra   []string `json:"extraKeys,omitempty"`
+	Note    string   `json:"note,omitempty"`
+}
+
+// OK reports whether the remote secret holds exactly the source's values.
+func (c Check) OK() bool { return c.Exists && c.Keys && c.Values }
+
+// Verify reads each planned remote secret back from the secret manager and
+// compares it with the source Secret's values, held in memory since the
+// plan: whether it exists, has the same keys, and the same values. Nothing
+// is printed or kept but the result.
+func (p *Plan) Verify(ctx context.Context, prov Provider) []Check {
+	out := make([]Check, 0, len(p.Items))
+	for _, it := range p.Items {
+		c := Check{Key: it.Key, Secret: it.Namespace + "/" + it.Secret}
+		if it.Status == Missing {
+			c.Note = it.Note
+			out = append(out, c)
+			continue
+		}
+		got, exists, err := prov.Get(ctx, it.Key)
+		switch {
+		case err != nil:
+			c.Note = "can't read it back: " + err.Error()
+		case !exists:
+			c.Note = "not in " + prov.Name()
+		default:
+			c.Exists = true
+			var remote, want map[string]string
+			if json.Unmarshal([]byte(got), &remote) != nil {
+				c.Note = "not a JSON object of keys"
+				break
+			}
+			_ = json.Unmarshal([]byte(it.value), &want)
+			for k := range want {
+				if _, ok := remote[k]; !ok {
+					c.Missing = append(c.Missing, k)
 				}
 			}
+			for k := range remote {
+				if _, ok := want[k]; !ok {
+					c.Extra = append(c.Extra, k)
+				}
+			}
+			sort.Strings(c.Missing)
+			sort.Strings(c.Extra)
+			c.Keys = len(c.Missing) == 0 && len(c.Extra) == 0
+			c.Values = c.Keys
+			for k, v := range want {
+				if remote[k] != v {
+					c.Values = false
+				}
+			}
+			switch {
+			case !c.Keys:
+				c.Note = "its keys differ from the Secret's"
+			case !c.Values:
+				c.Note = "its values differ from the Secret's (--overwrite replaces them)"
+			}
 		}
+		out = append(out, c)
 	}
-	out, err := yaml.Marshal(es)
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(path, out, 0o644)
+	return out
 }
 
 func sortedKeys(m map[string]string) []string {

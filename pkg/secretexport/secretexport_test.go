@@ -12,27 +12,30 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"setdrift.io/setdrift-engine/pkg/emit/kustomize"
-	snapshotv1alpha1 "setdrift.io/setdrift-engine/pkg/snapshot/v1alpha1"
 )
 
 type fakeProvider struct {
-	existing map[string]bool
+	existing map[string]string // key -> stored JSON
 	written  map[string]string
 	fail     string
 }
 
 func (*fakeProvider) Name() string { return "fake" }
 func (f *fakeProvider) Exists(_ context.Context, key string) (bool, error) {
-	return f.existing[key], nil
+	_, ok := f.existing[key]
+	return ok, nil
 }
 func (f *fakeProvider) Put(_ context.Context, key, value string, _ bool) error {
 	if key == f.fail {
 		return fmt.Errorf("denied")
 	}
 	f.written[key] = value
+	f.existing[key] = value
 	return nil
+}
+func (f *fakeProvider) Get(_ context.Context, key string) (string, bool, error) {
+	v, ok := f.existing[key]
+	return v, ok, nil
 }
 
 type fakeSecrets map[string]map[string][]byte
@@ -45,111 +48,148 @@ func (f fakeSecrets) Get(_ context.Context, ns, name string) (map[string][]byte,
 	return d, nil
 }
 
-// exportWith writes an export with an ExternalSecret for each redacted Secret.
-func exportWith(t *testing.T, secrets map[string][]string) string {
+func writeFiles(t *testing.T, files map[string]string) string {
 	t.Helper()
-	s := &snapshotv1alpha1.Snapshot{Cluster: &snapshotv1alpha1.Cluster{Name: "prod"}}
-	for ref, keys := range secrets {
-		ns, name, _ := strings.Cut(ref, "/")
-		data := map[string]string{}
-		var reds []*snapshotv1alpha1.Redaction
-		for _, k := range keys {
-			data[k] = "U0VURFJJRlRfUkVEQUNURUQ="
-			reds = append(reds, &snapshotv1alpha1.Redaction{Path: "data." + k, Reason: snapshotv1alpha1.RedactionReason_REDACTION_REASON_SECRET_VALUE})
-		}
-		m, _ := json.Marshal(map[string]any{"apiVersion": "v1", "kind": "Secret", "metadata": map[string]any{"name": name, "namespace": ns}, "data": data})
-		s.Resources = append(s.Resources, &snapshotv1alpha1.Resource{ApiVersion: "v1", Kind: "Secret", Namespace: ns, Name: name, ManifestJson: string(m), Redactions: reds})
-	}
-	es, _ := kustomize.DefaultExternalSecrets("generic")
 	dir := t.TempDir()
-	if err := (kustomize.Emitter{ExternalSecrets: es}).Emit(s, dir); err != nil {
-		t.Fatal(err)
+	for name, content := range files {
+		p := filepath.Join(dir, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
-	return kustomize.ClusterDir(dir, "prod")
+	return dir
 }
 
-func TestPlanAndApply(t *testing.T) {
-	root := exportWith(t, map[string][]string{
-		"shop/db":       {"password", "username"},
-		"shop/keystore": {"store.p12"},
-		"shop/old":      {"token"},
-		"shop/gone":     {"k"},
-		"shop/partial":  {"a", "b"},
-		"shop/denied":   {"k"},
+const redactedSecret = "apiVersion: v1\nkind: Secret\nmetadata: {name: %s, namespace: %s}\ntype: Opaque\ndata: {%s}\n"
+
+func secretFile(ns, name string, keys ...string) string {
+	var data []string
+	for _, k := range keys {
+		data = append(data, k+": U0VURFJJRlRfUkVEQUNURUQ=")
+	}
+	return fmt.Sprintf(redactedSecret, name, ns, strings.Join(data, ", "))
+}
+
+func TestLoadRedacted(t *testing.T) {
+	dir := writeFiles(t, map[string]string{
+		"namespaces/shop/secret/db.yaml.redacted":              secretFile("shop", "db", "password", "username"),
+		"namespaces/argocd/secret/argocd-secret.yaml.redacted": "apiVersion: v1\nkind: Secret\nmetadata: {name: argocd-secret, namespace: argocd}\n",
+		"namespaces/shop/deployment.apps/api.yaml.redacted":    "apiVersion: apps/v1\nkind: Deployment\nmetadata: {name: api, namespace: shop}\n",
+		"namespaces/shop/secret/broken.yaml.redacted":          "kind: [",
+		"README.md": "not read",
 	})
-	remotes, err := Load(root)
-	if err != nil || len(remotes) != 6 {
-		t.Fatalf("%d remotes, %v", len(remotes), err)
-	}
-	src := fakeSecrets{
-		"shop/db":       {"password": []byte("hunter2"), "username": []byte("app")},
-		"shop/keystore": {"store.p12": {0xff, 0xfe, 0x00, 0x01}},
-		"shop/old":      {"token": []byte("t")},
-		"shop/partial":  {"a": []byte("x")},
-		"shop/denied":   {"k": []byte("v")},
-	}
-	prov := &fakeProvider{existing: map[string]bool{"prod/shop/old": true}, written: map[string]string{}, fail: "prod/shop/denied"}
-	plan, err := MakePlan(context.Background(), remotes, src, prov, false)
+	f, err := LoadRedacted(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	status := map[string]Status{}
+	if len(f.Secrets) != 1 || f.Secrets[0].Name != "db" || strings.Join(f.Secrets[0].Keys, ",") != "password,username" {
+		t.Errorf("secrets = %+v (a Secret with only generated keys has nothing to copy)", f.Secrets)
+	}
+	if len(f.Others) != 1 || !strings.Contains(f.Others[0], "Deployment shop/api") {
+		t.Errorf("others = %v", f.Others)
+	}
+	if len(f.Invalid) != 1 || !strings.Contains(f.Invalid[0], "broken.yaml.redacted") {
+		t.Errorf("invalid = %v", f.Invalid)
+	}
+	if _, err := LoadRedacted(filepath.Join(dir, "README.md")); err == nil {
+		t.Error("a file accepted as the folder")
+	}
+}
+
+func TestRemoteKeys(t *testing.T) {
+	secrets := []Source{{Namespace: "shop", Name: "db"}, {Namespace: "web", Name: "tls"}}
+	keys, err := RemoteKeys(SecretsManagerID, "{{.Cluster}}/{{.Namespace}}/{{.Name}}", "prod", secrets)
+	if err != nil || strings.Join(keys, " ") != "prod/shop/db prod/web/tls" {
+		t.Errorf("%v %v", keys, err)
+	}
+	for _, c := range []struct {
+		m       Manager
+		tmpl    string
+		wantErr string
+	}{
+		{SecretsManagerID, "{{.Cluster}}/{{.Name}}", "must include {{.Namespace}} and {{.Name}}"},
+		{SecretsManagerID, "{{.Cluster}}/{{.Namespce}}/{{.Name}}", "must include"},
+		{SecretsManagerID, "{{.Cluster}} {{.Namespace}}/{{.Name}}", "Secrets Manager allows"},
+		{ParameterStoreID, "{{.Cluster}}/{{.Namespace}}/{{.Name}}", "needs a leading /"},
+		{ParameterStoreID, "/aws/{{.Namespace}}/{{.Name}}", "not under /aws"},
+	} {
+		if _, err := RemoteKeys(c.m, c.tmpl, "prod", secrets); err == nil || !strings.Contains(err.Error(), c.wantErr) {
+			t.Errorf("%s %s: %v, want %q", c.m, c.tmpl, err, c.wantErr)
+		}
+	}
+	if _, err := RemoteKeys(ParameterStoreID, "/{{.Cluster}}/{{.Namespace}}/{{.Name}}", "prod", secrets); err != nil {
+		t.Errorf("parameter store: %v", err)
+	}
+}
+
+// Plan, write, read back: a controller-written key makes the ExternalSecret
+// merge, a binary value is stored base64, and the report compares what the
+// secret manager holds with the Secret.
+func TestPlanApplyVerify(t *testing.T) {
+	secrets := []Source{{Namespace: "shop", Name: "db", Keys: []string{"password"}},
+		{Namespace: "argocd", Name: "argocd-secret", Keys: []string{"oidc"}},
+		{Namespace: "shop", Name: "keystore", Keys: []string{"jks"}},
+		{Namespace: "shop", Name: "stale", Keys: []string{"token"}}}
+	keys, _ := RemoteKeys(SecretsManagerID, "prod/{{.Namespace}}/{{.Name}}", "prod", secrets)
+	src := fakeSecrets{
+		"shop/db":              {"password": []byte("hunter2")},
+		"argocd/argocd-secret": {"oidc": []byte("x"), "server.secretkey": []byte("generated")},
+		"shop/keystore":        {"jks": {0xff, 0xfe}},
+		"shop/stale":           {"token": []byte("new")},
+	}
+	prov := &fakeProvider{existing: map[string]string{"prod/shop/stale": `{"token":"old"}`}, written: map[string]string{}}
+	plan, err := MakePlan(context.Background(), Remotes(secrets, keys), src, prov, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	by := map[string]*Item{}
 	for _, it := range plan.Items {
-		status[it.Secret] = it.Status
+		by[it.Secret] = it
 	}
-	want := map[string]Status{"db": Create, "keystore": Create, "old": Skip, "gone": Missing, "partial": Missing, "denied": Create}
-	for k, v := range want {
-		if status[k] != v {
-			t.Errorf("%s: %q, want %q", k, status[k], v)
-		}
+	if !by["argocd-secret"].Merge || by["db"].Merge {
+		t.Error("merge: only a Secret with keys beyond the redacted ones")
 	}
-	if plan.Writes() != 3 {
-		t.Errorf("writes %d", plan.Writes())
+	if len(by["keystore"].Binary) != 1 || by["stale"].Status != Skip || plan.Writes() != 3 {
+		t.Errorf("plan: %+v", plan.Items)
 	}
-	// Nothing about the plan prints a value.
-	if b, _ := json.Marshal(plan); strings.Contains(string(b), "hunter2") {
-		t.Error("plan holds a value where it can be printed")
+	if err := plan.Apply(context.Background(), prov); err != nil {
+		t.Fatal(err)
 	}
-	if err := plan.Apply(context.Background(), root, prov); err == nil || !strings.Contains(err.Error(), "denied") {
-		t.Errorf("apply error %v", err)
+	var stored map[string]string
+	_ = json.Unmarshal([]byte(prov.written["prod/shop/db"]), &stored)
+	if stored["password"] != "hunter2" {
+		t.Errorf("stored %v", stored)
 	}
-	if prov.written["prod/shop/db"] != `{"password":"hunter2","username":"app"}` {
-		t.Errorf("db written %q", prov.written["prod/shop/db"])
+	report := plan.Verify(context.Background(), prov)
+	ok := map[string]Check{}
+	for _, c := range report {
+		ok[c.Secret] = c
 	}
-	if prov.written["prod/shop/keystore"] != `{"store.p12":"//4AAQ=="}` {
-		t.Errorf("keystore written %q", prov.written["prod/shop/keystore"])
+	if !ok["shop/db"].OK() || !ok["argocd/argocd-secret"].OK() || !ok["shop/keystore"].OK() {
+		t.Errorf("report: %+v", report)
 	}
-	if _, ok := prov.written["prod/shop/old"]; ok {
-		t.Error("existing remote secret overwritten")
+	if c := ok["shop/stale"]; c.OK() || !c.Keys || c.Values || !strings.Contains(c.Note, "values differ") {
+		t.Errorf("a skipped secret with old values: %+v", c)
 	}
-	es, _ := os.ReadFile(filepath.Join(root, "external-secrets", "namespaces", "shop", "externalsecret.external-secrets.io", "keystore.yaml"))
-	if !strings.Contains(string(es), "decodingStrategy: Base64") {
-		t.Errorf("binary key not marked:\n%s", es)
-	}
-	// No value reached a file.
-	_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, _ error) error {
-		if b, err := os.ReadFile(p); err == nil && !d.IsDir() && strings.Contains(string(b), "hunter2") {
-			t.Errorf("%s holds a value", p)
-		}
-		return nil
-	})
-}
-
-func TestOverwrite(t *testing.T) {
-	root := exportWith(t, map[string][]string{"shop/old": {"token"}})
-	remotes, _ := Load(root)
-	prov := &fakeProvider{existing: map[string]bool{"prod/shop/old": true}, written: map[string]string{}}
-	plan, err := MakePlan(context.Background(), remotes, fakeSecrets{"shop/old": {"token": []byte("t2")}}, prov, true)
-	if err != nil || plan.Items[0].Status != Overwrite {
-		t.Fatalf("%v %v", err, plan.Items[0].Status)
-	}
-	if err := plan.Apply(context.Background(), root, prov); err != nil || prov.written["prod/shop/old"] != `{"token":"t2"}` {
-		t.Errorf("%v %q", err, prov.written["prod/shop/old"])
+	// the report never carries a value
+	b, _ := json.Marshal(report)
+	if strings.Contains(string(b), "hunter2") || strings.Contains(string(b), "old") {
+		t.Errorf("a value reached the report: %s", b)
 	}
 }
 
-func TestLoadWithoutExternalSecrets(t *testing.T) {
-	if _, err := Load(t.TempDir()); err == nil || !strings.Contains(err.Error(), "--external-secrets") {
-		t.Errorf("got %v", err)
+func TestPlanMissing(t *testing.T) {
+	secrets := []Source{{Namespace: "shop", Name: "gone", Keys: []string{"k"}}, {Namespace: "shop", Name: "db", Keys: []string{"password", "user"}}}
+	keys, _ := RemoteKeys(SecretsManagerID, "{{.Namespace}}/{{.Name}}", "prod", secrets)
+	plan, err := MakePlan(context.Background(), Remotes(secrets, keys), fakeSecrets{"shop/db": {"password": []byte("x")}},
+		&fakeProvider{existing: map[string]string{}, written: map[string]string{}}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Items[0].Status != Missing || plan.Items[1].Status != Missing || !strings.Contains(plan.Items[1].Note, "no key user") {
+		t.Errorf("%+v %+v", plan.Items[0], plan.Items[1])
 	}
 }

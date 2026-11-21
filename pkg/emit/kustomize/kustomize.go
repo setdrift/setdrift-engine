@@ -26,7 +26,6 @@ package kustomize
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -37,6 +36,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"setdrift.io/setdrift-engine/pkg/helmsource"
+	"setdrift.io/setdrift-engine/pkg/lifecycle"
 	"setdrift.io/setdrift-engine/pkg/platform"
 	snapshotv1alpha1 "setdrift.io/setdrift-engine/pkg/snapshot/v1alpha1"
 )
@@ -112,8 +112,6 @@ type Emitter struct {
 	Force bool
 	// UnmanagedOnly writes only resources nothing manages, the ones to adopt into Git
 	UnmanagedOnly bool
-	// GroupBy chooses the directories within each bucket. Empty means GroupByKind
-	GroupBy GroupBy
 	// ExternalSecrets, if set, writes an ExternalSecret for every redacted Secret.
 	ExternalSecrets *ExternalSecrets
 	// HelmRepos, if set, names the chart repository of Helm releases for RESTORE.md (export --helm-repos).
@@ -124,16 +122,6 @@ type Emitter struct {
 	// show it (no --aws, and a context that is not the cluster ARN).
 	Region string
 }
-
-// GroupBy is how resources are arranged within a bucket
-type GroupBy string
-
-const (
-	// GroupByKind: <kind>[.<group>]/<name>.yaml
-	GroupByKind GroupBy = "kind"
-	// GroupByApp: <app>/<kind>[.<group>]/<name>.yaml, see AppName
-	GroupByApp GroupBy = "app"
-)
 
 // Unmanaged reports whether no GitOps tool or Helm manages r, counting a low-confidence or missing manager as none: the resources to adopt into Git.
 func Unmanaged(r *snapshotv1alpha1.Resource) bool {
@@ -259,7 +247,7 @@ func replaceDir(tmp, root string) error {
 func (e Emitter) write(s *snapshotv1alpha1.Snapshot, root, name string) error {
 	var resources []*snapshotv1alpha1.Resource
 	for _, r := range s.Resources {
-		if Platform(r) || (e.UnmanagedOnly && !Unmanaged(r)) {
+		if NotWritten(r) || (e.UnmanagedOnly && !Unmanaged(r)) {
 			continue
 		}
 		resources = append(resources, r)
@@ -278,11 +266,11 @@ func (e Emitter) write(s *snapshotv1alpha1.Snapshot, root, name string) error {
 		}
 	}
 	resources = append(generic, bound...)
-	paths, err := filePaths(generic, e.GroupBy, "")
+	paths, err := filePaths(generic, "")
 	if err != nil {
 		return err
 	}
-	boundPaths, err := filePaths(bound, e.GroupBy, platDir)
+	boundPaths, err := filePaths(bound, platDir)
 	if err != nil {
 		return err
 	}
@@ -315,7 +303,7 @@ func (e Emitter) write(s *snapshotv1alpha1.Snapshot, root, name string) error {
 			return err
 		}
 		if e.ExternalSecrets != nil {
-			if remotes, err = e.ExternalSecrets.resolved(cls).emit(s, resources, root, e.GroupBy, platDir); err != nil {
+			if remotes, err = e.ExternalSecrets.resolved(cls).emit(s, resources, root, platDir); err != nil {
 				return err
 			}
 		}
@@ -352,9 +340,8 @@ func (e Emitter) write(s *snapshotv1alpha1.Snapshot, root, name string) error {
 	}
 
 	var bucketNames, platformBuckets []string
-	// crds/ has no app directories: CRDs are cluster-wide, one per file.
 	for b, files := range buckets {
-		if err := writeBucket(filepath.Join(root, b), files, e.GroupBy == GroupByApp && b != crdsDir); err != nil {
+		if err := writeBucket(filepath.Join(root, b), files); err != nil {
 			return err
 		}
 		if platDir != "" && strings.HasPrefix(filepath.ToSlash(b), platDir+"/") {
@@ -388,27 +375,10 @@ func (e Emitter) write(s *snapshotv1alpha1.Snapshot, root, name string) error {
 	return writeKustomization(root, bucketNames)
 }
 
-// writes the kustomization.yaml files for one bucket, grouped by app, each app directory gets one listing its files, and the bucket's lists the app directories
-func writeBucket(dir string, files []string, grouped bool) error {
+// writeBucket writes the kustomization.yaml of one bucket, listing its files.
+func writeBucket(dir string, files []string) error {
 	sort.Strings(files)
-	if !grouped {
-		return writeKustomization(dir, files)
-	}
-	byApp := map[string][]string{}
-	var apps []string
-	for _, f := range files {
-		app, rest, _ := strings.Cut(f, "/")
-		if _, ok := byApp[app]; !ok {
-			apps = append(apps, app)
-		}
-		byApp[app] = append(byApp[app], rest)
-	}
-	for _, app := range apps {
-		if err := writeKustomization(filepath.Join(dir, app), byApp[app]); err != nil {
-			return err
-		}
-	}
-	return writeKustomization(dir, apps)
+	return writeKustomization(dir, files)
 }
 
 // writeManifest writes r as YAML and returns what it wrote.
@@ -441,52 +411,24 @@ func PlatformName(manager string) string {
 	return manager
 }
 
+// RanOnce reports whether r is a finished Job (lifecycle.RanOnce): the snapshot keeps it as a record of what ran, the
+// export leaves it out, as applying it would run it again, and RESTORE.md lists it.
+func RanOnce(r *snapshotv1alpha1.Resource) bool {
+	for _, f := range r.GetFindings() {
+		if f.GetCode() == lifecycle.RanOnce {
+			return true
+		}
+	}
+	return false
+}
+
+// NotWritten reports whether the export leaves r out though the snapshot has it: the platform's own objects, and
+// finished Jobs.
+func NotWritten(r *snapshotv1alpha1.Resource) bool { return Platform(r) || RanOnce(r) }
+
 // Platform reports whether the platform manages r (e.g. EKS), so a new cluster gets its own copy and the export leaves it out.
 func Platform(r *snapshotv1alpha1.Resource) bool {
 	return r.GetProvenance().GetSource() == snapshotv1alpha1.Source_SOURCE_PLATFORM
-}
-
-// AppName is the application a resource belongs to, e.g. argo app, flux kustomization, or helm release
-func AppName(r *snapshotv1alpha1.Resource) string {
-	name := ""
-	if m := r.GetProvenance().GetManager(); m != "" {
-		name = m[strings.LastIndex(m, "/")+1:]
-	}
-	if name == "" {
-		var manifest struct {
-			Metadata struct {
-				Labels map[string]string `json:"labels"`
-			} `json:"metadata"`
-			Spec struct {
-				// A Service's selector
-				Selector json.RawMessage `json:"selector"`
-				Template struct {
-					Metadata struct {
-						Labels map[string]string `json:"labels"`
-					} `json:"metadata"`
-				} `json:"template"`
-			} `json:"spec"`
-		}
-		_ = json.Unmarshal([]byte(r.ManifestJson), &manifest)
-		var selector map[string]string
-		if r.Kind == "Service" {
-			_ = json.Unmarshal(manifest.Spec.Selector, &selector)
-		}
-		// The object's labels, else its Pods, else the Pods it selects so a Service lands with its workload.
-	labels:
-		for _, labels := range []map[string]string{manifest.Metadata.Labels, manifest.Spec.Template.Metadata.Labels, selector} {
-			for _, l := range []string{"app.kubernetes.io/part-of", "app.kubernetes.io/instance", "app.kubernetes.io/name", "app", "k8s-app"} {
-				if v := labels[l]; v != "" {
-					name = v
-					break labels
-				}
-			}
-		}
-	}
-	if name == "" {
-		return "ungrouped"
-	}
-	return strings.ToLower(SafeName(name))
 }
 
 // filePath is where a resource is written: rel within bucket.
@@ -496,7 +438,7 @@ type filePath struct {
 }
 
 // filePaths gives every resource its own file, unique even on case-insensitive file systems
-func filePaths(resources []*snapshotv1alpha1.Resource, groupBy GroupBy, prefix string) ([]filePath, error) {
+func filePaths(resources []*snapshotv1alpha1.Resource, prefix string) ([]filePath, error) {
 	paths := make([]filePath, len(resources))
 	used := map[string]bool{} // lower-cased paths already assigned
 	assign := func(i int) error {
@@ -517,9 +459,6 @@ func filePaths(resources []*snapshotv1alpha1.Resource, groupBy GroupBy, prefix s
 		if bucket == crdsDir {
 			// One kind, so no kind directory.
 			dir = ""
-		}
-		if groupBy == GroupByApp && bucket != crdsDir {
-			dir = filepath.Join(AppName(r), dir)
 		}
 		ref := fmt.Sprintf("%s %s/%s", r.Kind, r.Namespace, r.Name)
 		for _, name := range []string{SafeName(r.Name), SafeName(r.Name) + "-" + shortHash(r.Name)} {

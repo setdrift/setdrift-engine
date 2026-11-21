@@ -19,31 +19,58 @@ import (
 	"setdrift.io/setdrift-engine/pkg/emit/kustomize"
 )
 
-// An export whose ExternalSecrets read from a generic store needs to be told
-// which secret manager to write to; that is checked before any cluster read.
-func TestSecretsExportNeedsAManager(t *testing.T) {
-	root := t.TempDir()
-	es := filepath.Join(root, "external-secrets", "namespaces", "shop", "externalsecret.external-secrets.io")
-	if err := os.MkdirAll(es, 0o755); err != nil {
-		t.Fatal(err)
+func runSecrets(t *testing.T, args ...string) (string, error) {
+	t.Helper()
+	var out bytes.Buffer
+	cmd := newRootCmd()
+	cmd.SetArgs(append([]string{"secrets", "export"}, args...))
+	cmd.SetOut(&out)
+	cmd.SetErr(&bytes.Buffer{})
+	err := cmd.Execute()
+	return out.String(), err
+}
+
+// --aws first, then every setting, none taken from the export.
+func TestSecretsExportRequiresEverySetting(t *testing.T) {
+	if _, err := runSecrets(t, t.TempDir()); err == nil || !strings.Contains(err.Error(), "supports AWS only so far: pass --aws") {
+		t.Errorf("no --aws: %v", err)
 	}
-	for name, content := range map[string]string{
-		filepath.Join(root, "kustomization.yaml"):     "resources: []\n",
-		filepath.Join(root, kustomize.ExportInfoFile): "cluster: prod\nsecretManager: generic\n",
-		filepath.Join(es, "db.yaml"): "apiVersion: external-secrets.io/v1\nkind: ExternalSecret\nmetadata: {name: db, namespace: shop}\n" +
-			"spec: {target: {name: db}, data: [{secretKey: password, remoteRef: {key: prod/shop/db, property: password}}]}\n",
-	} {
-		if err := os.WriteFile(name, []byte(content), 0o644); err != nil {
-			t.Fatal(err)
+	_, err := runSecrets(t, "--aws", t.TempDir())
+	for _, flag := range []string{"--context", "--region", "--secret-manager", "--secret-key-template", "--store-kind", "--store-name", "--external-secrets-out"} {
+		if err == nil || !strings.Contains(err.Error(), flag) {
+			t.Errorf("missing %s not named: %v", flag, err)
 		}
 	}
+	// --check writes no ExternalSecrets, so needs no directory for them
+	if _, err := runSecrets(t, "--aws", "--check", t.TempDir()); err == nil || strings.Contains(err.Error(), "--external-secrets-out") {
+		t.Errorf("--check: %v", err)
+	}
+}
+
+// Every check runs and is reported before anything is read or written: a
+// bad setting, a folder outside an export, an unknown context.
+func TestSecretsExportChecks(t *testing.T) {
 	t.Setenv("KUBECONFIG", filepath.Join(t.TempDir(), "missing"))
-	cmd := newRootCmd()
-	cmd.SetArgs([]string{"secrets", "export", root})
-	cmd.SetOut(&bytes.Buffer{})
-	cmd.SetErr(&bytes.Buffer{})
-	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "--secret-manager aws-secrets-manager") {
-		t.Errorf("got %v", err)
+	t.Setenv("AWS_CONFIG_FILE", filepath.Join(t.TempDir(), "none"))
+	t.Setenv("AWS_SHARED_CREDENTIALS_FILE", filepath.Join(t.TempDir(), "none"))
+	t.Setenv("AWS_EC2_METADATA_DISABLED", "true")
+	folder := t.TempDir()
+	if err := os.WriteFile(filepath.Join(folder, "db.yaml.redacted"), []byte("apiVersion: v1\nkind: Secret\nmetadata: {name: db, namespace: shop}\ndata: {k: x}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, err := runSecrets(t, "--aws", folder, "--context", "prod", "--region", "us-east-2", "--secret-manager", "vault",
+		"--secret-key-template", "{{.Namespace}}/{{.Name}}", "--store-kind", "ClusterSecretStore", "--store-name", "Bad_Name", "--check")
+	if err == nil || !strings.Contains(err.Error(), "nothing was read from the Secrets or written") {
+		t.Fatalf("err = %v", err)
+	}
+	for _, want := range []string{
+		"failed   inputs        --secret-manager vault: use aws-secrets-manager or aws-parameter-store",
+		"failed   folder        " + folder + " is not in a SetDrift export",
+		"failed   source        context prod:",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("checks lack %q:\n%s", want, out)
+		}
 	}
 }
 
@@ -54,14 +81,33 @@ func TestSecretsExportChecksSource(t *testing.T) {
 	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(),
 		map[schema.GroupVersionResource]string{namespacesGVR: "NamespaceList"}, ns)
 	info := &kustomize.ExportInfo{Cluster: "prod", KubeSystemUID: "uid-source"}
-	if err := (&secretsExportOptions{}).checkSource(context.Background(), dyn, info); err == nil || !strings.Contains(err.Error(), "not the cluster the export came from") {
-		t.Errorf("other cluster: %v", err)
+	if msg := (&secretsExportOptions{}).checkSource(context.Background(), dyn, info); !strings.Contains(msg, "not the cluster the export came from") {
+		t.Errorf("other cluster: %q", msg)
 	}
-	if err := (&secretsExportOptions{otherCluster: true}).checkSource(context.Background(), dyn, info); err != nil {
-		t.Errorf("--other-cluster: %v", err)
+	if msg := (&secretsExportOptions{otherCluster: true}).checkSource(context.Background(), dyn, info); msg != "" {
+		t.Errorf("--other-cluster: %q", msg)
 	}
 	info.KubeSystemUID = "uid-other"
-	if err := (&secretsExportOptions{}).checkSource(context.Background(), dyn, info); err != nil {
-		t.Errorf("source cluster: %v", err)
+	if msg := (&secretsExportOptions{}).checkSource(context.Background(), dyn, info); msg != "" {
+		t.Errorf("source cluster: %q", msg)
+	}
+}
+
+// exportOf finds the export a redacted folder is in.
+func TestExportOf(t *testing.T) {
+	dir := t.TempDir()
+	cluster := filepath.Join(dir, "clusters", "prod")
+	if err := os.MkdirAll(filepath.Join(cluster, "redacted", "namespaces", "shop"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cluster, kustomize.ExportInfoFile), []byte("cluster: prod\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	info, root := exportOf(filepath.Join(cluster, "redacted", "namespaces", "shop"))
+	if info == nil || info.Cluster != "prod" || root != cluster {
+		t.Errorf("%+v %s", info, root)
+	}
+	if info, _ := exportOf(t.TempDir()); info != nil {
+		t.Error("a folder outside an export")
 	}
 }

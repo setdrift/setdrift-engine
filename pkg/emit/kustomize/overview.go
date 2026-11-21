@@ -52,7 +52,7 @@ func NewOverview(s *snapshotv1alpha1.Snapshot, unmanagedOnly bool) Overview {
 		for _, f := range r.GetFindings() {
 			cleanup[f.GetCode()] = append(cleanup[f.GetCode()], fmt.Sprintf("%s %s: %s", r.Kind, qualified(r), f.GetMessage()))
 		}
-		if Platform(r) || (unmanagedOnly && !Unmanaged(r)) {
+		if NotWritten(r) || (unmanagedOnly && !Unmanaged(r)) {
 			continue
 		}
 		isSecret := r.Kind == "Secret" && r.ApiVersion == "v1"

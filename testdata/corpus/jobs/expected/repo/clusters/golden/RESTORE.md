@@ -41,6 +41,15 @@ in the new cluster. Delete them from the export first if they must not
 - Job batch/reindex
 - Pod batch/toolbox
 
+**Ran once in the source.** These Jobs had finished, so the export leaves
+them out: applying one runs it again. If the new cluster needs one (a schema
+or a seed it has not got), run it by hand from its manifest in the snapshot
+(`setdrift snapshot json`); the others need nothing:
+
+| Job | Result | Image | Command |
+|---|---|---|---|
+| batch/migrate-v12 | Complete | `ghcr.io/example/migrate:12` | `(the image's own)` |
+
 
 ## 4. Check the result
 

@@ -202,26 +202,6 @@ func TestGeneratedSecrets(t *testing.T) {
 	}
 }
 
-func TestGroupByAppWithCRDs(t *testing.T) {
-	s := &snapshotv1alpha1.Snapshot{
-		Cluster: &snapshotv1alpha1.Cluster{Name: "prod"},
-		Resources: []*snapshotv1alpha1.Resource{
-			{ApiVersion: "apiextensions.k8s.io/v1", Kind: "CustomResourceDefinition", Name: "widgets.example.com",
-				ManifestJson: `{"apiVersion":"apiextensions.k8s.io/v1","kind":"CustomResourceDefinition","metadata":{"name":"widgets.example.com"}}`},
-			{ApiVersion: "v1", Kind: "ConfigMap", Namespace: "shop", Name: "cfg",
-				ManifestJson: `{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"cfg","namespace":"shop","labels":{"app":"web"}}}`},
-		},
-	}
-	dir := t.TempDir()
-	if err := (Emitter{GroupBy: GroupByApp}).Emit(s, dir); err != nil {
-		t.Fatal(err)
-	}
-	k, err := os.ReadFile(filepath.Join(ClusterDir(dir, "prod"), "crds", "kustomization.yaml"))
-	if err != nil || !strings.Contains(string(k), "- widgets.example.com.yaml") {
-		t.Errorf("crds/kustomization.yaml: %v\n%s", err, k)
-	}
-}
-
 // ECR hosts are found in both docker config forms, in data (base64) and
 // stringData, with or without a scheme, in China and FIPS endpoints; other
 // registries are not ECR.
@@ -386,4 +366,17 @@ func readFile(t *testing.T, root, rel string) string {
 		t.Fatal(err)
 	}
 	return string(b)
+}
+
+// RESTORE.md's secrets export command gives every setting, from the export's own.
+func TestSecretsExportCommand(t *testing.T) {
+	x, _ := DefaultExternalSecrets("aws-parameter-store")
+	got := strings.Join(restoreData{secretSettings: x}.secretsExportCommand("us-east-2"), "\n")
+	for _, want := range []string{"setdrift secrets export --aws redacted", `--context "$SRC" --region us-east-2`,
+		"--secret-manager aws-parameter-store --secret-key-template '/{{.Cluster}}/{{.Namespace}}/{{.Name}}'",
+		"--store-kind ClusterSecretStore --store-name secret-store", "--external-secrets-out external-secrets --force"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("lacks %q:\n%s", want, got)
+		}
+	}
 }

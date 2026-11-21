@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"google.golang.org/protobuf/proto"
+
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	"setdrift.io/setdrift-engine/pkg/resource"
@@ -124,5 +126,31 @@ func TestNoHTMLEscaping(t *testing.T) {
 	}
 	if !strings.Contains(string(js), "a && b <c>") {
 		t.Errorf("inspect JSON escaped: %s", js)
+	}
+}
+
+// The JSON export writes beside each .pb reads back as the same snapshot.
+func TestParseJSONRoundTrip(t *testing.T) {
+	s := &snapshotv1alpha1.Snapshot{SchemaVersion: SchemaVersion, Id: "x",
+		Cluster: &snapshotv1alpha1.Cluster{Name: "prod"},
+		Resources: []*snapshotv1alpha1.Resource{{ApiVersion: "v1", Kind: "ConfigMap", Namespace: "shop", Name: "a",
+			ManifestJson: `{"apiVersion":"v1","data":{"k":"v <&>"},"kind":"ConfigMap"}`}}}
+	js, err := MarshalInspectJSON(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	back, err := Parse(js)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !proto.Equal(s, back) {
+		t.Errorf("round trip:\n got %v\nwant %v", back, s)
+	}
+	pb, _ := Marshal(s)
+	if fromPB, err := Parse(pb); err != nil || !proto.Equal(s, fromPB) {
+		t.Errorf("protobuf through Parse: %v", err)
+	}
+	if _, err := Parse([]byte(`{"hello": 1}`)); err == nil {
+		t.Error("JSON that is no snapshot parsed")
 	}
 }

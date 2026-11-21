@@ -22,8 +22,8 @@
     },
     {
       "severity": "SEVERITY_INFO",
-      "code": "FINISHED_JOBS_SKIPPED",
-      "message": "1 finished Job in namespace \"batch\" was not exported; use --include-finished-jobs to export them"
+      "code": "FINISHED_JOBS_NOT_WRITTEN",
+      "message": "1 finished Job in namespace \"batch\" was not exported; kept in the snapshot as a record of what ran, as applying one runs it again; RESTORE.md lists them"
     },
     {
       "severity": "SEVERITY_INFO",
@@ -200,6 +200,44 @@
         "source": "SOURCE_UNMANAGED"
       },
       "sourceUid": "c0000000-0000-0000-0000-000000000020"
+    },
+    {
+      "apiVersion": "batch/v1",
+      "findings": [
+        {
+          "severity": "SEVERITY_INFO",
+          "code": "RAN_ONCE",
+          "message": "finished Job (Complete): kept in the snapshot, not written to the export, as applying it would run it again; RESTORE.md lists it to re-run by hand if a new cluster needs it"
+        }
+      ],
+      "kind": "Job",
+      "manifest": {
+        "apiVersion": "batch/v1",
+        "kind": "Job",
+        "metadata": {
+          "name": "migrate-v12",
+          "namespace": "batch"
+        },
+        "spec": {
+          "template": {
+            "spec": {
+              "containers": [
+                {
+                  "image": "ghcr.io/example/migrate:12",
+                  "name": "migrate"
+                }
+              ],
+              "restartPolicy": "Never"
+            }
+          }
+        }
+      },
+      "name": "migrate-v12",
+      "namespace": "batch",
+      "provenance": {
+        "source": "SOURCE_UNMANAGED"
+      },
+      "sourceUid": "c0000000-0000-0000-0000-000000000010"
     },
     {
       "apiVersion": "batch/v1",

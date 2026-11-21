@@ -20,6 +20,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"setdrift.io/setdrift-engine/pkg/helmsource"
+	"setdrift.io/setdrift-engine/pkg/lifecycle"
 	"setdrift.io/setdrift-engine/pkg/platform"
 	"setdrift.io/setdrift-engine/pkg/redact"
 	snapshotv1alpha1 "setdrift.io/setdrift-engine/pkg/snapshot/v1alpha1"
@@ -79,6 +80,8 @@ type restoreData struct {
 	helmRepos *helmsource.Repos
 	// secretService is the ExternalSecrets' AWS service, SecretsManager or ParameterStore
 	secretService string
+	// secrets are the export's ExternalSecrets settings, resolved for the platform
+	secretSettings *ExternalSecrets
 	// cls is the source's platform; platDir its directory in the export
 	// (platform/aws/eks), empty when it is not known.
 	cls     *platform.Classification
@@ -111,7 +114,8 @@ func classification(s *snapshotv1alpha1.Snapshot) *platform.Classification {
 func (e Emitter) writeRestore(root string, s *snapshotv1alpha1.Snapshot, written []writtenFile, remotes []remoteSecret, platformObjects int) error {
 	d := restoreData{s: s, written: written, remotes: remotes, region: region(s), helmRepos: e.HelmRepos, platformObjects: platformObjects}
 	if e.ExternalSecrets != nil {
-		d.secretService = e.ExternalSecrets.resolved(classification(s)).Service
+		d.secretSettings = e.ExternalSecrets.resolved(classification(s))
+		d.secretService = d.secretSettings.Service
 	}
 	if d.region == "<region>" && e.Region != "" {
 		d.region = e.Region
@@ -1026,19 +1030,22 @@ func (d restoreData) secrets(p *playbook) {
 				"source cluster into Secrets Manager or Parameter Store (it shows a plan\n" +
 				"first and never writes or prints a value); elsewhere, create the remote\n" +
 				"secrets the README lists, with their keys:\n\n")
-			var cLines []string
 			if d.secretService == "SecretsManager" || d.secretService == "ParameterStore" {
-				cLines = append(cLines, `setdrift secrets export . --context "$SRC"   # source cluster, read-only; writes to AWS`)
+				// source cluster, read-only; checks everything, then writes to AWS and rewrites external-secrets/ to match
+				p.code(d.secretsExportCommand(d.region)...)
 			}
-			p.code(append(cLines, `kubectl --context "$DST" apply -k external-secrets/`)...)
+			p.code(`kubectl --context "$DST" apply -k external-secrets/`)
 			// The AWS commands that create the remote secrets, for a new cluster on AWS.
 			if q := d.awsp; q != nil && (d.secretService == "SecretsManager" || d.secretService == "ParameterStore") {
 				q.section("Secrets in " + choose(d.secretService == "ParameterStore", "Parameter Store", "Secrets Manager"))
 				q.printf("Before applying external-secrets/ (RESTORE.md's secrets step), create each\n" +
 					"remote secret with the values. `setdrift secrets export` copies them from\n" +
-					"the source cluster, never writing or printing them; it skips remote\n" +
-					"secrets that exist already (`--overwrite` replaces them):\n\n")
-				q.code(`setdrift secrets export . --context "$SRC" --region "$REGION"`)
+					"the source cluster, never writing or printing them. It checks the settings,\n" +
+					"the source cluster and the AWS permissions first, skips remote secrets that\n" +
+					"exist already (`--overwrite` replaces them), reads each one back, and\n" +
+					"rewrites external-secrets/ to match; `--check` runs the checks only. From\n" +
+					"the cluster's directory:\n\n")
+				q.code(d.secretsExportCommand(`"$REGION"`)...)
 				q.printf("Or by hand, as JSON with one property per key:\n\n")
 				var lines []string
 				for _, r := range d.remotes {
@@ -1477,8 +1484,14 @@ func (d restoreData) after(p *playbook) {
 			}
 		}
 	}
+	var ranOnce []*snapshotv1alpha1.Resource
+	for _, r := range d.s.GetResources() {
+		if RanOnce(r) {
+			ranOnce = append(ranOnce, r)
+		}
+	}
 	lbs := d.s.GetInventory().GetLoadBalancers()
-	if len(runOnce) == 0 && len(lbs) == 0 {
+	if len(runOnce) == 0 && len(lbs) == 0 && len(ranOnce) == 0 {
 		return
 	}
 	p.section("After applying")
@@ -1507,6 +1520,71 @@ func (d restoreData) after(p *playbook) {
 		}
 		p.printf("\n")
 	}
+	if len(ranOnce) > 0 {
+		p.printf("**Ran once in the source.** These Jobs had finished, so the export leaves\n" +
+			"them out: applying one runs it again. If the new cluster needs one (a schema\n" +
+			"or a seed it has not got), run it by hand from its manifest in the snapshot\n" +
+			"(`setdrift snapshot json`); the others need nothing:\n\n")
+		p.printf("| Job | Result | Image | Command |\n|---|---|---|---|\n")
+		for _, r := range ranOnce {
+			result, image, command := jobSummary(r)
+			p.printf("| %s/%s | %s | `%s` | `%s` |\n", r.Namespace, r.Name, result, image, command)
+		}
+		p.printf("\n")
+	}
+}
+
+// secretsExportCommand is the setdrift secrets export command for the
+// export's own settings, every one given, as the command requires.
+func (d restoreData) secretsExportCommand(region string) []string {
+	x := d.secretSettings
+	return []string{
+		`setdrift secrets export --aws redacted \`,
+		`  --context "$SRC" --region ` + region + ` \`,
+		`  --secret-manager ` + x.ID + ` --secret-key-template ` + shellQuote(x.KeyTemplate) + ` \`,
+		`  --store-kind ` + x.StoreKind + ` --store-name ` + x.StoreName + ` \`,
+		`  --external-secrets-out external-secrets --force`,
+	}
+}
+
+// jobSummary is a finished Job's result (Complete or Failed), image and
+// command, for RESTORE.md.
+func jobSummary(r *snapshotv1alpha1.Resource) (result, image, command string) {
+	var m struct {
+		Spec struct {
+			Template struct {
+				Spec struct {
+					Containers []struct {
+						Image   string   `json:"image"`
+						Command []string `json:"command"`
+						Args    []string `json:"args"`
+					} `json:"containers"`
+				} `json:"spec"`
+			} `json:"template"`
+		} `json:"spec"`
+	}
+	_ = json.Unmarshal([]byte(r.ManifestJson), &m)
+	// the manifest has no status by now: lifecycle recorded the outcome in its finding, "finished Job (Complete): ..."
+	result = "finished"
+	for _, f := range r.GetFindings() {
+		if f.GetCode() == lifecycle.RanOnce {
+			if _, rest, ok := strings.Cut(f.GetMessage(), "("); ok {
+				result, _, _ = strings.Cut(rest, ")")
+			}
+		}
+	}
+	var images, commands []string
+	for _, c := range m.Spec.Template.Spec.Containers {
+		images = append(images, c.Image)
+		if cmd := strings.Join(append(c.Command, c.Args...), " "); cmd != "" {
+			commands = append(commands, cmd)
+		}
+	}
+	command = strings.Join(commands, "; ")
+	if command == "" {
+		command = "(the image's own)"
+	}
+	return result, strings.ReplaceAll(strings.Join(images, ", "), "|", `\|`), strings.ReplaceAll(command, "|", `\|`)
 }
 
 // verify: compare the new cluster with the export.

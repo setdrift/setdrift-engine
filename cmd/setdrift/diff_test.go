@@ -9,6 +9,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -161,7 +162,7 @@ func TestDiffArgs(t *testing.T) {
 		{[]string{a, a, "-o", "json"}, "unknown shorthand flag: 'o'"},
 		{[]string{a, a, "--map-namespace", "shop"}, "--map-namespace shop: use A_NS=B_NS"},
 		{[]string{a, filepath.Join(t.TempDir(), "missing.pb")}, "missing.pb: no such file or directory"},
-		{[]string{a, "prod", "--kubeconfig", filepath.Join(t.TempDir(), "none")}, "context prod: --kubeconfig"},
+		{[]string{a, "prod", "--kubeconfig", filepath.Join(t.TempDir(), "none")}, "prod is neither a file or directory here nor a kubeconfig context: --kubeconfig"},
 	} {
 		_, err := runDiff(t, tc.args...)
 		if err == nil || !strings.Contains(err.Error(), tc.want) {
@@ -174,5 +175,103 @@ func TestDiffArgs(t *testing.T) {
 	var ee *exitError
 	if !errors.As(err, &ee) || ee.code != 2 || !strings.Contains(err.Error(), "not a snapshot") {
 		t.Errorf("bad snapshot with --exit-code: %v, want exit 2", err)
+	}
+}
+
+// Both arguments are checked before either is read; a JSON snapshot reads like
+// the .pb; a --map-namespace pair must name namespaces each side has.
+func TestDiffArgumentChecks(t *testing.T) {
+	dir := t.TempDir()
+	_, err := runDiff(t, filepath.Join(dir, "foo.pb"), filepath.Join(dir, "prod.json"))
+	if err == nil || !strings.Contains(err.Error(), "foo.pb: no such file") || !strings.Contains(err.Error(), "prod.json: no such file") {
+		t.Errorf("both missing: %v", err)
+	}
+
+	root := newRootCmd()
+	out := filepath.Join(dir, "out")
+	root.SetArgs([]string{"export", "--from-dir", filepath.Join("..", "..", "testdata", "corpus", "basic", "input"), "--cluster-name", "prod", "-o", out})
+	root.SetOut(&bytes.Buffer{})
+	if err := root.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	pb, _ := filepath.Glob(filepath.Join(out, "snapshots", "*.pb"))
+	js, _ := filepath.Glob(filepath.Join(out, "snapshots", "*.json"))
+	if len(pb) != 1 || len(js) != 1 {
+		t.Fatalf("snapshots: %v %v", pb, js)
+	}
+	text, err := runDiff(t, pb[0], js[0])
+	if err != nil || !strings.Contains(text, "No differences.") {
+		t.Errorf(".pb against its .json: %v\n%s", err, text)
+	}
+
+	_, err = runDiff(t, pb[0], js[0], "--map-namespace", "shpo=shop")
+	if err == nil || !strings.Contains(err.Error(), "has no namespace shpo; its namespaces are shop") {
+		t.Errorf("mapping a namespace the side lacks: %v", err)
+	}
+
+	if runtime.GOOS != "windows" && os.Getuid() != 0 {
+		locked := filepath.Join(dir, "locked.pb")
+		if err := os.WriteFile(locked, []byte("x"), 0o000); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := runDiff(t, locked, pb[0]); err == nil || !strings.Contains(err.Error(), "can't read it (permission denied)") {
+			t.Errorf("unreadable: %v", err)
+		}
+	}
+}
+
+// A bare name that is both a directory here and a kubeconfig context is an
+// error; ./name is the directory, context:name the context.
+func TestDiffResolveAmbiguity(t *testing.T) {
+	dir := t.TempDir()
+	kubeconfig := filepath.Join(dir, "kubeconfig")
+	if err := os.WriteFile(kubeconfig, []byte(`apiVersion: v1
+kind: Config
+clusters: [{name: c, cluster: {server: "https://127.0.0.1:1"}}]
+users: [{name: u, user: {token: x}}]
+contexts: [{name: prod, context: {cluster: c, user: u}}, {name: "arn:aws:eks:us-east-2:111122223333:cluster/prod", context: {cluster: c, user: u}}]
+current-context: prod
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, "prod"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, "staging"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+	o := &diffOptions{kubeconfig: kubeconfig}
+
+	if _, err := o.resolve("prod"); err == nil || !strings.Contains(err.Error(),
+		"prod is both a directory here and a kubeconfig context: write ./prod for the directory, or context:prod for the cluster") {
+		t.Errorf("ambiguous: %v", err)
+	}
+	for _, arg := range []string{"./prod", "prod/", filepath.Join(dir, "prod")} {
+		if sd, err := o.resolve(arg); err != nil || !sd.dir || sd.context != "" {
+			t.Errorf("%s: %+v %v, want the directory", arg, sd, err)
+		}
+	}
+	if sd, err := o.resolve("staging"); err != nil || !sd.dir {
+		t.Errorf("a directory only: %+v %v", sd, err)
+	}
+	if sd, err := o.resolve("context:prod"); err != nil || sd.context != "prod" || sd.path != "" {
+		t.Errorf("context:prod: %+v %v", sd, err)
+	}
+	if sd, err := o.resolve("context:arn:aws:eks:us-east-2:111122223333:cluster/prod"); err != nil ||
+		sd.context != "arn:aws:eks:us-east-2:111122223333:cluster/prod" {
+		t.Errorf("an ARN context: %+v %v", sd, err)
+	}
+	if _, err := o.resolve("context:"); err == nil || !strings.Contains(err.Error(), "name the context") {
+		t.Errorf("empty context: %v", err)
+	}
+	if _, err := o.resolve("context:nope"); err == nil || !strings.Contains(err.Error(), `no context "nope"`) {
+		t.Errorf("unknown context: %v", err)
+	}
+	a, _ := o.resolve("./prod")
+	b, _ := o.resolve(filepath.Join(dir, "prod"))
+	c, _ := o.resolve("context:prod")
+	if !a.same(b) || a.same(c) || !c.same(c) {
+		t.Error("same: the same directory by two paths is one side; a directory and a context are not")
 	}
 }

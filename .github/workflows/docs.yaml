@@ -1,0 +1,32 @@
+# Copyright The SetDrift Authors
+# SPDX-License-Identifier: Apache-2.0
+
+# A change to docs/ on main rebuilds preview.setdrift.io, where main's docs
+# are the latest, and setdrift.io (which shows released docs only, or main
+# before the first release). The site's repository (setdrift/setdrift.io)
+# copies these pages at every build. It needs the secret SITE_DISPATCH_TOKEN
+# (Contents read and write on that repository); without it, this does
+# nothing. release.yaml sends engine-release after each release.
+name: docs
+
+on:
+  push:
+    branches: [main]
+    paths: ["docs/**"]
+
+permissions:
+  contents: read
+
+jobs:
+  site:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Rebuild setdrift.io
+        env:
+          GH_TOKEN: ${{ secrets.SITE_DISPATCH_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "SITE_DISPATCH_TOKEN is not set: setdrift.io rebuilds on its own next deploy"
+            exit 0
+          fi
+          gh api repos/setdrift/setdrift.io/dispatches -f event_type=engine-docs

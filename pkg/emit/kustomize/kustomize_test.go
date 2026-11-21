@@ -141,43 +141,6 @@ func TestUnmanagedOnly(t *testing.T) {
 	}
 }
 
-func TestGroupByApp(t *testing.T) {
-	withManager := func(r *snapshotv1alpha1.Resource, manager string) *snapshotv1alpha1.Resource {
-		r.Provenance = &snapshotv1alpha1.Provenance{Manager: manager}
-		return r
-	}
-	labelled := resource("ConfigMap", "shop", "labelled", false)
-	labelled.ManifestJson = `{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"labelled","namespace":"shop","labels":{"app.kubernetes.io/name":"Cache"}}}`
-	s := &snapshotv1alpha1.Snapshot{
-		Cluster: &snapshotv1alpha1.Cluster{Name: "c"},
-		Resources: []*snapshotv1alpha1.Resource{
-			withManager(resource("ConfigMap", "shop", "a", false), "argocd/payments"),
-			withManager(resource("ConfigMap", "shop", "b", false), "argocd/payments"),
-			labelled,
-			resource("ConfigMap", "shop", "loose", false),
-		},
-	}
-	dir := t.TempDir()
-	if err := (Emitter{GroupBy: GroupByApp}).Emit(s, dir); err != nil {
-		t.Fatal(err)
-	}
-	ns := filepath.Join(dir, "clusters", "c", "namespaces", "shop")
-	for _, f := range []string{"payments/configmap/a.yaml", "payments/configmap/b.yaml", "payments/kustomization.yaml",
-		"cache/configmap/labelled.yaml", "ungrouped/configmap/loose.yaml"} {
-		if _, err := os.Stat(filepath.Join(ns, f)); err != nil {
-			t.Errorf("missing %s", f)
-		}
-	}
-	b, _ := os.ReadFile(filepath.Join(ns, "kustomization.yaml"))
-	if want := "resources:\n- cache\n- payments\n- ungrouped\n"; !strings.HasSuffix(string(b), want) {
-		t.Errorf("namespace kustomization:\n%s\nwant it to end with:\n%s", b, want)
-	}
-	b, _ = os.ReadFile(filepath.Join(ns, "payments", "kustomization.yaml"))
-	if want := "resources:\n- configmap/a.yaml\n- configmap/b.yaml\n"; !strings.HasSuffix(string(b), want) {
-		t.Errorf("app kustomization:\n%s", b)
-	}
-}
-
 func TestExternalSecretKeyTemplate(t *testing.T) {
 	es, err := DefaultExternalSecrets("aws-parameter-store")
 	if err != nil {

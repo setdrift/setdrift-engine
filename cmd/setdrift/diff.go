@@ -19,6 +19,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"k8s.io/client-go/tools/clientcmd"
 
 	"setdrift.io/setdrift-engine/pkg/collect"
 	"setdrift.io/setdrift-engine/pkg/diff"
@@ -64,10 +65,16 @@ itself, and says what differs and what it can tell about why: who manages
 each resource on each side, whether a Helm chart version differs, and which
 differences are only each cluster's own values (its name, region, account).
 
-A and B are each a kubeconfig context, a snapshot file (each export saves
-one in its snapshots/ directory),
-or a directory of manifests. Both are read and normalized as export reads
-them, so server defaults, status and secret values never show up as
+A and B are each a kubeconfig context, a snapshot file (.pb or .json: each
+export saves both in its snapshots/ directory), or a directory of manifests:
+  - context:NAME is always the kubeconfig context NAME (context:arn:aws:... too);
+  - a path (with a / or \, or ending .pb, .json, .yaml or .yml) is always a
+    file or directory, and must exist;
+  - a bare name is a file or directory if one exists here, else a context.
+    A bare name that is both is an error, as the two compare different
+    things: write ./prod for the directory, or context:prod for the cluster.
+Both arguments are checked before either is read. They are read and
+normalized as export reads them, so server defaults, status and secret values never show up as
 differences: Secrets compare by their keys. Each platform's own objects
 (EKS's, kind's) are not compared.
 
@@ -83,7 +90,8 @@ with --map-namespace: setdrift diff prod prod --map-namespace shop=shop-prod.`,
   setdrift diff staging prod -n shop --map-namespace shop-staging=shop
   setdrift diff prod prod --map-namespace shop=shop-canary   # two namespaces of one cluster
   setdrift diff staging prod --format json > diff.json
-  setdrift diff staging prod --exit-code            # in CI: exit 1 when they differ`,
+  setdrift diff staging prod --exit-code            # in CI: exit 1 when they differ
+  setdrift diff ./prod context:prod                 # an export directory named prod, and the cluster`,
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			err := o.run(cmd, args[0], args[1])
@@ -117,8 +125,15 @@ func (o *diffOptions) run(cmd *cobra.Command, a, b string) error {
 		}
 		nsMap[from] = to
 	}
+	// both arguments resolved and checked before either is read: every problem at once
+	ra, errA := o.resolve(a)
+	rb, errB := o.resolve(b)
+	if err := errors.Join(errA, errB); err != nil {
+		return err
+	}
+	same := ra.same(rb)
 	namespaces := o.namespaces
-	if a == b {
+	if same {
 		// one cluster (or snapshot) with itself: two of its namespaces
 		if len(nsMap) == 0 {
 			return fmt.Errorf("comparing %s with itself: to compare two of its namespaces, pass --map-namespace A_NS=B_NS", a)
@@ -140,22 +155,29 @@ func (o *diffOptions) run(cmd *cobra.Command, a, b string) error {
 		bNamespaces = append(bNamespaces, ns)
 	}
 
-	sa, fileA, err := o.read(cmd, a, namespaces)
+	sa, fileA, err := o.read(cmd, ra, namespaces)
 	if err != nil {
 		return err
 	}
-	sb, fileB, err := o.read(cmd, b, bNamespaces)
+	sb, fileB, err := o.read(cmd, rb, bNamespaces)
 	if err != nil {
+		return err
+	}
+	if err := checkMapping(nsMap, sa, sb, a, b); err != nil {
 		return err
 	}
 	la, lb := sa.GetCluster().GetName(), sb.GetCluster().GetName()
 	switch {
-	case a == b:
+	case same:
 		// two namespaces of one cluster
 		la, lb = la+" ("+strings.Join(namespaces, ", ")+")", lb+" ("+strings.Join(bNamespaces, ", ")+")"
 	case la == lb:
-		// one cluster at two times: say which is which
-		la, lb = when(sa, la, fileA), when(sb, lb, fileB)
+		// one cluster at two times, or a directory named after it: say which is which
+		la, lb = label(ra, sa, la, fileA), label(rb, sb, lb, fileB)
+		if la == lb {
+			// taken in the same second: add each one's file
+			la, lb = la+" ("+filepath.Base(ra.arg)+")", lb+" ("+filepath.Base(rb.arg)+")"
+		}
 	}
 	res, err := diff.Compare(sa, sb, diff.Options{NamespaceMap: nsMap, LabelA: la, LabelB: lb})
 	if err != nil {
@@ -177,7 +199,7 @@ func (o *diffOptions) run(cmd *cobra.Command, a, b string) error {
 		}
 	} else {
 		// two namespaces of one cluster have the same nodes
-		printDiff(cmd.OutOrStdout(), res, o.maxFields, a != b)
+		printDiff(cmd.OutOrStdout(), res, o.maxFields, !same)
 	}
 	if o.exitCode && !res.Same() {
 		return &exitError{code: 1}
@@ -185,46 +207,202 @@ func (o *diffOptions) run(cmd *cobra.Command, a, b string) error {
 	return nil
 }
 
-// read loads one side: a snapshot file, a directory of manifests, or a
-// kubeconfig context, limited to namespaces when set. file reports a
-// snapshot file.
-func (o *diffOptions) read(cmd *cobra.Command, arg string, namespaces []string) (s *snapshotv1alpha1.Snapshot, file bool, err error) {
-	if fi, err := os.Stat(arg); err == nil {
-		if fi.IsDir() {
-			eo := &exportOptions{}
-			src := &source{collector: collect.FileSource{Dir: arg}, plat: &platform.Stage{},
-				cluster: &snapshotv1alpha1.Cluster{Name: filepath.Base(filepath.Clean(arg))}}
-			s, err := eo.capture(cmd.Context(), src)
-			if err != nil {
-				return nil, false, fmt.Errorf("%s: %w", arg, err)
+// side is one argument of diff, resolved: a path (a snapshot file or a
+// directory of manifests) or a kubeconfig context.
+type side struct {
+	arg     string
+	path    string
+	dir     bool
+	context string
+}
+
+// contextPrefix marks an argument as a kubeconfig context, whatever files
+// are around: context:prod. Only the first is stripped, so context:arn:aws:eks:... works.
+const contextPrefix = "context:"
+
+// resolve decides what arg names, and checks it can be read, without reading it:
+//   - context:NAME is the kubeconfig context NAME;
+//   - a path (with a / or \, or ending .pb, .json, .yaml or .yml) is a file or directory, and must exist;
+//   - a bare name is a file or directory if one exists here, else a context; both is an error, as the
+//     two would compare different things.
+func (o *diffOptions) resolve(arg string) (side, error) {
+	if name, ok := strings.CutPrefix(arg, contextPrefix); ok {
+		if name == "" {
+			return side{}, fmt.Errorf("%s: name the context after %s", arg, contextPrefix)
+		}
+		if _, err := loadConfig(o.kubeconfig, name); err != nil {
+			return side{}, fmt.Errorf("context %s: %w", name, err)
+		}
+		return side{arg: arg, context: name}, nil
+	}
+	fi, statErr := os.Stat(arg)
+	exists := statErr == nil
+	if !pathLike(arg) {
+		isContext := o.hasContext(arg)
+		switch {
+		case exists && isContext:
+			what := "file"
+			if fi.IsDir() {
+				what = "directory"
 			}
-			return onlyNamespaces(s, namespaces), false, nil
+			return side{}, fmt.Errorf("%s is both a %s here and a kubeconfig context: write ./%s for the %s, or %s%s for the cluster",
+				arg, what, arg, what, contextPrefix, arg)
+		case !exists:
+			if _, err := loadConfig(o.kubeconfig, arg); err != nil {
+				return side{}, fmt.Errorf("%s is neither a file or directory here nor a kubeconfig context: %w", arg, err)
+			}
+			return side{arg: arg, context: arg}, nil
 		}
-		raw, err := os.ReadFile(arg)
+	}
+	if !exists {
+		return side{}, fmt.Errorf("%s: no such file or directory (a snapshot file, a directory of manifests, or %sNAME for a kubeconfig context)", arg, contextPrefix)
+	}
+	if fi.IsDir() {
+		return side{arg: arg, path: arg, dir: true}, nil
+	}
+	f, err := os.Open(arg)
+	if err != nil {
+		return side{}, readError(arg, err)
+	}
+	f.Close()
+	return side{arg: arg, path: arg}, nil
+}
+
+// hasContext reports whether the kubeconfig has a context named name, reading only the kubeconfig.
+func (o *diffOptions) hasContext(name string) bool {
+	rules := clientcmd.NewDefaultClientConfigLoadingRules()
+	if o.kubeconfig != "" {
+		rules.ExplicitPath = expandHome(o.kubeconfig)
+	}
+	raw, err := rules.Load()
+	return err == nil && raw.Contexts[name] != nil
+}
+
+// same reports whether two sides name the same cluster or the same file.
+func (a side) same(b side) bool {
+	if a.context != "" || b.context != "" {
+		return a.context == b.context
+	}
+	pa, errA := filepath.Abs(a.path)
+	pb, errB := filepath.Abs(b.path)
+	return errA == nil && errB == nil && pa == pb
+}
+
+// read loads one side, limited to namespaces when set. file reports a snapshot file.
+func (o *diffOptions) read(cmd *cobra.Command, sd side, namespaces []string) (s *snapshotv1alpha1.Snapshot, file bool, err error) {
+	switch {
+	case sd.dir:
+		eo := &exportOptions{}
+		src := &source{collector: collect.FileSource{Dir: sd.path}, plat: &platform.Stage{},
+			cluster: &snapshotv1alpha1.Cluster{Name: filepath.Base(filepath.Clean(sd.path))}}
+		s, err := eo.capture(cmd.Context(), src)
 		if err != nil {
-			return nil, false, err
+			return nil, false, fmt.Errorf("%s: %w", sd.path, err)
 		}
-		s, err := snapshot.Unmarshal(raw)
+		return onlyNamespaces(s, namespaces), false, nil
+	case sd.path != "":
+		raw, err := os.ReadFile(sd.path)
 		if err != nil {
-			return nil, false, fmt.Errorf("%s: %w (export saves snapshots in its snapshots/ directory)", arg, err)
+			return nil, false, readError(sd.path, err)
+		}
+		s, err := snapshot.Parse(raw)
+		if err != nil {
+			return nil, false, fmt.Errorf("%s: %w (export saves snapshots, .pb and .json, in its snapshots/ directory)", sd.path, err)
 		}
 		return onlyNamespaces(s, namespaces), true, nil
 	}
-	// a path that isn't there is a typo, not a context to try
-	if strings.ContainsAny(arg, `/\`) || slices.Contains([]string{".pb", ".json", ".yaml", ".yml"}, filepath.Ext(arg)) {
-		return nil, false, fmt.Errorf("%s: no such file or directory (a snapshot file, a directory of manifests, or a kubeconfig context)", arg)
-	}
-	fmt.Fprintf(cmd.ErrOrStderr(), "Reading %s...\n", arg)
-	eo := &exportOptions{kubeconfig: o.kubeconfig, context: arg, namespaces: namespaces, ciFieldManagers: o.ciFieldManagers}
+	fmt.Fprintf(cmd.ErrOrStderr(), "Reading %s...\n", sd.context)
+	eo := &exportOptions{kubeconfig: o.kubeconfig, context: sd.context, namespaces: namespaces, ciFieldManagers: o.ciFieldManagers}
 	src, err := eo.open(cmd)
 	if err != nil {
-		return nil, false, fmt.Errorf("context %s: %w", arg, err)
+		return nil, false, fmt.Errorf("context %s: %w", sd.context, err)
 	}
 	s, err = eo.capture(cmd.Context(), src)
 	if err != nil {
-		return nil, false, fmt.Errorf("context %s: %w", arg, err)
+		return nil, false, fmt.Errorf("context %s: %w", sd.context, err)
 	}
 	return s, false, nil
+}
+
+// pathLike: an argument that names a file, so a typo in it is not tried as a context.
+func pathLike(arg string) bool {
+	return strings.ContainsAny(arg, `/\`) || slices.Contains([]string{".pb", ".json", ".yaml", ".yml"}, filepath.Ext(arg))
+}
+
+// readError says plainly why a file can't be read.
+func readError(path string, err error) error {
+	if errors.Is(err, os.ErrPermission) {
+		return fmt.Errorf("%s: can't read it (permission denied); check its owner and mode with `ls -l %s` "+
+			"(snapshots are written readable by their owner only)", path, shellArg(path))
+	}
+	return fmt.Errorf("%s: %w", path, err)
+}
+
+// checkMapping refuses a --map-namespace pair whose namespace is not on its
+// side: a typo would otherwise be ignored, and every resource compared unpaired.
+func checkMapping(nsMap map[string]string, sa, sb *snapshotv1alpha1.Snapshot, a, b string) error {
+	if len(nsMap) == 0 {
+		return nil
+	}
+	na, nb := snapshotNamespaces(sa), snapshotNamespaces(sb)
+	var errs []error
+	froms := make([]string, 0, len(nsMap))
+	for from := range nsMap {
+		froms = append(froms, from)
+	}
+	sort.Strings(froms)
+	for _, from := range froms {
+		to := nsMap[from]
+		if !na[from] {
+			errs = append(errs, fmt.Errorf("--map-namespace %s=%s: %s has no namespace %s; its namespaces are %s", from, to, a, from, listOf(na)))
+		}
+		if !nb[to] {
+			errs = append(errs, fmt.Errorf("--map-namespace %s=%s: %s has no namespace %s; its namespaces are %s", from, to, b, to, listOf(nb)))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// snapshotNamespaces are the namespaces a snapshot holds: of its resources,
+// its Namespace objects, and the ones it read.
+func snapshotNamespaces(s *snapshotv1alpha1.Snapshot) map[string]bool {
+	out := map[string]bool{}
+	for _, r := range s.GetResources() {
+		if r.GetNamespace() != "" {
+			out[r.GetNamespace()] = true
+		}
+		if r.GetKind() == "Namespace" && r.GetApiVersion() == "v1" {
+			out[r.GetName()] = true
+		}
+	}
+	for _, ns := range s.GetScope().GetNamespaces() {
+		out[ns] = true
+	}
+	return out
+}
+
+func listOf(set map[string]bool) string {
+	if len(set) == 0 {
+		return "none"
+	}
+	names := make([]string, 0, len(set))
+	for n := range set {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	if len(names) > 15 {
+		return strings.Join(names[:15], ", ") + fmt.Sprintf(" and %d more", len(names)-15)
+	}
+	return strings.Join(names, ", ")
+}
+
+// label names a side whose cluster name the other side shares: a directory
+// by its path, a snapshot by when it was taken, a live cluster as now.
+func label(sd side, s *snapshotv1alpha1.Snapshot, name string, file bool) string {
+	if sd.dir {
+		return sd.path + " (directory)"
+	}
+	return when(s, name, file)
 }
 
 // when labels a side of one cluster compared with itself: "prod snapshot 2026-11-20 19:24:53Z", or "prod now".

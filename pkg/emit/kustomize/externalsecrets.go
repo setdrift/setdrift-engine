@@ -112,7 +112,7 @@ type remoteSecret struct {
 }
 
 // emit writes external-secrets/ for the redacted Secrets in resources, and returns the remote secrets they read.
-func (x *ExternalSecrets) emit(s *snapshotv1alpha1.Snapshot, resources []*snapshotv1alpha1.Resource, root string, groupBy GroupBy, platDir string) ([]remoteSecret, error) {
+func (x *ExternalSecrets) emit(s *snapshotv1alpha1.Snapshot, resources []*snapshotv1alpha1.Resource, root, platDir string) ([]remoteSecret, error) {
 	tmpl, err := x.keyTemplate()
 	if err != nil {
 		return nil, fmt.Errorf("secret key template: %w", err)
@@ -146,7 +146,7 @@ func (x *ExternalSecrets) emit(s *snapshotv1alpha1.Snapshot, resources []*snapsh
 	}
 	sortRemotes(remotes)
 
-	paths, err := filePaths(out, groupBy, externalSecretsDir)
+	paths, err := filePaths(out, externalSecretsDir)
 	if err != nil {
 		return nil, err
 	}

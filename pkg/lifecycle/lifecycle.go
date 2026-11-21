@@ -20,11 +20,14 @@ import (
 // annotations added to signify ad hoc events, helm and argo common annotations
 var hookAnnotations = []string{"helm.sh/hook", "argocd.argoproj.io/hook"}
 
-// flag to keep finished jobs, default dropped
-type Filter struct {
-	// IncludeFinishedJobs exports Jobs that have completed or failed.
-	IncludeFinishedJobs bool
-}
+// Filter drops what is finished or temporary, and marks the Jobs that ran
+// once: kept in the snapshot, as a record of what ran, but not written to
+// the export, as applying one runs it again.
+type Filter struct{}
+
+// RanOnce is the finding code of a standalone Job that has finished: the
+// emitter leaves it out of the repository, and RESTORE.md lists it.
+const RanOnce = "RAN_ONCE"
 
 // Name implements resource.Stage.
 func (Filter) Name() string { return "lifecycle" }
@@ -63,9 +66,13 @@ func (f Filter) Process(_ context.Context, objs []*resource.Object) ([]*resource
 		// drop pods with failed or succeeded status
 		case isPod && podTerminated(o):
 			terminated[ns]++
-		// drop finished jobs if flag is not set
-		case isJob && jobFinished(o) && !f.IncludeFinishedJobs:
+		// a finished Job: kept for the record, never written (it would run again)
+		case isJob && jobFinished(o):
 			finished[ns]++
+			o.AddFinding(snapshotv1alpha1.Severity_SEVERITY_INFO, RanOnce,
+				"finished Job (%s): kept in the snapshot, not written to the export, as applying it would run it again; RESTORE.md lists it to re-run by hand if a new cluster needs it",
+				jobResult(o))
+			out = append(out, o)
 		default:
 			// add warning to pods with no controllers, different than pods with missing controller
 			if isPod && metav1.GetControllerOfNoCopy(o) == nil {
@@ -86,7 +93,8 @@ func (f Filter) Process(_ context.Context, objs []*resource.Object) ([]*resource
 	var findings []*snapshotv1alpha1.Finding
 	findings = append(findings, deleting.findings("DELETING_SKIPPED", "object being deleted (or in a Namespace being deleted)", "objects being deleted (or in a Namespace being deleted)", "")...)
 	findings = append(findings, terminated.findings("TERMINATED_PODS_SKIPPED", "terminated Pod (Succeeded or Failed)", "terminated Pods (Succeeded or Failed)", "")...)
-	findings = append(findings, finished.findings("FINISHED_JOBS_SKIPPED", "finished Job", "finished Jobs", "; use --include-finished-jobs to export them")...)
+	findings = append(findings, finished.findings("FINISHED_JOBS_NOT_WRITTEN", "finished Job", "finished Jobs",
+		"; kept in the snapshot as a record of what ran, as applying one runs it again; RESTORE.md lists them")...)
 	findings = append(findings, hooks.findings("HOOKS_SKIPPED", "Helm or Argo CD hook (Pod, Job or Workflow)", "Helm or Argo CD hooks (Pods, Jobs and Workflows)", "")...)
 	return out, findings, nil
 }
@@ -137,6 +145,24 @@ func podTerminated(o *resource.Object) bool {
 }
 
 // check job for completion status
+// jobResult is a finished Job's outcome: Complete or Failed.
+func jobResult(o *resource.Object) string {
+	conds, _, _ := unstructured.NestedSlice(o.Object, "status", "conditions")
+	for _, c := range conds {
+		m, ok := c.(map[string]any)
+		if !ok || m["status"] != "True" {
+			continue
+		}
+		switch m["type"] {
+		case "Failed", "FailureTarget":
+			return "Failed"
+		case "Complete", "SuccessCriteriaMet":
+			return "Complete"
+		}
+	}
+	return "finished"
+}
+
 func jobFinished(o *resource.Object) bool {
 	conds, _, _ := unstructured.NestedSlice(o.Object, "status", "conditions")
 	for _, c := range conds {

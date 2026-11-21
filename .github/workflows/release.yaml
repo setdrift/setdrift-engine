@@ -55,3 +55,14 @@ jobs:
             dist/*.tar.gz
             dist/*.zip
             dist/checksums.txt
+      # setdrift.io/docs shows each release line's newest release: rebuild it
+      # with this one. Needs SITE_DISPATCH_TOKEN (see docs.yaml); skipped without it.
+      - name: Publish the docs of this release
+        env:
+          GH_TOKEN: ${{ secrets.SITE_DISPATCH_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "SITE_DISPATCH_TOKEN is not set: setdrift.io shows this release's docs at its next deploy"
+            exit 0
+          fi
+          gh api repos/setdrift/setdrift.io/dispatches -f event_type=engine-release
