@@ -22,7 +22,7 @@ require (
 	// cobra for cli commands and flags for cmd/
 	github.com/spf13/cobra v1.10.2
 	// yaml editing, formatting
-	go.yaml.in/yaml/v3 v3.0.5
+	go.yaml.in/yaml/v3 v3.0.6
 	// errgroup handling
 	golang.org/x/sync v0.25.0
 	// terminal detection
