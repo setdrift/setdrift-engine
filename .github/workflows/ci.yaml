@@ -1,12 +1,14 @@
 # CI for every pull request and every push to main: lint, check that
 # generated files are current, test, and build for each release platform.
 # Each step runs a make target, so a failure can be reproduced locally.
+# release.yaml calls it too, so nothing is published unless all of it passes.
 name: ci
 
 on:
   push:
     branches: [main]
   pull_request:
+  workflow_call:
 
 # Read-only token: CI only reads the repo. A public repo runs workflows from
 # forked pull requests, so the token gets no more than it needs.
@@ -53,7 +55,9 @@ jobs:
           fi
       # -race also catches data races in the concurrent code (collect, verify).
       - name: Test
-        run: go test -race ./...
+        # -shuffle=on runs the tests in a random order, so one that only
+        # passes by luck of the order fails here instead of in a later PR.
+        run: go test -race -shuffle=on ./...
       # Cross-compile for every release platform, so an OS-specific build
       # break shows up here rather than at release time. Keep the list in step
       # with scripts/third-party-notices.sh.

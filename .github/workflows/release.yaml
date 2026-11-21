@@ -17,7 +17,19 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # The whole of CI, and govulncheck, on the tagged commit: the release is
+  # published only when every job of both passes.
+  ci:
+    uses: ./.github/workflows/ci.yaml
+    permissions:
+      contents: read
+  vulncheck:
+    uses: ./.github/workflows/vulncheck.yaml
+    permissions:
+      contents: read
+
   release:
+    needs: [ci, vulncheck]
     runs-on: ubuntu-latest
     permissions:
       # the release and its archives
@@ -34,8 +46,6 @@ jobs:
       - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version-file: go.mod
-      - name: Test
-        run: go test ./...
       - uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
         with:
           # v2: the formula (brews) is deprecated in favor of casks, which
