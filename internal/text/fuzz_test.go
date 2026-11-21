@@ -1,3 +1,5 @@
+// fuzzes ShellQuote against a real POSIX shell
+
 package text
 
 import (
@@ -7,7 +9,7 @@ import (
 	"testing"
 )
 
-// A POSIX shell reads ShellQuote's word back as exactly the input, and as one word.
+// check that a POSIX shell reads ShellQuote's word back as exactly the input, and as one word
 func FuzzShellQuote(f *testing.F) {
 	if runtime.GOOS == "windows" {
 		f.Skip("needs a POSIX shell")

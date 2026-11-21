@@ -1,3 +1,5 @@
+// fuzzes the redaction of values and the decoding of Helm release records, which come from data anyone with namespace write access can create
+
 package redact
 
 import (
@@ -9,7 +11,7 @@ import (
 	"setdrift.io/setdrift-engine/pkg/resource"
 )
 
-// A value the patterns match never survives Values, wherever it is.
+// check that a value the patterns match never survives Values, wherever it is
 func FuzzValues(f *testing.F) {
 	for _, s := range []string{"AKIAIOSFODNN7EXAMPLE", "ghp_0123456789abcdefghijklmnopqrstuvwxyz", "plain", "-----BEGIN RSA PRIVATE KEY-----\nx", "postgres://u:p@h/db"} {
 		f.Add(s, "key")
@@ -23,7 +25,7 @@ func FuzzValues(f *testing.F) {
 	})
 }
 
-// holds reports whether v holds the string s anywhere.
+// holds tells if v holds the string s anywhere, nested maps and lists included
 func holds(v any, s string) bool {
 	switch v := v.(type) {
 	case string:
@@ -44,8 +46,7 @@ func holds(v any, s string) bool {
 	return false
 }
 
-// helmRelease decodes base64, gzip and JSON from a Secret anyone with write
-// access to a namespace can create: it may give up, never panic.
+// check that helmRelease, decoding base64, gzip and JSON from a Secret anyone with write access to a namespace can create, may give up but never panics
 func FuzzHelmRelease(f *testing.F) {
 	for _, s := range []string{"", "{}", "\x1f\x8b\x08\x00", "{\"name\":\"x\",\"chart\":{\"metadata\":{\"name\":\"c\"}}}"} {
 		f.Add([]byte(s))

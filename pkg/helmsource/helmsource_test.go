@@ -1,3 +1,5 @@
+// tests the Helm post-renderer, the annotation it adds, the URLs it refuses and its read limit
+
 package helmsource
 
 import (
@@ -8,6 +10,7 @@ import (
 	"testing"
 )
 
+// check that every object gets the chart repository annotation, even with null annotations, nothing else changes, and an empty repository is refused
 func TestAnnotate(t *testing.T) {
 	in := `---
 # Source: chart/templates/sa.yaml
@@ -49,8 +52,7 @@ metadata:
 	}
 }
 
-// A repository URL with credentials is refused, with nothing written, in
-// both URL forms Helm takes.
+// check that a repository URL with credentials is refused with nothing written, in both URL forms Helm takes
 func TestAnnotateRefusesCredentials(t *testing.T) {
 	for _, repo := range []string{"https://user:token@charts.example.com", "oci://user@registry.example.com/charts"} {
 		var out bytes.Buffer
@@ -64,7 +66,7 @@ func TestAnnotateRefusesCredentials(t *testing.T) {
 	}
 }
 
-// Annotate stops reading past its limit.
+// check that the capped reader Annotate uses reads input up to its limit and fails past it
 func TestCappedReader(t *testing.T) {
 	if b, err := io.ReadAll(&cappedReader{r: strings.NewReader("abcd"), n: 5}); err != nil || string(b) != "abcd" {
 		t.Errorf("under the limit: %q, %v", b, err)

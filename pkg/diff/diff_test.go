@@ -1,3 +1,5 @@
+// tests comparing two snapshots, pairing resources, setting aside each cluster's own values, the reasons, volumes, nodes and what both sides read
+
 package diff
 
 import (
@@ -8,11 +10,13 @@ import (
 	snapshotv1alpha1 "setdrift.io/setdrift-engine/pkg/snapshot/v1alpha1"
 )
 
+// res builds a snapshot resource with the given manifest and provenance
 func res(apiVersion, kind, ns, name, manifest string, src snapshotv1alpha1.Source, manager string) *snapshotv1alpha1.Resource {
 	return &snapshotv1alpha1.Resource{ApiVersion: apiVersion, Kind: kind, Namespace: ns, Name: name, ManifestJson: manifest,
 		Provenance: &snapshotv1alpha1.Provenance{Source: src, Manager: manager}}
 }
 
+// snap builds a snapshot of the named cluster with the given provider id, region and resources
 func snap(name, providerID, region string, rs ...*snapshotv1alpha1.Resource) *snapshotv1alpha1.Snapshot {
 	return &snapshotv1alpha1.Snapshot{
 		Cluster:   &snapshotv1alpha1.Cluster{Name: name, ProviderId: providerID, Classification: &snapshotv1alpha1.Platform{Region: region}},
@@ -20,8 +24,10 @@ func snap(name, providerID, region string, rs ...*snapshotv1alpha1.Resource) *sn
 	}
 }
 
+// unmanaged is the provenance source of a resource applied by hand
 const unmanaged = snapshotv1alpha1.Source_SOURCE_UNMANAGED
 
+// check that resources pair by key, platform objects are left out, sides come from the provider id, and fields split into real and cluster-only differences
 func TestCompare(t *testing.T) {
 	deploy := func(replicas, image, env string) string {
 		return `{"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"api","namespace":"shop"},"spec":{"replicas":` + replicas +
@@ -35,7 +41,7 @@ func TestCompare(t *testing.T) {
 		res("v1", "ConfigMap", "kube-system", "aws-auth", `{"data":{"x":"1"}}`, snapshotv1alpha1.Source_SOURCE_PLATFORM, "eks"),
 	)
 	b := snap("prod", "arn:aws:eks:eu-west-1:222222222222:cluster/prod", "",
-		// containers in another order: paired by name, so only the real changes show
+		// containers in another order, paired by name, so only the real changes show
 		res("apps/v1", "Deployment", "shop", "api",
 			`{"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"api","namespace":"shop"},"spec":{"replicas":4,"template":{"spec":{"containers":[`+
 				`{"name":"api","image":"api:1.1","env":[{"name":"QUEUE","value":"arn:aws:sqs:eu-west-1:222222222222:prod-jobs"}]},{"name":"sidecar","image":"envoy:1"}]}}}}`,
@@ -89,7 +95,7 @@ func TestCompare(t *testing.T) {
 		t.Errorf("api reasons = %v", api.Reasons)
 	}
 
-	// staging.example.com vs prod.example.com: the cluster names
+	// staging.example.com vs prod.example.com, only the cluster names differ
 	if env := byName["env"]; !env.EnvOnly() {
 		t.Errorf("env should differ only in cluster values: %+v", env.Fields)
 	}
@@ -101,6 +107,7 @@ func TestCompare(t *testing.T) {
 	}
 }
 
+// check that --map-namespace pairs namespaces with different names and leaves no differences, and without the map nothing pairs
 func TestNamespaceMap(t *testing.T) {
 	a := snap("a", "", "",
 		res("v1", "Namespace", "", "shop-staging", `{"metadata":{"name":"shop-staging"}}`, unmanaged, ""),
@@ -128,6 +135,7 @@ func TestNamespaceMap(t *testing.T) {
 	}
 }
 
+// check that a Helm chart version difference is given as the reason, and the same chart points at the values or a change after install
 func TestHelmChartReason(t *testing.T) {
 	helm := snapshotv1alpha1.Source_SOURCE_HELM
 	mk := func(version, replicas string) *snapshotv1alpha1.Snapshot {
@@ -145,11 +153,12 @@ func TestHelmChartReason(t *testing.T) {
 	}
 }
 
+// check that a cluster's own values are replaced only as separate words, between non-alphanumeric boundaries, and short values are left alone
 func TestSubstitutionBoundaries(t *testing.T) {
 	sub := substitutions(Side{Cluster: "prod", Region: "us-east-1"}, map[string]string{"shop-staging": "shop"}, false)
 	for in, want := range map[string]string{
 		"prod":                 "\x00\x01\x01\x01\x00",
-		"production":           "production", // not a whole word
+		"production":           "production", // a longer word, not the name on its own
 		"db.shop.svc":          "db.\x00\x01\x01\x01\x01\x00.svc",
 		"shop-shop":            "\x00\x01\x01\x01\x01\x00-\x00\x01\x01\x01\x01\x00",
 		"prod.us-east-1.x.com": "\x00\x01\x01\x01\x00.\x00\x01\x01\x00.x.com",
@@ -164,6 +173,7 @@ func TestSubstitutionBoundaries(t *testing.T) {
 	}
 }
 
+// check that bound volumes differing by the default storage class show with the reason and the workloads mounting them, and HPA-scaled replicas are left out
 func TestVolumesAndHPA(t *testing.T) {
 	pvc := `{"apiVersion":"v1","kind":"PersistentVolumeClaim","metadata":{"name":"data","namespace":"shop"},"spec":{"resources":{"requests":{"storage":"1Gi"}}}}`
 	deploy := `{"spec":{"template":{"spec":{"volumes":[{"name":"d","persistentVolumeClaim":{"claimName":"data"}}]}}}}`
@@ -199,13 +209,14 @@ func TestVolumesAndHPA(t *testing.T) {
 	if len(web.Reasons) != 1 || web.Reasons[0] != "a HorizontalPodAutoscaler scales it in staging only, so its replicas are left out there" {
 		t.Errorf("hpa reasons = %q", web.Reasons)
 	}
-	// both scaled by an HPA: the replicas are left out on both sides, so nothing differs
+	// both scaled by an HPA, the replicas are left out on both sides, so nothing differs
 	r = mustCompare(t, mk("staging", "gp3", true), mk("prod", "gp3", true), Options{})
 	if !r.Same() {
 		t.Errorf("same classes, HPA on both sides: %+v", r.Changed)
 	}
 }
 
+// check that two namespaces --map-namespace pairs with the same one fail with both named
 func TestNamespaceCollision(t *testing.T) {
 	a := snap("a", "", "", res("v1", "ConfigMap", "shop", "cfg", `{}`, unmanaged, ""))
 	b := snap("b", "", "",
@@ -217,6 +228,7 @@ func TestNamespaceCollision(t *testing.T) {
 	}
 }
 
+// check that node shape differences are listed but dont count against Same, and a side without nodes is named as unknown
 func TestNodes(t *testing.T) {
 	a := snap("a", "", "")
 	b := snap("b", "", "")
@@ -246,8 +258,7 @@ func TestNodes(t *testing.T) {
 	}
 }
 
-// A side that read only some namespaces, or could not list a type, limits
-// both: nothing shows as in one side only for not having been read.
+// check that a side that read only some namespaces, or couldnt list a type, limits both, so nothing shows as in one side only for not having been read
 func TestCompareOnlyWhatBothRead(t *testing.T) {
 	full := snap("prod", "", "",
 		res("v1", "ConfigMap", "stage", "a", `{}`, unmanaged, ""),
@@ -283,7 +294,7 @@ func TestCompareOnlyWhatBothRead(t *testing.T) {
 	}
 }
 
-// mustCompare is Compare, failing the test on an error.
+// mustCompare runs Compare, failing the test on an error
 func mustCompare(t *testing.T, a, b *snapshotv1alpha1.Snapshot, opts Options) Result {
 	t.Helper()
 	r, err := Compare(a, b, opts)

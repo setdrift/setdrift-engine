@@ -1,3 +1,5 @@
+// fuzzes the field comparison with arbitrary JSON documents
+
 package diff
 
 import (
@@ -5,7 +7,7 @@ import (
 	"testing"
 )
 
-// Fields compares any two JSON documents without panicking.
+// check that Fields compares any two JSON documents without panicking
 func FuzzFields(f *testing.F) {
 	f.Add([]byte(`{"a":1,"b":[1,2]}`), []byte(`{"a":2,"b":[{"name":"x"}]}`))
 	f.Add([]byte(`[{"name":"a","v":1}]`), []byte(`[{"name":"a","v":"1"},null]`))

@@ -1,3 +1,5 @@
+// tests the normalize stage, that server-set fields, defaults, controller fields and tool markers go while what a user set stays
+
 package normalize
 
 import (
@@ -10,6 +12,7 @@ import (
 	"setdrift.io/setdrift-engine/pkg/resource"
 )
 
+// parse turns a json object into a resource.Object for a test, failing the test when the json is bad
 func parse(t *testing.T, s string) *resource.Object {
 	t.Helper()
 	u := &unstructured.Unstructured{}
@@ -19,6 +22,7 @@ func parse(t *testing.T, s string) *resource.Object {
 	return resource.New(u)
 }
 
+// run normalizes one object with the default Normalizer and gives back its fields
 func run(t *testing.T, o *resource.Object) map[string]any {
 	t.Helper()
 	if _, _, err := (Normalizer{}).Process(context.Background(), []*resource.Object{o}); err != nil {
@@ -27,11 +31,13 @@ func run(t *testing.T, o *resource.Object) map[string]any {
 	return o.Object
 }
 
+// jsonOf gives back v as json, to compare with the expected output as one string
 func jsonOf(v any) string {
 	b, _ := json.Marshal(v)
 	return string(b)
 }
 
+// check that fields only a controller owns are removed, while ones a user owns or shares stay
 func TestPruneControllerFields(t *testing.T) {
 	o := parse(t, `{
 	  "apiVersion": "v1", "kind": "ConfigMap",
@@ -50,12 +56,13 @@ func TestPruneControllerFields(t *testing.T) {
 	}`)
 	got := run(t, o)
 	want := `{"apiVersion":"v1","data":{"k":"v"},"kind":"ConfigMap","metadata":{"annotations":{"shared":"y","team":"a"},"finalizers":["example.com/keep"],"name":"x","namespace":"shop"}}`
-	// data.k stays: kubectl owns data as a whole (a prefix of data.k).
+	// data.k stays, kubectl owns all of data, a prefix of data.k
 	if jsonOf(got) != want {
 		t.Errorf("got  %s\nwant %s", jsonOf(got), want)
 	}
 }
 
+// check that an unreadable managedFields entry stops all pruning
 func TestPruneUnreadableManagedFields(t *testing.T) {
 	o := parse(t, `{"apiVersion": "v1", "kind": "ConfigMap",
 	  "metadata": {"name": "x", "annotations": {"a": "1"}, "managedFields": [
@@ -66,6 +73,7 @@ func TestPruneUnreadableManagedFields(t *testing.T) {
 	}
 }
 
+// check that the default pull policy is Always for no tag or latest, and IfNotPresent for a tag or digest, with registry ports not taken for tags
 func TestDefaultPullPolicy(t *testing.T) {
 	for image, want := range map[string]string{
 		"nginx":                            "Always",
@@ -82,7 +90,7 @@ func TestDefaultPullPolicy(t *testing.T) {
 	}
 }
 
-// Values that differ from the default are kept.
+// check that values that differ from the default are kept
 func TestNonDefaultsKept(t *testing.T) {
 	o := parse(t, `{"apiVersion": "apps/v1", "kind": "Deployment", "metadata": {"name": "x"},
 	  "spec": {"revisionHistoryLimit": 3, "progressDeadlineSeconds": 600,
@@ -97,6 +105,7 @@ func TestNonDefaultsKept(t *testing.T) {
 	}
 }
 
+// check that Argo CD, Helm and Flux markers are removed from an object's own metadata but not from its selector or pod template
 func TestToolMarkersRemoved(t *testing.T) {
 	o := parse(t, `{"apiVersion": "apps/v1", "kind": "Deployment",
 	  "metadata": {"name": "web", "namespace": "shop",
@@ -112,12 +121,13 @@ func TestToolMarkersRemoved(t *testing.T) {
 	if got, want := jsonOf(o.Object["metadata"]), `{"annotations":{"team":"payments"},"labels":{"app":"web","app.kubernetes.io/instance":"web"},"name":"web","namespace":"shop"}`; got != want {
 		t.Errorf("metadata\n got %s\nwant %s", got, want)
 	}
-	// The Pod template must still match the selector.
+	// the pod template must still match the selector
 	if got := jsonOf(o.Object["spec"]); got != `{"selector":{"matchLabels":{"app.kubernetes.io/managed-by":"Helm"}},"template":{"metadata":{"labels":{"app.kubernetes.io/managed-by":"Helm"}}}}` {
 		t.Errorf("spec changed: %s", got)
 	}
 }
 
+// check that a managed-by label naming a tool other than Helm is kept
 func TestManagedByOtherToolKept(t *testing.T) {
 	o := parse(t, `{"apiVersion": "v1", "kind": "ConfigMap", "metadata": {"name": "x", "labels": {"app.kubernetes.io/managed-by": "team-scripts"}}}`)
 	if got := jsonOf(run(t, o)["metadata"]); got != `{"labels":{"app.kubernetes.io/managed-by":"team-scripts"},"name":"x"}` {
@@ -125,7 +135,7 @@ func TestManagedByOtherToolKept(t *testing.T) {
 	}
 }
 
-// Without managedFields nothing proves the class was filled in, so it stays.
+// check that a storage class stays when nothing proves the default class filled it in, no managedFields, an unreadable entry, or one owning it
 func TestStorageClassKeptWithoutEvidence(t *testing.T) {
 	for name, mf := range map[string]string{
 		"no managedFields": ``,
@@ -139,6 +149,7 @@ func TestStorageClassKeptWithoutEvidence(t *testing.T) {
 	}
 }
 
+// check that completions 1 is removed only when parallelism is unset or 1
 func TestJobCompletionsDefault(t *testing.T) {
 	for in, want := range map[string]string{
 		`{"completions": 1, "parallelism": 1}`: `{}`,
@@ -157,7 +168,7 @@ func TestJobCompletionsDefault(t *testing.T) {
 	}
 }
 
-// A list item only a controller wrote is removed whole, not field by field.
+// check that a list item only a controller wrote is removed entirely, not field by field
 func TestControllerListItemRemovedWhole(t *testing.T) {
 	o := parse(t, `{"apiVersion": "v1", "kind": "ConfigMap", "metadata": {"name": "x", "managedFields": [
 	  {"manager": "kubectl", "operation": "Update", "fieldsType": "FieldsV1", "fieldsV1": {"f:spec": {"f:env": {"k:{\"name\":\"A\"}": {".": {}, "f:name": {}, "f:value": {}}}}}},
@@ -165,13 +176,13 @@ func TestControllerListItemRemovedWhole(t *testing.T) {
 	    "k:{\"name\":\"B\"}": {".": {}, "f:name": {}, "f:value": {}},
 	    "k:{\"name\":\"A\"}": {"f:valueFrom": {}}}}}}]},
 	  "spec": {"env": [{"name": "A", "value": "1", "valueFrom": "x"}, {"name": "B", "value": "2"}]}}`)
-	// B goes whole; in A, which kubectl owns, only the controller's valueFrom goes.
+	// B goes entirely, in A which kubectl owns only the controller's valueFrom goes
 	if got := jsonOf(run(t, o)["spec"]); got != `{"env":[{"name":"A","value":"1"}]}` {
 		t.Errorf("got %s", got)
 	}
 }
 
-// A key field a controller owns alone is never removed from an item a user keeps.
+// check that a key field a controller owns alone is never removed from an item a user keeps
 func TestKeyFieldKept(t *testing.T) {
 	o := parse(t, `{"apiVersion": "v1", "kind": "ConfigMap", "metadata": {"name": "x", "managedFields": [
 	  {"manager": "kubectl", "operation": "Update", "fieldsType": "FieldsV1", "fieldsV1": {"f:spec": {"f:ports": {"k:{\"port\":80,\"protocol\":\"TCP\"}": {"f:name": {}}}}}},
@@ -182,7 +193,7 @@ func TestKeyFieldKept(t *testing.T) {
 	}
 }
 
-// An object only cluster components wrote is kept whole, with a finding.
+// check that an object only cluster components wrote is kept as is, with a finding
 func TestControllerCreatedKeptWhole(t *testing.T) {
 	o := parse(t, `{"apiVersion": "v1", "kind": "PersistentVolumeClaim", "metadata": {"name": "c", "namespace": "shop", "managedFields": [
 	  {"manager": "kube-controller-manager", "operation": "Update", "fieldsType": "FieldsV1",
@@ -196,6 +207,7 @@ func TestControllerCreatedKeptWhole(t *testing.T) {
 	}
 }
 
+// check that a default storage class is dropped normally and kept with a finding when KeepSourceDefaults is set
 func TestKeepSourceDefaults(t *testing.T) {
 	claim := `{"apiVersion":"v1","kind":"PersistentVolumeClaim","metadata":{"name":"data","namespace":"shop",
 	  "managedFields":[{"manager":"kubectl-client-side-apply","operation":"Update","apiVersion":"v1","fieldsType":"FieldsV1",
@@ -218,8 +230,9 @@ func TestKeepSourceDefaults(t *testing.T) {
 	}
 }
 
+// check that what would break a restore elsewhere is removed, node bindings, injected CA bundles, autoscaled replicas and API server defaults, and what a user set stays
 func TestRestoreFindings(t *testing.T) {
-	// A Pod bound to a node: nodeName and topology labels have no manager.
+	// a Pod bound to a node, nodeName and the topology labels have no manager
 	pod := parse(t, `{"apiVersion":"v1","kind":"Pod","metadata":{"name":"p","namespace":"shop",
 	  "labels":{"app":"p","topology.kubernetes.io/zone":"us-east-2a","topology.kubernetes.io/region":"us-east-2"},
 	  "managedFields":[{"manager":"kubectl","operation":"Apply","apiVersion":"v1","fieldsType":"FieldsV1",
@@ -232,7 +245,7 @@ func TestRestoreFindings(t *testing.T) {
 	if l := pod.GetLabels(); len(l) != 1 || l["app"] != "p" {
 		t.Errorf("labels %v", l)
 	}
-	// nodeName someone set: kept.
+	// a nodeName someone set is kept
 	pinned := parse(t, `{"apiVersion":"v1","kind":"Pod","metadata":{"name":"p","namespace":"shop",
 	  "managedFields":[{"manager":"kubectl","operation":"Apply","apiVersion":"v1","fieldsType":"FieldsV1","fieldsV1":{"f:spec":{"f:nodeName":{}}}}]},
 	  "spec":{"nodeName":"i-0123","containers":[{"name":"c","image":"busybox"}]}}`)
@@ -241,7 +254,7 @@ func TestRestoreFindings(t *testing.T) {
 		t.Error("nodeName someone set was dropped")
 	}
 
-	// A webhook whose caBundle another component injected.
+	// a webhook whose caBundle another component injected
 	webhook := parse(t, `{"apiVersion":"admissionregistration.k8s.io/v1","kind":"ValidatingWebhookConfiguration","metadata":{"name":"v",
 	  "managedFields":[
 	    {"manager":"helm","operation":"Update","apiVersion":"admissionregistration.k8s.io/v1","fieldsType":"FieldsV1","fieldsV1":{"f:webhooks":{"k:{\"name\":\"a\"}":{"f:clientConfig":{"f:service":{}}}}}},
@@ -259,7 +272,7 @@ func TestRestoreFindings(t *testing.T) {
 		t.Error("caBundle set with the webhook dropped")
 	}
 
-	// replicas of a workload an HPA scales.
+	// the replicas of a workload an HPA scales
 	deploy := parse(t, `{"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"api","namespace":"shop"},"spec":{"replicas":4}}`)
 	other := parse(t, `{"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"web","namespace":"shop"},"spec":{"replicas":4}}`)
 	hpa := parse(t, `{"apiVersion":"autoscaling/v2","kind":"HorizontalPodAutoscaler","metadata":{"name":"api","namespace":"shop"},
@@ -274,7 +287,7 @@ func TestRestoreFindings(t *testing.T) {
 		t.Error("replicas of a workload without an HPA dropped")
 	}
 
-	// Defaults the API server adds.
+	// defaults the API server adds
 	pvc := parse(t, `{"apiVersion":"v1","kind":"PersistentVolumeClaim","metadata":{"name":"d","namespace":"shop","finalizers":["kubernetes.io/pvc-protection","example.com/keep"]},"spec":{}}`)
 	sts := resource.New(&unstructured.Unstructured{Object: map[string]any{"apiVersion": "apps/v1", "kind": "StatefulSet",
 		"metadata": map[string]any{"name": "db", "namespace": "shop"},
@@ -299,9 +312,7 @@ func TestRestoreFindings(t *testing.T) {
 	}
 }
 
-// A CI/CD pipeline's source annotations and the Helm post-renderer's chart
-// repository are stamped at every deploy: provenance and the inventory have
-// read them, and the manifest drops them.
+// check that a CI/CD pipeline's source annotations and the Helm post-renderer's chart repo are removed, theyre stamped at every deploy and provenance and the inventory have read them
 func TestPipelineAnnotationsRemoved(t *testing.T) {
 	o := parse(t, `{"apiVersion": "v1", "kind": "ConfigMap", "metadata": {"name": "x", "annotations": {
 	  "setdrift.io/source-repo": "https://github.com/acme/shop", "setdrift.io/source-path": "deploy", "setdrift.io/source-branch": "main", "setdrift.io/source-tag": "v1.4.2",

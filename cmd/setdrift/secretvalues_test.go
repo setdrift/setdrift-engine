@@ -25,9 +25,8 @@ var secretValues = []string{
 	"VALhelmManifestC4d0",     // a value in a Helm release's rendered manifest
 }
 
-// TestNoSecretValueSurvives exports manifests holding secret values in every form a cluster has them,
-// then looks for each value, plain and base64-encoded once and twice, in every file the export wrote,
-// in what each command printed, and in what diff and snapshot json print from the export
+// check that no secret value survives an export, its files, or what export, diff and snapshot json print, in any form a cluster holds it
+// each value is looked for plain and base64-encoded once and twice
 func TestNoSecretValueSurvives(t *testing.T) {
 	in, out := t.TempDir(), t.TempDir()
 	b64 := func(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
@@ -118,7 +117,7 @@ data: {release: ` + release + `}
 	}
 	check("export's output", stdout+stderr)
 
-	// every file the export wrote: the repository, redacted/, external-secrets/, RESTORE.md, the snapshots
+	// every file the export wrote, the repository, redacted/, external-secrets/, RESTORE.md and the snapshots
 	files := 0
 	err = filepath.WalkDir(out, func(path string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
@@ -139,7 +138,7 @@ data: {release: ` + release + `}
 		t.Fatalf("only %d files written: the export did not run as expected", files)
 	}
 
-	// what the other commands print from the export: snapshot json, and diff against the same input
+	// what the other commands print from the export, snapshot json, and diff against the same input
 	snaps, _ := filepath.Glob(filepath.Join(out, "snapshots", "*.pb"))
 	if len(snaps) != 1 {
 		t.Fatalf("snapshots: %v", snaps)

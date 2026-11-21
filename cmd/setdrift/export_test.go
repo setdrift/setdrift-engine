@@ -1,4 +1,5 @@
-// runs eight tests sequentially, validates tests inputs for the export command itself, output evaluated elsewhere
+// tests for the export command itself, its flags, the output directory prompt, the snapshot files and the kubeconfig reading it relies on
+// what the export writes is tested elsewhere, in the corpus and the kustomize emitter tests
 
 package main
 
@@ -17,7 +18,7 @@ import (
 	snapshotv1alpha1 "setdrift.io/setdrift-engine/pkg/snapshot/v1alpha1"
 )
 
-// test missing, empty, and 'full' directory, confirms overwrite with checks
+// check that a missing or empty output directory is used as is, and a non-empty one needs --force and then a yes or --yes
 func TestConfirmReplace(t *testing.T) {
 	empty := t.TempDir()
 	full := t.TempDir()
@@ -44,7 +45,7 @@ func TestConfirmReplace(t *testing.T) {
 		{name: "--force, no answer", dir: full, cluster: "prod", force: true, interactive: true, says: "cancelled"},
 		{name: "--force, not interactive", dir: full, cluster: "prod", force: true, says: "--yes"},
 		{name: "--force --yes", dir: full, cluster: "prod", force: true, yes: true, ok: true, says: "will be deleted"},
-		// not empty, but holds no earlier export of this cluster: only another one
+		// not empty, but it holds no earlier export of this cluster, only another one
 		{name: "--force, another cluster", dir: full, cluster: "staging", force: true, yes: true, ok: true, says: "nothing is deleted"},
 	} {
 		var out bytes.Buffer
@@ -62,7 +63,7 @@ func TestConfirmReplace(t *testing.T) {
 	}
 }
 
-// runs eksExec on the args from aws eks update-kubeconfig
+// check that the EKS cluster name, region and profile are read from the exec args aws eks update-kubeconfig writes, from a cluster arn and from the server address
 func TestEKSFromKubeconfig(t *testing.T) {
 	name, region, profile := eksExec("aws", []string{"--region", "us-east-2", "eks", "get-token", "--cluster-name", "e2e"},
 		[]clientcmdapi.ExecEnvVar{{Name: "AWS_PROFILE", Value: "setdrift"}})
@@ -101,7 +102,7 @@ func TestEKSFromKubeconfig(t *testing.T) {
 	}
 }
 
-// loadConfig on a kubeconfig file, nothing is contacted
+// check that loadConfig reads the context, namespace, EKS details and client settings from a kubeconfig file without contacting anything
 func TestLoadConfig(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "kubeconfig")
 	if err := os.WriteFile(path, []byte(`apiVersion: v1
@@ -124,7 +125,7 @@ current-context: "arn:aws:eks:us-east-2:111122223333:cluster/prod"
 		t.Fatal(err)
 	}
 
-	// no --context: the current context
+	// no --context, so the current context
 	kc, err := loadConfig(path, "")
 	if err != nil {
 		t.Fatal(err)
@@ -139,7 +140,7 @@ current-context: "arn:aws:eks:us-east-2:111122223333:cluster/prod"
 		t.Errorf("client settings: QPS %v, user agent %q", kc.config.QPS, kc.config.UserAgent)
 	}
 
-	// --context alias: no namespace set (not "default"), region from the server address
+	// --context alias, no namespace set (not "default"), and the region comes from the server address
 	kc, err = loadConfig(path, "alias")
 	if err != nil {
 		t.Fatal(err)
@@ -149,7 +150,7 @@ current-context: "arn:aws:eks:us-east-2:111122223333:cluster/prod"
 	}
 }
 
-// --from-dir flag being set causes it to reject every other flag regarding AWS or a cluster
+// check that --from-dir rejects every flag about reading a cluster or AWS, and still takes --cluster-name
 func TestFromDirRejectsClusterFlags(t *testing.T) {
 	in := corpusInput
 	cases := map[string][]string{
@@ -182,7 +183,7 @@ func TestFromDirRejectsClusterFlags(t *testing.T) {
 	}
 }
 
-// Bad flag values fail before anything is read or written
+// check that bad flag values fail before anything is read or written
 func TestBadFlagsFailBeforeReading(t *testing.T) {
 	for _, c := range []struct {
 		flag string
@@ -193,7 +194,7 @@ func TestBadFlagsFailBeforeReading(t *testing.T) {
 		{"--secret-key-template", []string{"--secret-key-template", "{{.Name"}},
 		// an unknown field only fails when the template runs
 		{"--secret-key-template", []string{"--secret-key-template", "{{.Namespce}}/{{.Name}}"}},
-		// --external-secrets none ignores these, so rejects them, even valid values
+		// --external-secrets none would ignore these, so it rejects them, even valid values
 		{"--secret-store", []string{"--external-secrets", "none", "--secret-store", "vault"}},
 		{"--secret-store-kind", []string{"--external-secrets", "none", "--secret-store-kind", "SecretStore"}},
 		{"--secret-key-template", []string{"--external-secrets", "none", "--secret-key-template", "{{.Name}}"}},
@@ -214,7 +215,7 @@ func TestBadFlagsFailBeforeReading(t *testing.T) {
 	}
 }
 
-// Snapshot files are private to their owner, validates snapshot permissions
+// check that snapshot files are private to their owner, even when they replace a looser existing file
 func TestSnapshotFilesArePrivate(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Windows has no Unix permission bits")
@@ -242,7 +243,7 @@ func TestSnapshotFilesArePrivate(t *testing.T) {
 	}
 }
 
-// --aws fails on bad AWS credentials before the cluster read and before the output directory is touched
+// check that --aws fails on bad AWS credentials before the cluster read and before the output directory is touched
 func TestAWSCheckedBeforeReading(t *testing.T) {
 	dir := t.TempDir()
 	kubeconfig := filepath.Join(dir, "kubeconfig")
@@ -275,9 +276,7 @@ current-context: k
 	}
 }
 
-// --helm-repos fills in the repository of the release it names in
-// RESTORE.md, and warns about release entries no release matches, not
-// about chart entries (a shared file names charts other clusters run).
+// check that --helm-repos fills in the repository of the release it names in RESTORE.md, and warns about release entries no release matches but not about chart entries, since a shared file names charts other clusters run
 func TestHelmRepos(t *testing.T) {
 	dir := t.TempDir()
 	repos := filepath.Join(dir, "helm-repos.yaml")
@@ -309,8 +308,7 @@ func TestHelmRepos(t *testing.T) {
 	}
 }
 
-// The summary counts the ExternalSecrets written: Secrets with values to
-// supply, not those whose only values a controller generates.
+// check that the summary counts the ExternalSecrets written, Secrets with values to supply, not those whose only values a controller generates
 func TestSummaryCountsExternalSecrets(t *testing.T) {
 	secret := func(name string, reason snapshotv1alpha1.RedactionReason) *snapshotv1alpha1.Resource {
 		return &snapshotv1alpha1.Resource{ApiVersion: "v1", Kind: "Secret", Namespace: "shop", Name: name,
@@ -327,14 +325,14 @@ func TestSummaryCountsExternalSecrets(t *testing.T) {
 	}
 }
 
-// exportProd exports the corpus input as cluster prod, with args.
+// exportProd exports the corpus input as cluster prod with the extra args, for the snapshot tests below
 func exportProd(t *testing.T, args ...string) error {
 	t.Helper()
 	_, _, err := runCmd(t, append([]string{"export", "--from-dir", corpusInput, "--cluster-name", "prod"}, args...)...)
 	return err
 }
 
-// snapshotNames lists the files in dir, failing the test if it can't be read.
+// snapshotNames lists the files in dir, failing the test if it cant be read
 func snapshotNames(t *testing.T, dir string) []string {
 	t.Helper()
 	entries, err := os.ReadDir(dir)
@@ -348,8 +346,7 @@ func snapshotNames(t *testing.T, dir string) []string {
 	return out
 }
 
-// Snapshots go to <output>/snapshots/ by default, kept out of Git, and each
-// export adds its own.
+// check that snapshots go to <output>/snapshots/ by default, kept out of git, and each export adds its own
 func TestSnapshotsByDefault(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "out")
 	setClock(t, time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC))
@@ -364,7 +361,7 @@ func TestSnapshotsByDefault(t *testing.T) {
 	if err != nil || !strings.Contains(string(ignore), "\n/snapshots/\n") {
 		t.Errorf(".gitignore = %q, %v", ignore, err)
 	}
-	// exporting again keeps the earlier snapshots, and the .gitignore line once
+	// exporting again keeps the earlier snapshots, and the .gitignore line only once
 	setClock(t, time.Date(2026, 11, 20, 9, 0, 1, 0, time.UTC))
 	if err := exportProd(t, "-o", out, "--force", "--yes"); err != nil {
 		t.Fatal(err)
@@ -380,7 +377,7 @@ func TestSnapshotsByDefault(t *testing.T) {
 	}
 }
 
-// An existing .gitignore gets the snapshots line appended.
+// check that an existing .gitignore gets the snapshots line appended, on a line of its own
 func TestSnapshotsGitignoreAppended(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "out")
 	if err := os.MkdirAll(out, 0o755); err != nil {
@@ -401,8 +398,7 @@ func TestSnapshotsGitignoreAppended(t *testing.T) {
 	}
 }
 
-// --snapshot and --snapshot-json take a file or a directory, and a bad path
-// fails before anything is read.
+// check that --snapshot and --snapshot-json take a file or a directory, and a bad path fails before anything is read
 func TestSnapshotFlags(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("HOME", filepath.Join(dir, "home"))
@@ -416,7 +412,7 @@ func TestSnapshotFlags(t *testing.T) {
 	for _, c := range []struct {
 		name string
 		args []string
-		// want is the snapshot file written, relative to dir; or wantErr
+		// want is the snapshot file written, relative to dir, or wantErr the error expected instead
 		want, wantErr string
 	}{
 		{"a file name", []string{"--snapshot", filepath.Join(dir, "foo")}, "foo", ""},
@@ -435,7 +431,7 @@ func TestSnapshotFlags(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), c.wantErr) {
 				t.Errorf("%s: err = %v, want %q", c.name, err, c.wantErr)
 			}
-			// checked before the read: nothing written
+			// the path is checked before the read, so nothing was written
 			if _, statErr := os.Stat(out); statErr == nil {
 				t.Errorf("%s: the export was written before the path was refused", c.name)
 			}
@@ -455,7 +451,7 @@ func TestSnapshotFlags(t *testing.T) {
 	}
 }
 
-// --no-snapshot writes no snapshot, and no .gitignore for one.
+// check that --no-snapshot writes no snapshot, and no .gitignore for one
 func TestNoSnapshot(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "out")
 	if err := exportProd(t, "-o", out, "--no-snapshot"); err != nil {
@@ -468,8 +464,7 @@ func TestNoSnapshot(t *testing.T) {
 	}
 }
 
-// A resource a CI/CD pipeline annotated is deployed from Git: not in
-// --unmanaged-only, and not listed as applied by hand.
+// check that a resource a ci/cd pipeline annotated counts as deployed from git, so its left out of --unmanaged-only and not listed as applied by hand
 func TestUnmanagedOnlyLeavesOutCICD(t *testing.T) {
 	in := t.TempDir()
 	manifests := `apiVersion: v1

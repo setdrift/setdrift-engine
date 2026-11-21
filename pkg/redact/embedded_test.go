@@ -1,3 +1,5 @@
+// tests the detection of secret values outside Secrets, in env vars, ConfigMaps, custom resources and documents that arent Kubernetes objects
+
 package redact_test
 
 import (
@@ -12,6 +14,7 @@ import (
 	"setdrift.io/setdrift-engine/pkg/resource"
 )
 
+// process parses a JSON manifest and runs it through the redactor, giving back the object
 func process(t *testing.T, manifest string) *resource.Object {
 	t.Helper()
 	u := &unstructured.Unstructured{}
@@ -25,6 +28,7 @@ func process(t *testing.T, manifest string) *resource.Object {
 	return o
 }
 
+// paths lists the paths of an object's redactions, in the order they were recorded
 func paths(o *resource.Object) []string {
 	var out []string
 	for _, r := range o.Redactions {
@@ -33,6 +37,7 @@ func paths(o *resource.Object) []string {
 	return out
 }
 
+// check that secret env values are redacted by pattern or name, while references, files, ttls and secret names are kept
 func TestEmbeddedSecretsRedacted(t *testing.T) {
 	o := process(t, `{
 	  "apiVersion": "apps/v1", "kind": "Deployment", "metadata": {"name": "api", "namespace": "shop"},
@@ -71,6 +76,7 @@ func TestEmbeddedSecretsRedacted(t *testing.T) {
 	}
 }
 
+// check that secret values in ConfigMap keys and config files and in custom resource fields are redacted, and certificates and references are not
 func TestEmbeddedSecretsInConfigAndCustomResources(t *testing.T) {
 	cm := process(t, `{"apiVersion": "v1", "kind": "ConfigMap", "metadata": {"name": "app"},
 	  "data": {
@@ -94,6 +100,7 @@ func TestEmbeddedSecretsInConfigAndCustomResources(t *testing.T) {
 	}
 }
 
+// check that SealedSecrets and ExternalSecrets are not scanned, their content is ciphertext or references
 func TestSafeKindsNotScanned(t *testing.T) {
 	sealed := process(t, `{"apiVersion": "bitnami.com/v1alpha1", "kind": "SealedSecret", "metadata": {"name": "db"},
 	  "spec": {"encryptedData": {"password": "AgBy3i4OJSWK+PiTySYZZA=="}}}`)
@@ -106,8 +113,7 @@ func TestSafeKindsNotScanned(t *testing.T) {
 	}
 }
 
-// Values uses the manifest detection on a plain document and returns the
-// paths it replaced, without a leading dot.
+// check that Values uses the manifest detection on a document that isnt an object and gives back the paths it replaced, without a leading dot
 func TestValues(t *testing.T) {
 	v := map[string]any{
 		"agent":    map[string]any{"apiKey": "0123456789abcdef0123456789abcdef", "site": "eu"},
@@ -120,8 +126,7 @@ func TestValues(t *testing.T) {
 	}
 }
 
-// A live field's value is shown only after the same detection as manifests:
-// by pattern, by the field's name, or by the name of the list item it is in.
+// check that FieldValue hides a live field's value by pattern, by the field's name or by its list item's name, and leaves its input unchanged
 func TestFieldValue(t *testing.T) {
 	for _, c := range []struct {
 		path string

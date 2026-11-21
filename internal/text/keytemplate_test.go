@@ -1,3 +1,5 @@
+// tests the remote secret key templates, what they fill in, what they refuse and which fields they use
+
 package text
 
 import (
@@ -5,6 +7,7 @@ import (
 	"testing"
 )
 
+// check that key templates fill in the cluster, namespace and name, with trim markers and comments handled like text/template
 func TestKeyTemplate(t *testing.T) {
 	for in, want := range map[string]string{
 		"{{.Cluster}}/{{.Namespace}}/{{.Name}}": "prod/shop/db",
@@ -25,6 +28,7 @@ func TestKeyTemplate(t *testing.T) {
 	}
 }
 
+// check that anything but text and the known fields is refused with a message saying why
 func TestKeyTemplateRefuses(t *testing.T) {
 	for in, want := range map[string]string{
 		"{{.Name":                           "unclosed action",
@@ -44,6 +48,7 @@ func TestKeyTemplateRefuses(t *testing.T) {
 	}
 }
 
+// check that Uses tells the fields a template names from the ones it doesnt
 func TestKeyTemplateUses(t *testing.T) {
 	k, err := ParseKeyTemplate("{{.Namespace}}/x")
 	if err != nil {

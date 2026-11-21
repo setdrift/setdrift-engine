@@ -1,3 +1,5 @@
+// fuzzes the repository url canonicalization and the Argo CD tracking id parser
+
 package provenance
 
 import (
@@ -5,7 +7,7 @@ import (
 	"testing"
 )
 
-// A token in a repository URL's userinfo never reaches CanonicalRepo's result.
+// check that a token in a repository url's userinfo never reaches CanonicalRepo's result
 func FuzzCanonicalRepo(f *testing.F) {
 	schemes := []string{"", "https://", "http://", "ssh://", "git+https://", "oci://"}
 	f.Add(uint8(1), "user", "ghp0123456789abcdef", "github.com", "foo/bar.git")
@@ -25,6 +27,7 @@ func FuzzCanonicalRepo(f *testing.F) {
 	})
 }
 
+// check that parsing any tracking id doesnt panic
 func FuzzParseTrackingID(f *testing.F) {
 	for _, s := range []string{"app:apps/Deployment:ns/web", "app:/ConfigMap:ns/x", ":", "a:b", "a:b:c/d/e"} {
 		f.Add(s)

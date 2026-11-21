@@ -1,5 +1,5 @@
-// setdrift helm-postrender: a Helm post-renderer that records the chart
-// repository on what Helm installs.
+// a helm post-renderer that records the chart repository on everything helm installs
+// helm doesnt record where a chart came from, with this annotation export can write the exact helm install command in RESTORE.md
 
 package main
 
@@ -9,7 +9,7 @@ import (
 	"setdrift.io/setdrift-engine/pkg/helmsource"
 )
 
-// newHelmPostRenderCmd builds the helm-postrender command.
+// newHelmPostRenderCmd builds the helm-postrender command with its help text and the --chart-repo flag, main.go adds it to the command tree
 func newHelmPostRenderCmd() *cobra.Command {
 	var repo string
 	cmd := &cobra.Command{
@@ -32,11 +32,13 @@ With Helm 3, pass contrib/helm's postrender.sh as --post-renderer. A URL with
 credentials is refused.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			// invoking helmsource.Annotate to copy the manifests from stdin to stdout with the repository annotation added, its defined in pkg/helmsource/helmsource.go
 			return helmsource.Annotate(cmd.InOrStdin(), cmd.OutOrStdout(), repo)
 		},
 	}
 	cmd.Flags().StringVar(&repo, "chart-repo", "", "the chart repository URL, e.g. https://charts.example.com or oci://registry/charts (required)")
-	_ = cmd.MarkFlagRequired("chart-repo") // fails only for a flag that does not exist
+	// marking --chart-repo required, the error is dropped since it only fails for a flag that doesnt exist
+	_ = cmd.MarkFlagRequired("chart-repo")
 	return cmd
 }
 

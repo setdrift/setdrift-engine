@@ -1,3 +1,5 @@
+// tests the lifecycle filter, what it drops, what it keeps and the findings it attaches
+
 package lifecycle
 
 import (
@@ -10,6 +12,7 @@ import (
 	"setdrift.io/setdrift-engine/pkg/resource"
 )
 
+// obj builds an Object of the given type and name in namespace shop, with the given annotations
 func obj(apiVersion, kind, name string, ann map[string]string) *resource.Object {
 	u := &unstructured.Unstructured{}
 	u.SetAPIVersion(apiVersion)
@@ -20,11 +23,13 @@ func obj(apiVersion, kind, name string, ann map[string]string) *resource.Object 
 	return resource.New(u)
 }
 
+// withCondition gives the object one true status condition of the given type
 func withCondition(o *resource.Object, typ string) *resource.Object {
 	_ = unstructured.SetNestedSlice(o.Object, []any{map[string]any{"type": typ, "status": "True"}}, "status", "conditions")
 	return o
 }
 
+// codes gives back the set of finding codes attached to the object
 func codes(o *resource.Object) map[string]bool {
 	out := map[string]bool{}
 	for _, f := range o.Findings {
@@ -33,6 +38,7 @@ func codes(o *resource.Object) map[string]bool {
 	return out
 }
 
+// check that finished Jobs are kept and marked ran once with their outcome, hook Workflows are dropped, and running Jobs and hook ConfigMaps get their warnings
 func TestFilter(t *testing.T) {
 	hook := map[string]string{"argocd.argoproj.io/hook": "PreSync"}
 	objs := []*resource.Object{
@@ -51,7 +57,7 @@ func TestFilter(t *testing.T) {
 	for _, o := range out {
 		kept[o.GetName()] = o
 	}
-	// finished Jobs stay for the snapshot, marked as ran once, with their outcome; the hook Workflow goes
+	// finished Jobs stay for the snapshot, marked as ran once with their outcome, the hook Workflow goes
 	if len(kept) != 5 || kept["running"] == nil || kept["hook-config"] == nil || kept["migrate"] != nil {
 		t.Fatalf("kept %v, want the Jobs and hook-config", kept)
 	}
@@ -76,6 +82,7 @@ func TestFilter(t *testing.T) {
 	}
 }
 
+// check that only bare Pods with restartPolicy Never or OnFailure are flagged as running once
 func TestRunOncePods(t *testing.T) {
 	for policy, want := range map[string]bool{"Never": true, "OnFailure": true, "Always": false, "": false} {
 		o := obj("v1", "Pod", "p", nil)

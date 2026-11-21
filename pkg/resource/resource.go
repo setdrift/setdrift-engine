@@ -1,5 +1,4 @@
-// Package resource defines the object that flows through the pipeline, and
-// the Stage interface each pipeline step implements.
+// Package resource defines the object that flows through the pipeline, and the Stage interface each pipeline step implements
 package resource
 
 import (
@@ -12,111 +11,102 @@ import (
 	snapshotv1alpha1 "setdrift.io/setdrift-engine/pkg/snapshot/v1alpha1"
 )
 
-// Object is a Kubernetes object plus the metadata SetDrift attaches to it as it
-// moves through the pipeline.
+// Object is a Kubernetes object plus the metadata SetDrift attaches to it as it moves through the pipeline
 type Object struct {
 	*unstructured.Unstructured
 
-	// partial is true for object that will be dropped before the snapshot is built
+	// true for an object that will be dropped before the snapshot is built
 	Partial bool
 
+	// where the object came from, and what was redacted from it and found about it on the way
 	Provenance *snapshotv1alpha1.Provenance
 	Redactions []*snapshotv1alpha1.Redaction
 	Findings   []*snapshotv1alpha1.Finding
 
-	// OwnerStatus is what the collector found out about a controller owner
-	// missing from the collected objects. The ownership stage reads it.
+	// what the collector found out about a controller owner missing from the collected objects, the ownership stage reads it
 	OwnerStatus OwnerStatus
 
-	// LastApplied is the parsed last-applied-configuration annotation,
-	// which the redactor removes. Kept only where a later stage needs it
-	// (Services, for node ports); never written to a snapshot or output.
+	// the parsed last-applied-configuration annotation, which the redactor removes
+	// its kept only where a later stage needs it, Services for their node ports, and never written to a snapshot or output
 	LastApplied map[string]any
 
-	// HelmRelease is the chart metadata of a Helm release record (a Secret
-	// of type helm.sh/release.v1), read by the redactor before it replaces
-	// the record's data. Only non-secret chart metadata: no values, no
-	// manifests.
+	// the chart metadata of a Helm release record, a Secret of type helm.sh/release.v1, read by the redactor before it replaces the record's data
+	// only the non-secret chart metadata, no values and no manifests
 	HelmRelease *snapshotv1alpha1.HelmRelease
 
-	// SourceUID is the object's UID in the cluster, kept by the normalizer
-	// when it removes metadata.uid from the manifest, for the snapshot's
-	// source_uid.
+	// the object's uid in the cluster, kept by the normalizer when it removes metadata.uid from the manifest, for the snapshot's source_uid
 	SourceUID string
 }
 
-// OwnerStatus describes a controller owner that is not in the collected
-// objects.
+// OwnerStatus says what happened to a controller owner that is not in the collected objects
 type OwnerStatus int
 
+// the OwnerStatus values
 const (
-	// OwnerUnknown means not checked, e.g. for manifests read from files.
+	// OwnerUnknown means not checked, like for manifests read from files
 	OwnerUnknown OwnerStatus = iota
-	// OwnerDeleted means the owner was deleted, or replaced by a new object
-	// of the same name. The object is garbage the garbage collector is
-	// deleting.
+	// OwnerDeleted means the owner was deleted, or replaced by a new object of the same name
+	// the object is garbage the garbage collector is deleting
 	OwnerDeleted
-	// OwnerNotCollected means the owner's type was not collected (skipped,
-	// cluster-scoped while namespaces were requested, not readable, or
-	// failed to list).
+	// OwnerNotCollected means the owner's type was not collected, it was skipped, cluster-scoped while namespaces were asked for, not readable, or failed to list
 	OwnerNotCollected
 )
 
-// New wraps a manifest in an Object. Collectors create Objects; every later
-// stage receives them.
+// New wraps a manifest in an Object, collectors create Objects and every later stage receives them
 func New(u *unstructured.Unstructured) *Object {
 	return &Object{Unstructured: u}
 }
 
-// AddFinding attaches a finding to the object, for an object that stays in
-// the snapshot.
+// AddFinding takes a severity, a code and a message and attaches the finding to the object, for an object that stays in the snapshot
 func (o *Object) AddFinding(sev snapshotv1alpha1.Severity, code, format string, args ...any) {
+	// invoking NewFinding to build the finding, its defined below
 	o.Findings = append(o.Findings, NewFinding(sev, code, format, args...))
 }
 
-// Ref names the object for messages and as its identity in a snapshot:
-// [group/]Kind [namespace/]name, e.g. apps/Deployment shop/web or
-// ClusterRole system:aggregate-to-shop.
+// Ref names the object for messages and as its identity in a snapshot, [group/]Kind [namespace/]name
+// like apps/Deployment shop/web or ClusterRole system:aggregate-to-shop
 func (o *Object) Ref() string {
 	gvk := o.GroupVersionKind()
 	gk := gvk.Kind
+	// checking if the kind has a group, the core group has none and is left out
 	if gvk.Group != "" {
 		gk = gvk.Group + "/" + gvk.Kind
 	}
+	// checking if the object is namespaced, if so the namespace goes before the name
 	if ns := o.GetNamespace(); ns != "" {
 		return gk + " " + ns + "/" + o.GetName()
 	}
 	return gk + " " + o.GetName()
 }
 
-// Stage is a step of the pipeline. It may change objects in place, and
-// returns the objects to pass to the next step, with findings about the
-// whole run.
+// Stage is a step of the pipeline, it may change objects in place
+// Process gives back the objects to pass to the next step, with findings about the run itself
 type Stage interface {
 	Name() string
 	Process(ctx context.Context, objs []*Object) ([]*Object, []*snapshotv1alpha1.Finding, error)
 }
 
-// NewFinding builds a finding about the run as a whole, or about objects the
-// stage drops before the snapshot is built.
+// NewFinding takes a severity, a code and a message and builds a finding about the run itself, or about objects the stage drops before the snapshot is built
 func NewFinding(sev snapshotv1alpha1.Severity, code, format string, args ...any) *snapshotv1alpha1.Finding {
 	return &snapshotv1alpha1.Finding{Severity: sev, Code: code, Message: fmt.Sprintf(format, args...)}
 }
 
-// ClaimTemplatePrefixes returns, for every StatefulSet volume claim template
-// in objs, the name prefix of the claims it creates ("<namespace>/<template>-
-// <statefulset>-", the claim's name without its ordinal), mapped to the
-// StatefulSet's name.
+// ClaimTemplatePrefixes takes the objects and gives back, for every StatefulSet volume claim template, the name prefix of the claims it creates mapped to the StatefulSet's name
+// the prefix is "<namespace>/<template>-<statefulset>-", the claim's name without its ordinal
 func ClaimTemplatePrefixes(objs []*Object) map[string]string {
 	out := map[string]string{}
+	// going over each object looking for StatefulSets
 	for _, o := range objs {
 		gvk := o.GroupVersionKind()
+		// checking if its a StatefulSet, if not theres nothing to look at
 		if gvk.Group != "apps" || gvk.Kind != "StatefulSet" {
 			continue
 		}
 		templates, _, _ := unstructured.NestedSlice(o.Object, "spec", "volumeClaimTemplates")
+		// going over each volume claim template
 		for _, t := range templates {
 			tm, _ := t.(map[string]any)
+			// checking if the template has a name, a nameless one creates no claims we can match
 			if name, _, _ := unstructured.NestedString(tm, "metadata", "name"); name != "" {
 				out[o.GetNamespace()+"/"+name+"-"+o.GetName()+"-"] = o.GetName()
 			}
@@ -125,17 +115,16 @@ func ClaimTemplatePrefixes(objs []*Object) map[string]string {
 	return out
 }
 
+// captureTimeKey is the context key the capture time is stored under, its own type so nothing else can collide with it
 type captureTimeKey struct{}
 
-// WithCaptureTime returns a context carrying the time of the capture, so
-// stages can tell how old a timestamp in an object is. A context value
-// rather than a Stage parameter: it is the run's, set once, and only the
-// stages that judge ages read it.
+// WithCaptureTime takes a context and the time of the capture and gives back a context carrying it, so stages can tell how old a timestamp in an object is
+// its a context value rather than a Stage parameter because it belongs to the run, set once, and only the stages that judge ages read it
 func WithCaptureTime(ctx context.Context, t time.Time) context.Context {
 	return context.WithValue(ctx, captureTimeKey{}, t)
 }
 
-// CaptureTime returns the time WithCaptureTime set, if any.
+// CaptureTime gives back the time WithCaptureTime set, and false when none was set or it is zero
 func CaptureTime(ctx context.Context) (time.Time, bool) {
 	t, ok := ctx.Value(captureTimeKey{}).(time.Time)
 	return t, ok && !t.IsZero()

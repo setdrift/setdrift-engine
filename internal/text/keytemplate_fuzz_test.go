@@ -1,3 +1,5 @@
+// fuzzes ParseKeyTemplate and Execute against text/template itself
+
 package text
 
 import (
@@ -6,7 +8,7 @@ import (
 	"text/template"
 )
 
-// Any template ParseKeyTemplate accepts gives what text/template gives.
+// check that any template ParseKeyTemplate accepts gives the same key text/template gives
 func FuzzKeyTemplate(f *testing.F) {
 	for _, s := range []string{"{{.Cluster}}/{{.Namespace}}/{{.Name}}", "/p/{{ .Name -}} x", "{{/* c */}}{{.Name}}", "a{{.Name}}{{.Name}}", "{{.Nope}}", "{{"} {
 		f.Add(s, "prod", "shop", "db")

@@ -1,3 +1,5 @@
+// tests the dry-run verifier against a fake cluster, what gets built and checked, how each kind of difference is reported, retries, credentials and the remote reference guard
+
 package verify
 
 import (
@@ -16,14 +18,14 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
-// fakeCluster serves live objects by name and answers dry-run applies with
-// result, or err.
+// fakeCluster is a Cluster for tests, it serves live objects by name and answers dry-run applies with the result or error set for that name, or the live object unchanged
 type fakeCluster struct {
 	live    map[string]*unstructured.Unstructured
 	results map[string]*unstructured.Unstructured
 	errs    map[string]error
 }
 
+// Get gives back a copy of the live object by name, or not found
 func (f fakeCluster) Get(_ context.Context, _ schema.GroupVersionResource, _, name string) (*unstructured.Unstructured, error) {
 	if o, ok := f.live[name]; ok {
 		return o.DeepCopy(), nil
@@ -31,6 +33,7 @@ func (f fakeCluster) Get(_ context.Context, _ schema.GroupVersionResource, _, na
 	return nil, apierrors.NewNotFound(schema.GroupResource{}, name)
 }
 
+// DryRunApply gives back the error or result set for the object's name, otherwise a copy of the live object, meaning nothing would change
 func (f fakeCluster) DryRunApply(_ context.Context, _ schema.GroupVersionResource, obj *unstructured.Unstructured) (*unstructured.Unstructured, error) {
 	if err := f.errs[obj.GetName()]; err != nil {
 		return nil, err
@@ -41,6 +44,7 @@ func (f fakeCluster) DryRunApply(_ context.Context, _ schema.GroupVersionResourc
 	return f.live[obj.GetName()].DeepCopy(), nil
 }
 
+// cm builds a live ConfigMap in shop with one data value and a resource version, owned by kubectl
 func cm(name, value, rv string) *unstructured.Unstructured {
 	u := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "v1", "kind": "ConfigMap",
@@ -51,6 +55,7 @@ func cm(name, value, rv string) *unstructured.Unstructured {
 	return u
 }
 
+// mapper builds a RESTMapper serving ConfigMaps and Pods
 func mapper() meta.RESTMapper {
 	m := meta.NewDefaultRESTMapper(nil)
 	m.Add(schema.GroupVersionKind{Version: "v1", Kind: "ConfigMap"}, meta.RESTScopeNamespace)
@@ -58,6 +63,7 @@ func mapper() meta.RESTMapper {
 	return m
 }
 
+// writeRepo writes the files into a temporary directory and gives back its path
 func writeRepo(t *testing.T, files map[string]string) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -73,10 +79,12 @@ func writeRepo(t *testing.T, files map[string]string) string {
 	return dir
 }
 
+// manifest gives back the yaml of a core object of that kind and name in shop, with one data value
 func manifest(kind, name string) string {
 	return "apiVersion: v1\nkind: " + kind + "\nmetadata: {name: " + name + ", namespace: shop}\ndata: {k: v}\n"
 }
 
+// check that a clean, a drifted, a missing, an emptied and a rejected resource are each reported right, and that unlisted, external-secrets and other clusters' files are left out
 func TestDryRunVerifier(t *testing.T) {
 	repo := writeRepo(t, map[string]string{
 		"clusters/c/kustomization.yaml":                               kustomization("namespaces/shop"),
@@ -88,10 +96,10 @@ func TestDryRunVerifier(t *testing.T) {
 		"clusters/c/namespaces/shop/configmap/unlisted.yaml":          manifest("ConfigMap", "unlisted"),
 		"clusters/c/namespaces/shop/pod/debug.yaml":                   "apiVersion: v1\nkind: Pod\nmetadata: {name: debug, namespace: shop}\nspec: {containers: [{name: a, image: b}]}\n",
 		"clusters/c/redacted/namespaces/shop/secret/db.yaml.redacted": "apiVersion: v1\nkind: Secret\n",
-		// Not applied, so not checked.
+		// not applied, so not checked
 		"clusters/c/external-secrets/kustomization.yaml":                                         kustomization("namespaces/shop/externalsecret.external-secrets.io/db.yaml"),
 		"clusters/c/external-secrets/namespaces/shop/externalsecret.external-secrets.io/db.yaml": "apiVersion: external-secrets.io/v1\nkind: ExternalSecret\nmetadata: {name: db, namespace: shop}\n",
-		// Another cluster's redacted file is not counted.
+		// another cluster's redacted file isnt counted
 		"clusters/d/redacted/namespaces/shop/secret/x.yaml.redacted": "apiVersion: v1\nkind: Secret\n",
 	})
 	drifted := cm("drifted", "v", "1")
@@ -105,8 +113,7 @@ func TestDryRunVerifier(t *testing.T) {
 			"debug":   debug,
 		},
 		results: map[string]*unstructured.Unstructured{
-			// A manager and resource version change in every apply; data
-			// changed here.
+			// a manager and resource version change in every apply, the data changed here
 			"clean":   cm("clean", "v", "2"),
 			"drifted": cm("drifted", "changed", "2"),
 		},
@@ -134,7 +141,7 @@ func TestDryRunVerifier(t *testing.T) {
 	if d := got["Pod shop/debug"]; !strings.Contains(d.Explanation, "Pods can't be updated") {
 		t.Errorf("debug: %+v", d)
 	}
-	// The apply would change nothing, but the export lost the data.
+	// the apply would change nothing, but the export lost the data
 	if d := got["ConfigMap shop/shell"]; len(d.Paths) != 1 || !strings.HasPrefix(d.Paths[0], ".data: in the cluster but missing") {
 		t.Errorf("shell: %+v", d)
 	}
@@ -146,6 +153,7 @@ func TestDryRunVerifier(t *testing.T) {
 	}
 }
 
+// check that an expired credential stops the run with one error, not one per resource
 func TestDryRunVerifierAbortsOnCredentials(t *testing.T) {
 	files := map[string]string{}
 	live := map[string]*unstructured.Unstructured{}
@@ -164,12 +172,13 @@ func TestDryRunVerifierAbortsOnCredentials(t *testing.T) {
 	if err == nil {
 		t.Fatal("no error on an expired credential")
 	}
-	// The first one stops the run: one error, not fifty.
+	// the first one stops the run, one error and not fifty
 	if n := strings.Count(err.Error(), "expired"); n != 1 {
 		t.Errorf("%d errors reported:\n%v", n, err)
 	}
 }
 
+// check that ClusterRoot finds the one cluster in an export or takes a cluster's directory as is, and refuses two clusters or none
 func TestClusterRoot(t *testing.T) {
 	one := writeRepo(t, map[string]string{"clusters/prod/kustomization.yaml": kustomization()})
 	if got, err := ClusterRoot(one); err != nil || got != filepath.Join(one, "clusters", "prod") {
@@ -187,6 +196,7 @@ func TestClusterRoot(t *testing.T) {
 	}
 }
 
+// check that Ref puts the group before the kind of a non-core object
 func TestRefHasGroup(t *testing.T) {
 	o := &unstructured.Unstructured{}
 	o.SetAPIVersion("example.com/v1")
@@ -198,19 +208,19 @@ func TestRefHasGroup(t *testing.T) {
 	}
 }
 
+// kustomization gives back the yaml of a kustomization listing these resources
 func kustomization(resources ...string) string {
 	return "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources: [" + strings.Join(resources, ", ") + "]\n"
 }
 
-// podUpdateRejected is the API server's answer to changing a Pod's spec.
+// podUpdateRejected builds the API server's answer to changing a Pod's spec
 func podUpdateRejected() error {
 	err := apierrors.NewInvalid(schema.GroupKind{Kind: "Pod"}, "debug", nil)
 	err.ErrStatus.Message = `Pod "debug" is invalid: spec: Forbidden: pod updates may not change fields other than ...`
 	return err
 }
 
-// Every golden export builds, and what verify checks never includes the
-// ExternalSecrets, which are not applied.
+// check that every golden export builds, and what verify checks never includes the ExternalSecrets, which arent applied
 func TestBuildCorpus(t *testing.T) {
 	roots, err := filepath.Glob("../../testdata/corpus/*/expected/repo")
 	if err != nil || len(roots) == 0 {
@@ -234,8 +244,7 @@ func TestBuildCorpus(t *testing.T) {
 	}
 }
 
-// A CRD in the export that the cluster lacks is reported, and its custom
-// resources say why their type is not served.
+// check that a CRD in the export that the cluster lacks is reported, and its custom resources say why their type isnt served
 func TestMissingCRDs(t *testing.T) {
 	repo := writeRepo(t, map[string]string{
 		"kustomization.yaml":      kustomization("crds", "namespaces/shop"),
@@ -265,8 +274,7 @@ func TestMissingCRDs(t *testing.T) {
 	}
 }
 
-// Status a controller changes between the read and the dry-run (a Pod
-// starting) is not a difference: an apply never changes it.
+// check that status a controller changes between the read and the dry-run, like a Pod starting, isnt a difference, an apply never changes it
 func TestStatusIgnored(t *testing.T) {
 	repo := writeRepo(t, map[string]string{
 		"kustomization.yaml": kustomization("cm.yaml"),
@@ -282,7 +290,7 @@ func TestStatusIgnored(t *testing.T) {
 	}
 }
 
-// A broken connection is retried; an answer from the API server is not.
+// check that a broken connection is retried and an answer from the API server isnt
 func TestRetry(t *testing.T) {
 	calls := 0
 	reset := func() (*unstructured.Unstructured, error) {
@@ -305,9 +313,7 @@ func TestRetry(t *testing.T) {
 	}
 }
 
-// A resource the credentials may not patch for the dry-run is not checked:
-// out of the count, and the run fails for it; with -n, only that namespace
-// is checked.
+// check that a resource the credentials may not patch is not checked, out of the count and failing the run, and that with -n only that namespace is checked
 func TestNotCheckedAndNamespaces(t *testing.T) {
 	other := "apiVersion: v1\nkind: ConfigMap\nmetadata: {name: elsewhere, namespace: prod}\ndata: {k: v}\n"
 	repo := writeRepo(t, map[string]string{
@@ -339,8 +345,7 @@ func TestNotCheckedAndNamespaces(t *testing.T) {
 	}
 }
 
-// An export that lists remote resources is refused before kustomize would
-// clone them.
+// check that an export listing remote resources is refused before kustomize would clone them
 func TestLocalOnly(t *testing.T) {
 	for ref, remote := range map[string]bool{
 		"configmap/a.yaml": false, "../base": false,

@@ -1,3 +1,5 @@
+// tests building snapshots, the guards against partial objects and unredacted Secrets, and reading them back
+
 package snapshot
 
 import (
@@ -14,6 +16,7 @@ import (
 	snapshotv1alpha1 "setdrift.io/setdrift-engine/pkg/snapshot/v1alpha1"
 )
 
+// obj builds an Object of the given type, namespace and name
 func obj(apiVersion, kind, ns, name string) *resource.Object {
 	u := &unstructured.Unstructured{}
 	u.SetAPIVersion(apiVersion)
@@ -23,6 +26,7 @@ func obj(apiVersion, kind, ns, name string) *resource.Object {
 	return resource.New(u)
 }
 
+// check that resources come out sorted, core group first, a duplicate is dropped with a finding, and the caller's findings are left alone
 func TestBuild(t *testing.T) {
 	findings := make([]*snapshotv1alpha1.Finding, 0, 4)
 	objs := []*resource.Object{
@@ -57,6 +61,7 @@ func TestBuild(t *testing.T) {
 	}
 }
 
+// check that a metadata-only object cant reach a snapshot
 func TestBuildRejectsPartial(t *testing.T) {
 	o := obj("v1", "Pod", "a", "p")
 	o.Partial = true
@@ -65,6 +70,7 @@ func TestBuildRejectsPartial(t *testing.T) {
 	}
 }
 
+// check that a Secret value that isnt a placeholder is refused, even with a redaction record, while placeholders and custom kinds named Secret pass
 func TestBuildRejectsUnredactedSecret(t *testing.T) {
 	o := obj("v1", "Secret", "a", "db")
 	o.Object["data"] = map[string]any{"password": "aHVudGVyMg==", "user": "YWRtaW4="}
@@ -72,7 +78,7 @@ func TestBuildRejectsUnredactedSecret(t *testing.T) {
 	if _, err := Build(Meta{}, []*resource.Object{o}); err == nil || !strings.Contains(err.Error(), "data.password") {
 		t.Errorf("unredacted value accepted: %v", err)
 	}
-	// a redaction record for every key is not enough: the values are still real
+	// a redaction record for every key isnt enough, the values are still real
 	o.Redactions = append(o.Redactions, &snapshotv1alpha1.Redaction{Path: "data.password"})
 	if _, err := Build(Meta{}, []*resource.Object{o}); err == nil {
 		t.Error("Secret with redaction records but its real values accepted")
@@ -94,7 +100,7 @@ func TestBuildRejectsUnredactedSecret(t *testing.T) {
 	if _, err := Build(Meta{}, []*resource.Object{o, p, pull}); err != nil {
 		t.Errorf("redacted Secrets refused: %v", err)
 	}
-	// Not a core Secret: the embedded-secret redactor's business, not a guard here.
+	// not a core Secret, thats the embedded-secret redactor's business, not a guard here
 	cr := obj("example.com/v1", "Secret", "a", "x")
 	cr.Object["data"] = map[string]any{"k": "v"}
 	if _, err := Build(Meta{}, []*resource.Object{cr}); err != nil {
@@ -102,6 +108,7 @@ func TestBuildRejectsUnredactedSecret(t *testing.T) {
 	}
 }
 
+// check that Unmarshal refuses another schema version, no version, empty input and YAML, and takes the current version
 func TestUnmarshalChecksSchema(t *testing.T) {
 	for name, in := range map[string]*snapshotv1alpha1.Snapshot{
 		"other version": {SchemaVersion: "setdrift.snapshot.v2"},
@@ -127,6 +134,7 @@ func TestUnmarshalChecksSchema(t *testing.T) {
 	}
 }
 
+// check that neither the manifest nor the inspect JSON escapes &, < and >
 func TestNoHTMLEscaping(t *testing.T) {
 	o := obj("v1", "ConfigMap", "a", "x")
 	o.Object["data"] = map[string]any{"cmd": "a && b <c>"}
@@ -146,7 +154,7 @@ func TestNoHTMLEscaping(t *testing.T) {
 	}
 }
 
-// The JSON export writes beside each .pb reads back as the same snapshot.
+// check that the JSON export writes beside each .pb reads back as the same snapshot, protobuf goes through Parse too, and JSON that isnt a snapshot is refused
 func TestParseJSONRoundTrip(t *testing.T) {
 	s := &snapshotv1alpha1.Snapshot{SchemaVersion: SchemaVersion, Id: "x",
 		Cluster: &snapshotv1alpha1.Cluster{Name: "prod"},

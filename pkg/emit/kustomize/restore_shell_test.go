@@ -1,3 +1,5 @@
+// runs every shell command RESTORE.md and the platform playbooks write against stub tools, to prove hostile values from a snapshot never run as commands
+
 package kustomize
 
 import (
@@ -12,16 +14,12 @@ import (
 	snapshotv1alpha1 "setdrift.io/setdrift-engine/pkg/snapshot/v1alpha1"
 )
 
-// hostile is a value a cluster object, a Helm release record or a manifest
-// file could carry: every way a shell would run part of it, if a playbook
-// command left it unquoted, creates the file PWNED.
+// hostile is a value a cluster object, a helm release record or a manifest file could carry
+// every way a shell would run part of it, if a playbook command left it unquoted, creates the file PWNED
 const hostile = "h$(touch PWNED)`touch PWNED`;touch PWNED&&touch PWNED|touch PWNED\ntouch PWNED #'\""
 
-// RESTORE.md and the platform playbooks are commands users paste with their
-// cluster and AWS credentials. Rendered from a snapshot whose values are
-// hostile, no command may run anything but what it names: every line of
-// every shell block runs with stub kubectl, aws, helm, jq, perl and
-// setdrift, and no PWNED file may appear.
+// check that no playbook command runs anything but what it names when the snapshot's values are hostile, users paste these with their cluster and aws credentials
+// every line of every shell block runs with stub kubectl, aws, helm, jq, perl and setdrift, and no PWNED file may appear
 func TestRestoreCommandsQuoteValues(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("needs a POSIX shell")
@@ -44,7 +42,7 @@ func TestRestoreCommandsQuoteValues(t *testing.T) {
 		t.Fatalf("only %d shell blocks rendered: the fixture no longer reaches the playbook's steps", len(blocks))
 	}
 
-	// stubs on PATH: each logs that it ran, and does nothing
+	// stubs on PATH, each logs that it ran and does nothing
 	bin, work := t.TempDir(), t.TempDir()
 	log := filepath.Join(work, "ran.log")
 	for _, name := range []string{"kubectl", "aws", "helm", "jq", "perl", "setdrift"} {
@@ -59,7 +57,7 @@ func TestRestoreCommandsQuoteValues(t *testing.T) {
 		for i, line := range lines {
 			cmd := exec.Command(sh, "-c", line)
 			cmd.Dir, cmd.Env = work, env
-			_ = cmd.Run() // placeholders (<target-context>) make some lines fail; only what they run matters
+			_ = cmd.Run() // placeholders like <target-context> make some lines fail, only what they run matters
 			if _, err := os.Stat(filepath.Join(work, "PWNED")); err == nil {
 				before := ""
 				if i > 0 {
@@ -75,10 +73,10 @@ func TestRestoreCommandsQuoteValues(t *testing.T) {
 	}
 }
 
-// quote quotes a path for the stub scripts.
+// quote single-quotes a path for the stub scripts
 func quote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
 
-// shellBlocks returns the contents of the ```sh blocks in md.
+// shellBlocks gives back the contents of the ```sh blocks in md
 func shellBlocks(md string) []string {
 	var out []string
 	for _, part := range strings.Split(md, "```sh\n")[1:] {
@@ -89,9 +87,8 @@ func shellBlocks(md string) []string {
 	return out
 }
 
-// commandLines splits a block into the commands a shell reads from it: at
-// each newline outside quotes, joining a line that ends in a backslash with
-// the next. (A newline inside quotes is part of the quoted word.)
+// commandLines splits a block into the commands a shell reads from it, at each newline outside quotes, joining a line that ends in a backslash with the next
+// a newline inside quotes is part of the quoted word
 func commandLines(block string) []string {
 	var out []string
 	var cur strings.Builder
@@ -120,7 +117,7 @@ func commandLines(block string) []string {
 		case r == '\'' || r == '"':
 			quote = r
 		case r == '#' && (i == 0 || rs[i-1] == ' ' || rs[i-1] == '\t' || rs[i-1] == '\n'):
-			// a comment, to the end of the line: quotes in it are text
+			// a comment, to the end of the line, quotes in it are text
 			for i+1 < len(rs) && rs[i+1] != '\n' {
 				i++
 			}
@@ -135,8 +132,7 @@ func commandLines(block string) []string {
 	return append(out, cur.String())
 }
 
-// hostileSnapshot is an EKS snapshot that reaches every step of the
-// playbooks, with hostile values wherever the cluster or AWS supplies one.
+// hostileSnapshot builds an EKS snapshot that reaches every step of the playbooks, with hostile values wherever the cluster or aws supplies one
 func hostileSnapshot(t *testing.T) *snapshotv1alpha1.Snapshot {
 	t.Helper()
 	manifest := func(m map[string]any) string {
@@ -179,11 +175,11 @@ func hostileSnapshot(t *testing.T) *snapshotv1alpha1.Snapshot {
 				ManifestJson: manifest(map[string]any{"apiVersion": "storage.k8s.io/v1", "kind": "StorageClass", "metadata": meta(h, "", nil), "provisioner": h})},
 			{ApiVersion: "v1", Kind: "PersistentVolumeClaim", Namespace: h, Name: h,
 				ManifestJson: manifest(map[string]any{"apiVersion": "v1", "kind": "PersistentVolumeClaim", "metadata": meta(h, h, nil), "spec": map[string]any{"storageClassName": h}})},
-			// a Secret whose values a person wrote: copied, filled in, or read from AWS
+			// a Secret whose values a person wrote, copied, filled in, or read from aws
 			{ApiVersion: "v1", Kind: "Secret", Namespace: h, Name: h,
 				ManifestJson: manifest(map[string]any{"apiVersion": "v1", "kind": "Secret", "metadata": meta(h, h, nil), "data": map[string]any{h: "U0VURFJJRlRfUkVEQUNURUQ="}}),
 				Redactions:   []*snapshotv1alpha1.Redaction{{Path: "data." + h, Reason: secretValue}}},
-			// a Secret a controller fills in, with one key a person wrote: merged
+			// a Secret a controller fills in, with one key a person wrote, so its merged
 			{ApiVersion: "v1", Kind: "Secret", Namespace: h, Name: "merged",
 				ManifestJson: manifest(map[string]any{"apiVersion": "v1", "kind": "Secret", "metadata": meta("merged", h, nil), "data": map[string]any{h: "U0VURFJJRlRfUkVEQUNURUQ="}}),
 				Redactions:   []*snapshotv1alpha1.Redaction{{Path: "data." + h, Reason: secretValue}, {Path: "data.gen", Reason: generated, Controller: h}}},

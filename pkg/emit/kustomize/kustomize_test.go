@@ -1,3 +1,5 @@
+// tests for the kustomize emitter, what goes where in an export, what gets applied and what never does
+
 package kustomize
 
 import (
@@ -15,6 +17,7 @@ import (
 	snapshotv1alpha1 "setdrift.io/setdrift-engine/pkg/snapshot/v1alpha1"
 )
 
+// resource builds a test resource with a minimal manifest, with a redacted secret value when redacted is set
 func resource(kind, ns, name string, redacted bool) *snapshotv1alpha1.Resource {
 	r := &snapshotv1alpha1.Resource{
 		ApiVersion:   "v1",
@@ -32,8 +35,7 @@ func resource(kind, ns, name string, redacted bool) *snapshotv1alpha1.Resource {
 	return r
 }
 
-// TestRedactedResourcesNotApplied checks that a resource with redacted values
-// is written for reference, but no kustomization.yaml can reach it.
+// check that a resource with redacted values is written for reference, but no kustomization.yaml can reach it
 func TestRedactedResourcesNotApplied(t *testing.T) {
 	dir := t.TempDir()
 	s := &snapshotv1alpha1.Snapshot{
@@ -41,9 +43,9 @@ func TestRedactedResourcesNotApplied(t *testing.T) {
 		Resources: []*snapshotv1alpha1.Resource{
 			resource("ConfigMap", "shop", "settings", false),
 			resource("Secret", "shop", "db-creds", true),
-			// A Secret with nothing redacted (no data) stays in the applied set.
+			// a Secret with nothing redacted (no data) stays in the applied set
 			resource("Secret", "shop", "plain", false),
-			// A namespace holding only redacted resources gets no kustomization.
+			// a namespace holding only redacted resources gets no kustomization
 			resource("Secret", "vault", "token", true),
 		},
 	}
@@ -68,7 +70,7 @@ func TestRedactedResourcesNotApplied(t *testing.T) {
 		}
 	}
 
-	// No kustomization anywhere mentions a redacted resource or directory.
+	// no kustomization anywhere mentions a redacted resource or directory
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil || d.Name() != "kustomization.yaml" {
 			return err
@@ -89,6 +91,7 @@ func TestRedactedResourcesNotApplied(t *testing.T) {
 	}
 }
 
+// check that redacted/ and its README are only written when something was redacted
 func TestReadmeOnlyWhenNeeded(t *testing.T) {
 	dir := t.TempDir()
 	s := &snapshotv1alpha1.Snapshot{Resources: []*snapshotv1alpha1.Resource{resource("ConfigMap", "shop", "settings", false)}}
@@ -100,6 +103,7 @@ func TestReadmeOnlyWhenNeeded(t *testing.T) {
 	}
 }
 
+// check that UnmanagedOnly writes the unmanaged resources, the ones whose manager wasnt found or was only guessed, and leaves out the managed ones
 func TestUnmanagedOnly(t *testing.T) {
 	src := func(r *snapshotv1alpha1.Resource, s snapshotv1alpha1.Source, ev map[string]string, codes ...string) *snapshotv1alpha1.Resource {
 		r.Provenance = &snapshotv1alpha1.Provenance{Source: s, Evidence: ev}
@@ -138,6 +142,7 @@ func TestUnmanagedOnly(t *testing.T) {
 	}
 }
 
+// check that a custom key template shapes the ExternalSecret's remote key, the README store example gets the region from the arn, external-secrets/ isnt applied and an unknown provider is refused
 func TestExternalSecretKeyTemplate(t *testing.T) {
 	es, err := DefaultExternalSecrets("aws-parameter-store")
 	if err != nil {
@@ -173,9 +178,7 @@ func TestExternalSecretKeyTemplate(t *testing.T) {
 	}
 }
 
-// Force replaces the cluster's directory, so files of resources no longer
-// in the cluster go, and keeps everything else in the output directory.
-// A key template that gives two Secrets one remote secret fails the export.
+// check that a key template that gives two Secrets one remote secret fails the export
 func TestExternalSecretKeysUnique(t *testing.T) {
 	es := mustExternalSecrets(t, "aws-secrets-manager")
 	es.KeyTemplate = "{{.Name}}"
@@ -191,8 +194,7 @@ func TestExternalSecretKeysUnique(t *testing.T) {
 	}
 }
 
-// A SecretStore is created in each namespace; Parameter Store gets ssm
-// commands in RESTORE.md.
+// check that a SecretStore is created in each namespace, and parameter store gets ssm commands in RESTORE.md
 func TestExternalSecretStores(t *testing.T) {
 	s := &snapshotv1alpha1.Snapshot{Cluster: &snapshotv1alpha1.Cluster{Name: "prod", Platform: "eks"}}
 	for _, ns := range []string{"shop", "billing", "shop"} {
@@ -220,6 +222,7 @@ func TestExternalSecretStores(t *testing.T) {
 	}
 }
 
+// check that Force replaces the cluster's directory, so files of resources no longer in the cluster go, and keeps everything else in the output directory
 func TestForceReplacesClusterDir(t *testing.T) {
 	dir := t.TempDir()
 	snap := func(names ...string) *snapshotv1alpha1.Snapshot {
@@ -258,8 +261,7 @@ func TestForceReplacesClusterDir(t *testing.T) {
 	}
 }
 
-// An export that fails part way leaves the previous export as it was, and no
-// temporary directory behind; one killed earlier has its leftovers removed.
+// check that an export failing partway leaves the previous export as it was and no temporary directory behind, and that one killed earlier has its temporary directory removed
 func TestFailedExportKeepsPrevious(t *testing.T) {
 	dir := t.TempDir()
 	good := &snapshotv1alpha1.Snapshot{Cluster: &snapshotv1alpha1.Cluster{Name: "c"},
@@ -297,6 +299,7 @@ func TestFailedExportKeepsPrevious(t *testing.T) {
 	}
 }
 
+// check that ClusterDir always gives one directory right under clusters/, whatever the cluster is named
 func TestClusterDirStaysInside(t *testing.T) {
 	for _, name := range []string{"..", ".", "", "../x", "a/b"} {
 		got := ClusterDir("/out", name)
@@ -306,7 +309,7 @@ func TestClusterDirStaysInside(t *testing.T) {
 	}
 }
 
-// Nothing to apply still gives a root kustomization.yaml Kustomize accepts.
+// check that nothing to apply still gives a root kustomization.yaml kustomize accepts, and the README doesnt point at external-secrets/ without ExternalSecrets
 func TestEmptyRootKustomization(t *testing.T) {
 	dir := t.TempDir()
 	s := &snapshotv1alpha1.Snapshot{Cluster: &snapshotv1alpha1.Cluster{Name: "c"},
@@ -327,8 +330,7 @@ func TestEmptyRootKustomization(t *testing.T) {
 	}
 }
 
-// The export records its source cluster, with the kube-system UID, in a file
-// no manifest tool reads.
+// check that the export records its source cluster, with the kube-system uid, in a file no manifest tool reads, and a missing file reads as nil without an error
 func TestExportInfo(t *testing.T) {
 	ks := resource("Namespace", "", "kube-system", false)
 	ks.SourceUid = "uid-1"
@@ -351,8 +353,7 @@ func TestExportInfo(t *testing.T) {
 	}
 }
 
-// A custom resource of an API the platform provides goes to the platform set,
-// which builds with Kustomize; the generic set leaves it out.
+// check that a custom resource of an api the platform provides goes to the platform set, which builds with kustomize, and the generic set leaves it out
 func TestPlatformSet(t *testing.T) {
 	crd := &snapshotv1alpha1.Resource{ApiVersion: "apiextensions.k8s.io/v1", Kind: "CustomResourceDefinition", Name: "nodeclasses.eks.amazonaws.com",
 		ManifestJson: `{"apiVersion":"apiextensions.k8s.io/v1","kind":"CustomResourceDefinition","metadata":{"name":"nodeclasses.eks.amazonaws.com"},` +
@@ -393,7 +394,7 @@ func TestPlatformSet(t *testing.T) {
 	}
 }
 
-// On AWS the store is written next to the platform's files, as YAML that applies.
+// check that on aws the store is written next to the platform's files, as yaml that applies
 func TestAWSSecretStoreFile(t *testing.T) {
 	es := mustExternalSecrets(t, "auto")
 	r := resource("Secret", "shop", "db", true)
@@ -417,9 +418,7 @@ func TestAWSSecretStoreFile(t *testing.T) {
 	}
 }
 
-// A kind or group from the cluster or a manifest file can't make a path
-// that leaves the export: KindDir keeps it one directory name, and every
-// write goes through an os.Root on the export's directory.
+// check that a kind or group from the cluster or a manifest file cant make a path that leaves the export, KindDir keeps it one directory name and every write goes through an os.Root on the export's directory
 func TestPathsStayInsideExport(t *testing.T) {
 	for _, kind := range []string{"../../../../../../ESCAPED", "..", "a/b", `..\..\x`} {
 		if d := KindDir("v1", kind); strings.ContainsAny(d, `/\`) || strings.Trim(d, ".") == "" {

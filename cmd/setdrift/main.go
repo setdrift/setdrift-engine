@@ -1,7 +1,5 @@
-// Command setdrift exports a Kubernetes cluster's configuration as a
-// Git-ready Kustomize repository, compares clusters, and verifies and
-// restores exports. Installed as kubectl-setdrift, it runs as kubectl
-// setdrift.
+// entry point for the setdrift cli, builds the command tree and runs whatever command was typed
+// the commands themselves live in the other files in this folder, export.go, verify.go, diff.go and so on
 package main
 
 import (
@@ -18,52 +16,55 @@ import (
 	"setdrift.io/setdrift-engine/internal/version"
 )
 
+// main hands off to run and exits with whatever status it gives back, run is defined below
 func main() { os.Exit(run()) }
 
-// run runs the command line and returns the exit status; main exits with
-// it once run's deferred calls have run.
+// run takes the command line, runs it and gives back the exit status
+// its split out from main so the deferred cleanup still runs before the program exits
 func run() int {
-	// Ctrl-C stops in-flight calls, so an export ends cleanly instead of mid-write
+	// setting up ctrl-c so an export stops cleanly instead of in the middle of writing files
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	// restore normal signal handling when run returns
+	// putting normal signal handling back once run returns
 	defer stop()
-	// after the first Ctrl-C, release the signal so a second Ctrl-C force-quits
-	// an export stuck somewhere that ignores ctx; ends when ctx does, at the
-	// latest when run returns
+	// after the first ctrl-c we let go of the signal, so a second ctrl-c force quits anything stuck
 	go func() { <-ctx.Done(); stop() }()
 
+	// invoking newRootCmd to build the commands and run the one that was typed, its defined below
 	err := newRootCmd().ExecuteContext(ctx)
+	// checking if the command finished without an error, if so we exit with 0
 	if err == nil {
 		return 0
 	}
-	// a command that sets its own exit status (diff --exit-code)
+	// checking if the command picked its own exit status, like diff --exit-code does
 	var ee *exitError
 	if errors.As(err, &ee) {
+		// checking if theres also a message to print before exiting with that status
 		if ee.err != nil {
 			fmt.Fprintln(os.Stderr, "error:", ee.err)
 		}
 		return ee.code
 	}
+	// anything else is a terminal error, print it and exit with 1
 	fmt.Fprintln(os.Stderr, "error:", err)
 	return 1
 }
 
-// newRootCmd builds the command tree, fresh for each run, so tests can run
-// commands one after another.
+// newRootCmd builds the command tree fresh each time, so tests can run commands one after another without state carrying over
 func newRootCmd() *cobra.Command {
 	root := &cobra.Command{
 		Use:   "setdrift",
 		Short: "Export Kubernetes cluster configuration as a Git-ready repository",
-		// cobra settings to avoid stderr duplication
+		// telling cobra not to print usage and errors itself, run already prints the error once
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
-	// run by kubectl as `kubectl setdrift`: show that name in help and usage text
+	// checking if kubectl started us as kubectl setdrift, if so the help text shows that name instead
 	if strings.TrimSuffix(filepath.Base(os.Args[0]), ".exe") == "kubectl-setdrift" {
 		root.Annotations = map[string]string{cobra.CommandDisplayNameAnnotation: "kubectl setdrift"}
 	}
 
-	// the subcommands are in this folder's other files; version is small enough to define here
+	// invoking each newXCmd function to add the subcommands, theyre defined in export.go, verify.go, diff.go, snapshot.go and helm.go
+	// version is small enough to define right here
 	root.AddCommand(newExportCmd(), newVerifyCmd(), newDiffCmd(), newSnapshotCmd(), newHelmPostRenderCmd(), &cobra.Command{
 		Use:   "version",
 		Short: "Print the version",

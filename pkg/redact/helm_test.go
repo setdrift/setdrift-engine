@@ -1,3 +1,5 @@
+// tests reading the chart metadata from a Helm release record, without keeping its values or rendered manifest
+
 package redact
 
 import (
@@ -13,6 +15,7 @@ import (
 	"setdrift.io/setdrift-engine/pkg/resource"
 )
 
+// releaseSecret builds a Helm release Secret with the given status, encoded the way Helm stores it, with a password in its values and a Secret in its manifest
 func releaseSecret(t *testing.T, status string) *resource.Object {
 	t.Helper()
 	js := `{"name":"web","namespace":"shop","version":3,"info":{"status":"` + status + `"},
@@ -30,6 +33,7 @@ func releaseSecret(t *testing.T, status string) *resource.Object {
 	}})
 }
 
+// check that a deployed release gives its chart metadata, keeps no values or manifest, its record is redacted, and a superseded revision is not read
 func TestHelmReleaseMetadata(t *testing.T) {
 	o := releaseSecret(t, "deployed")
 	if _, _, err := (SecretRedactor{}).Process(context.Background(), []*resource.Object{o}); err != nil {

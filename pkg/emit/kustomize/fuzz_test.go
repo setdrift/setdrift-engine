@@ -1,3 +1,5 @@
+// fuzz tests for the names that become paths, so no cluster, kind or group name can make a path that leaves its directory
+
 package kustomize
 
 import (
@@ -6,7 +8,7 @@ import (
 	"testing"
 )
 
-// one checks that p is a single path element that names something inside its directory.
+// one fails the test unless p is a single path element that names something inside its directory
 func one(t *testing.T, fn, in, p string) {
 	t.Helper()
 	if p == "" || p == "." || p == ".." || strings.ContainsAny(p, "/\\") || filepath.Base(p) != p {
@@ -14,12 +16,14 @@ func one(t *testing.T, fn, in, p string) {
 	}
 }
 
+// check that SafeName, KindDir and ClusterDir always give one path element inside their directory, whatever the kind and group
 func FuzzPathNames(f *testing.F) {
 	for _, s := range []string{"", ".", "..", "../../x", "a/b", "C:\\x", "rbac:role", "...."} {
 		f.Add(s, s)
 	}
 	f.Fuzz(func(t *testing.T, group, kind string) {
-		one(t, "SafeName", kind, "x"+SafeName(kind)) // SafeName may return "" or dots; it never returns a separator
+		// SafeName may give back "" or dots, but never a separator
+		one(t, "SafeName", kind, "x"+SafeName(kind))
 		one(t, "KindDir", kind, KindDir(group+"/v1", kind))
 		one(t, "KindDir", kind, KindDir("v1", kind))
 		root := filepath.Join("out", "clusters")

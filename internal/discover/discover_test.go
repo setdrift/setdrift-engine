@@ -1,3 +1,5 @@
+// tests discovery against a fake API server, in both its aggregated and legacy forms, and compares the results with client-go's
+
 package discover
 
 import (
@@ -17,22 +19,25 @@ import (
 	"k8s.io/client-go/rest"
 )
 
-// a cluster's APIs: group -> versions (preferred first) -> resources
+// fakeVersion is one version of a fake group, with its resources, the groups below list their versions preferred first
 type fakeVersion struct {
 	version   string
 	resources []metav1.APIResource
-	down      bool // an aggregated API server that is unavailable
+	down      bool // set for an aggregated API server thats unavailable
 }
 
+// fakeGroup is one API group of the fake cluster, with its versions preferred first
 type fakeGroup struct {
 	name     string
 	versions []fakeVersion
 }
 
+// res builds one API resource for the fake cluster, its singular name the lowercased kind
 func res(name, kind string, namespaced bool, verbs ...string) metav1.APIResource {
 	return metav1.APIResource{Name: name, SingularName: strings.ToLower(kind), Kind: kind, Namespaced: namespaced, Verbs: verbs}
 }
 
+// cluster is the fake cluster's APIs, with a group missing a resource in its preferred version and a group thats down
 var cluster = []fakeGroup{
 	{"", []fakeVersion{{version: "v1", resources: []metav1.APIResource{
 		res("pods", "Pod", true, "get", "list"), {Name: "pods/log", Kind: "Pod", Namespaced: true, Verbs: []string{"get"}},
@@ -46,7 +51,7 @@ var cluster = []fakeGroup{
 	{"metrics.k8s.io", []fakeVersion{{version: "v1beta1", down: true, resources: []metav1.APIResource{res("pods", "PodMetrics", true, "get", "list")}}}},
 }
 
-// server serves cluster with aggregated discovery or the legacy documents.
+// server serves the given groups with aggregated discovery or the legacy documents, and gives back a rest config pointing at it
 func server(t *testing.T, aggregated bool, groups []fakeGroup) *rest.Config {
 	t.Helper()
 	gv := func(g, v string) string { return schema.GroupVersion{Group: g, Version: v}.String() }
@@ -107,7 +112,7 @@ func server(t *testing.T, aggregated bool, groups []fakeGroup) *rest.Config {
 	return &rest.Config{Host: s.URL}
 }
 
-// aggregatedDoc is the aggregated discovery document of /api (core) or /apis.
+// aggregatedDoc builds the aggregated discovery document of /api, the core group, or of /apis
 func aggregatedDoc(groups []fakeGroup, core bool) map[string]any {
 	var items []any
 	for _, g := range groups {
@@ -146,7 +151,7 @@ func aggregatedDoc(groups []fakeGroup, core bool) map[string]any {
 	return map[string]any{"kind": "APIGroupDiscoveryList", "apiVersion": "apidiscovery.k8s.io/v2", "items": items}
 }
 
-// flat lists group version, resource, kind and scope, sorted, to compare.
+// flat lists each resource as its group version, name, kind, scope and verbs, sorted, so two results can be compared
 func flat(lists []*metav1.APIResourceList) []string {
 	var out []string
 	for _, l := range lists {
@@ -158,9 +163,7 @@ func flat(lists []*metav1.APIResourceList) []string {
 	return out
 }
 
-// PreferredResources gives what client-go's ServerPreferredResources gives,
-// from aggregated and from legacy discovery, including a group version that
-// is down.
+// check that PreferredResources gives what client-go's ServerPreferredResources gives, from aggregated and legacy discovery, with a group version thats down
 func TestPreferredResourcesMatchesClientGo(t *testing.T) {
 	for _, aggregated := range []bool{true, false} {
 		cfg := server(t, aggregated, cluster)
@@ -186,6 +189,7 @@ func TestPreferredResourcesMatchesClientGo(t *testing.T) {
 	}
 }
 
+// check that the server version and the groups with their preferred versions are read, from aggregated and legacy discovery
 func TestServerVersionAndGroups(t *testing.T) {
 	for _, aggregated := range []bool{true, false} {
 		c, err := New(server(t, aggregated, cluster))
@@ -210,8 +214,7 @@ func TestServerVersionAndGroups(t *testing.T) {
 	}
 }
 
-// The mapper maps kinds in every served version, defaulting to the
-// preferred one, as client-go's discovery REST mapper does.
+// check that the mapper maps kinds in every served version, defaulting to the preferred one, as client-go's discovery rest mapper does
 func TestRESTMapper(t *testing.T) {
 	for _, aggregated := range []bool{true, false} {
 		c, err := New(server(t, aggregated, cluster))
@@ -254,7 +257,7 @@ func TestRESTMapper(t *testing.T) {
 	}
 }
 
-// An API server's 401 arrives as a typed error, which the CLI explains.
+// check that an API server's 401 arrives as a typed error, which the cli explains
 func TestErrorsAreTyped(t *testing.T) {
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

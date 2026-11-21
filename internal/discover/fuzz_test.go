@@ -1,3 +1,5 @@
+// fuzzes reading aggregated discovery documents
+
 package discover
 
 import (
@@ -7,8 +9,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// Whatever an API server (or something answering in its place) sends as
-// aggregated discovery, reading it does not panic.
+// check that reading whatever an API server, or something answering in its place, sends as aggregated discovery doesnt panic
 func FuzzAggregated(f *testing.F) {
 	f.Add([]byte(`{"items":[{"metadata":{"name":"apps"},"versions":[{"version":"v1","resources":[{"resource":"deployments","responseKind":{"kind":"Deployment"},"scope":"Namespaced","subresources":[{"subresource":"status"}]}]}]}]}`))
 	f.Add([]byte(`{"items":[{"versions":[{"version":"v1","freshness":"Stale"}]},{}]}`))

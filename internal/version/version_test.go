@@ -1,3 +1,5 @@
+// tests how the version and commit get settled from -ldflags and Go's build information
+
 package version
 
 import (
@@ -5,8 +7,7 @@ import (
 	"testing"
 )
 
-// -ldflags values win; otherwise Go's build information fills in; "dev"
-// and "none" when nothing knows.
+// check that -ldflags values win, Go's build information fills in otherwise, and "dev" and "none" come back when nothing knows
 func TestResolve(t *testing.T) {
 	vcs := func(rev, modified string) []debug.BuildSetting {
 		return []debug.BuildSetting{{Key: "vcs.revision", Value: rev}, {Key: "vcs.modified", Value: modified}}

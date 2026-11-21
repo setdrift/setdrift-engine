@@ -1,16 +1,9 @@
-package collect_test
+// race tests for hydration, every corpus in testdata/corpus is served through fake cluster clients and exported with ClusterCollector, while objects are deleted, recreated or made unreadable between the metadata list and the fetch that follows it
+// the oracle is that when objects vanish after the metadata list, the export must equal an export of a cluster where those objects never existed, collected without the metadata-only path, so with no hydration and no race
+// both clusters serve the same API types and namespaces, so owner lookups agree
+// the run must never fail, and never let a metadata-only object reach the snapshot
 
-// Race tests for hydration. Every corpus in testdata/corpus is served through
-// fake cluster clients and exported with ClusterCollector, while objects are
-// deleted, recreated or made unreadable between the metadata list and the
-// fetch that follows it.
-//
-// The oracle: when objects vanish after the metadata list, the export must
-// equal an export of a cluster where those objects never existed, collected
-// without the metadata-only path (so with no hydration, and no race). Both
-// clusters serve the same API types and namespaces, so owner lookups agree.
-// The run must never fail, and never let a metadata-only object reach the
-// snapshot.
+package collect_test
 
 import (
 	"context"
@@ -43,19 +36,18 @@ import (
 	snapshotv1alpha1 "setdrift.io/setdrift-engine/pkg/snapshot/v1alpha1"
 )
 
-// raceConfig is one way of running the collector.
+// raceConfig is one way of running the collector
 type raceConfig struct {
 	name string
-	// metadataOnly chooses the types listed metadata-only. "all" makes every
-	// type metadata-only, so owner chains of any depth go through hydration
-	// (Deployment -> ReplicaSet -> Pod, CronJob -> Job -> Pod).
+	// metadataOnly picks the types listed metadata-only, "all" makes every type metadata-only so owner chains of any depth go through hydration (Deployment -> ReplicaSet -> Pod, CronJob -> Job -> Pod)
 	metadataOnly func(schema.GroupResource) bool
-	// getLimit is HydrateGetLimit: positive fetches with GETs, negative lists.
+	// getLimit is HydrateGetLimit, positive fetches with GETs, negative lists
 	getLimit int
-	// namespaced runs with -n set to every namespace in the corpus.
+	// namespaced runs with -n set to every namespace in the corpus
 	namespaced bool
 }
 
+// raceConfigs is every combination of metadata-only choice, fetch strategy and namespaced or not
 var raceConfigs = func() []raceConfig {
 	var out []raceConfig
 	for _, md := range []struct {
@@ -81,13 +73,14 @@ var raceConfigs = func() []raceConfig {
 	return out
 }()
 
-// mutation changes the cluster after the metadata lists, before hydration.
+// mutation changes the cluster after the metadata lists, before hydration
 type mutation struct {
-	vanish   map[types.UID]bool // deleted
-	recreate map[types.UID]bool // deleted and recreated under the same name
-	forbid   *schema.GroupVersionResource
+	vanish   map[types.UID]bool           // deleted
+	recreate map[types.UID]bool           // deleted and recreated under the same name
+	forbid   *schema.GroupVersionResource // can be listed but not fetched
 }
 
+// check that every corpus exports the same as a race-free cluster, whatever vanishes, gets recreated or is forbidden between the metadata list and the fetch
 func TestHydrationRaces(t *testing.T) {
 	dirs, err := filepath.Glob("../../testdata/corpus/*/input")
 	if err != nil || len(dirs) == 0 {
@@ -104,44 +97,40 @@ func TestHydrationRaces(t *testing.T) {
 	}
 }
 
+// testRaces runs every race on one corpus with one config
 func testRaces(t *testing.T, objs []*unstructured.Unstructured, cfg raceConfig) {
 	scope := objs
 	if cfg.namespaced {
 		scope = slices.DeleteFunc(slices.Clone(objs), func(u *unstructured.Unstructured) bool { return u.GetNamespace() == "" })
 	}
 
-	// No race: the cluster export equals the static export.
+	// with no race the cluster export equals the static export
 	assertSameExport(t, "no race", runCluster(t, objs, cfg, mutation{}), runStatic(t, objs, objs, cfg))
 
-	// Hydration fetches the metadata-only objects with no exported
-	// controller owner. Race each of them.
+	// hydration fetches the metadata-only objects with no exported controller owner, race each of them
 	for _, x := range hydrated(scope, cfg) {
 		ref := refOf(x)
 		children := descendants(objs, x)
 
-		// The object vanishes. Its children were not fetched (their owner
-		// was present at list time), so they must now be.
+		// the object vanishes, its children werent fetched since their owner was present at list time, so they must be now
 		assertSameExport(t, "vanish "+ref,
 			runCluster(t, objs, cfg, mutation{vanish: uidSet(x)}),
 			runStatic(t, objs, without(objs, uidSet(x)), cfg))
 
-		// The object and everything it owns vanish, as with cascading
-		// deletion: every fetch in every round finds nothing.
+		// the object and everything it owns vanish, as with cascading deletion, every fetch in every round finds nothing
 		subtree := uidSet(append([]*unstructured.Unstructured{x}, children...)...)
 		assertSameExport(t, "vanish subtree of "+ref,
 			runCluster(t, objs, cfg, mutation{vanish: subtree}),
 			runStatic(t, objs, without(objs, subtree), cfg))
 
-		// The object is deleted and recreated under the same name. The new
-		// object was not part of this capture.
+		// the object is deleted and recreated under the same name, the new object wasnt part of this capture
 		assertSameExport(t, "recreate "+ref,
 			runCluster(t, objs, cfg, mutation{recreate: uidSet(x)}),
 			runStatic(t, objs, without(objs, uidSet(x)), cfg))
 	}
 
-	// A type that can be listed but not fetched: every object of it that
-	// needs fetching is dropped with HYDRATE_FAILED, and their children are
-	// fetched instead. The run must not fail.
+	// a type that can be listed but not fetched, every object of it that needs fetching is dropped with HYDRATE_FAILED and their children are fetched instead
+	// the run must not fail
 	forbidden := map[schema.GroupVersionResource]bool{}
 	for _, x := range hydrated(scope, cfg) {
 		forbidden[gvrOf(x)] = true
@@ -158,8 +147,7 @@ func testRaces(t *testing.T, objs []*unstructured.Unstructured, cfg raceConfig) 
 	}
 }
 
-// hydrated returns the objects the collector fetches in full in its first
-// round: metadata-only objects whose controller owner is not collected.
+// hydrated gives back the objects the collector fetches in full in its first round, the metadata-only objects whose controller owner isnt collected
 func hydrated(scope []*unstructured.Unstructured, cfg raceConfig) []*unstructured.Unstructured {
 	present := map[types.UID]bool{}
 	for _, u := range scope {
@@ -177,6 +165,7 @@ func hydrated(scope []*unstructured.Unstructured, cfg raceConfig) []*unstructure
 	return out
 }
 
+// descendants gives back everything root owns through controller references, at any depth
 func descendants(objs []*unstructured.Unstructured, root *unstructured.Unstructured) []*unstructured.Unstructured {
 	var out []*unstructured.Unstructured
 	parents := uidSet(root)
@@ -193,7 +182,7 @@ func descendants(objs []*unstructured.Unstructured, root *unstructured.Unstructu
 	return out
 }
 
-// runCluster exports objs through fake cluster clients with m applied.
+// runCluster exports objs through fake cluster clients with m applied, failing the test on an error
 func runCluster(t *testing.T, objs []*unstructured.Unstructured, cfg raceConfig, m mutation) string {
 	t.Helper()
 	snap, err := runClusterErr(objs, objs, cfg, m, true)
@@ -203,10 +192,8 @@ func runCluster(t *testing.T, objs []*unstructured.Unstructured, cfg raceConfig,
 	return canonical(t, snap)
 }
 
-// runClusterErr exports served through fake cluster clients. all sets the
-// API types and the namespaces requested, so a cluster with objects removed
-// still serves the same types. With metadataOnly false the collector has no
-// metadata client.
+// runClusterErr exports served through fake cluster clients, all sets the API types and the namespaces requested, so a cluster with objects removed still serves the same types
+// with metadataOnly false the collector has no metadata client
 func runClusterErr(all, served []*unstructured.Unstructured, cfg raceConfig, m mutation, metadataOnly bool) (*snapshotv1alpha1.Snapshot, error) {
 	resources := map[schema.GroupVersionResource]metav1.APIResource{}
 	for _, u := range all {
@@ -217,8 +204,7 @@ func runClusterErr(all, served []*unstructured.Unstructured, cfg raceConfig, m m
 		resources[gvr] = r
 	}
 
-	// The metadata client serves the cluster as it was when listed; the
-	// dynamic client, used for fetches, serves it after the mutation.
+	// the metadata client serves the cluster as it was when listed, the dynamic client, used for fetches, serves it after the mutation
 	var listed, fetched []runtime.Object
 	phases := map[types.UID]string{}
 	for _, u := range served {
@@ -269,8 +255,7 @@ func runClusterErr(all, served []*unstructured.Unstructured, cfg raceConfig, m m
 			}
 			return true, nil, apierrors.NewForbidden(gvr.GroupResource(), "", fmt.Errorf("denied by test"))
 		}
-		// GET for the get strategy, list for the list strategy. Full lists of
-		// types that are not metadata-only stay allowed.
+		// GET for the get strategy, list for the list strategy, full lists of types that arent metadata-only stay allowed
 		dyn.PrependReactor("get", "*", deny)
 		if cfg.metadataOnly(gvr.GroupResource()) {
 			dyn.PrependReactor("list", "*", deny)
@@ -282,7 +267,7 @@ func runClusterErr(all, served []*unstructured.Unstructured, cfg raceConfig, m m
 		return nil, err
 	}
 	md := metadatafake.NewSimpleMetadataClient(scheme, listed...)
-	// The fake ignores field selectors; apply status.phase like the API server.
+	// the fake ignores field selectors, so this applies status.phase like the API server does
 	md.PrependReactor("list", "pods", func(a clienttesting.Action) (bool, runtime.Object, error) {
 		la := a.(clienttesting.ListAction)
 		sel := la.GetListRestrictions().Fields
@@ -317,8 +302,7 @@ func runClusterErr(all, served []*unstructured.Unstructured, cfg raceConfig, m m
 	return pipeline.New(c).Run(context.Background(), raceMeta())
 }
 
-// runStatic exports served (a cluster of all's types with only served in
-// it) without the metadata-only path: no hydration, so no race.
+// runStatic exports served, a cluster of all's types with only served in it, without the metadata-only path, so no hydration and no race
 func runStatic(t *testing.T, all, served []*unstructured.Unstructured, cfg raceConfig) string {
 	t.Helper()
 	snap, err := runClusterErr(all, served, cfg, mutation{}, false)
@@ -328,13 +312,12 @@ func runStatic(t *testing.T, all, served []*unstructured.Unstructured, cfg raceC
 	return canonical(t, snap)
 }
 
+// raceMeta is the capture metadata every test export uses
 func raceMeta() snapshot.Meta {
 	return snapshot.Meta{ID: "race", Cluster: &snapshotv1alpha1.Cluster{Name: "race", KubernetesVersion: "v1.35.0"}}
 }
 
-// canonical renders a snapshot for comparison. Capture-level findings are
-// sorted: their order follows collection order, which differs between the
-// two collectors.
+// canonical renders a snapshot for comparison, with capture-level findings sorted since their order follows collection order, which differs between the two collectors
 func canonical(t *testing.T, s *snapshotv1alpha1.Snapshot) string {
 	t.Helper()
 	sort.SliceStable(s.Findings, func(i, j int) bool {
@@ -348,6 +331,7 @@ func canonical(t *testing.T, s *snapshotv1alpha1.Snapshot) string {
 	return string(b)
 }
 
+// assertSameExport fails the test when the two exports differ, showing the first differing line
 func assertSameExport(t *testing.T, what, got, want string) {
 	t.Helper()
 	if got != want {
@@ -355,6 +339,7 @@ func assertSameExport(t *testing.T, what, got, want string) {
 	}
 }
 
+// firstDiff gives back the first line where got and want differ, empty when theyre the same
 func firstDiff(got, want string) string {
 	g, w := strings.Split(got, "\n"), strings.Split(want, "\n")
 	for i := 0; i < len(g) || i < len(w); i++ {
@@ -372,6 +357,7 @@ func firstDiff(got, want string) string {
 	return ""
 }
 
+// hasFinding tells if the snapshot has a capture-level finding with code
 func hasFinding(s *snapshotv1alpha1.Snapshot, code string) bool {
 	for _, f := range s.Findings {
 		if f.Code == code {
@@ -381,8 +367,7 @@ func hasFinding(s *snapshotv1alpha1.Snapshot, code string) bool {
 	return false
 }
 
-// loadCorpus reads a corpus as a cluster would hold it: one object per
-// identity (the first, as snapshot.Build keeps), each with a UID.
+// loadCorpus reads a corpus as a cluster would hold it, one object per identity (the first, as snapshot.Build keeps) and each with a uid
 func loadCorpus(t *testing.T, dir string) []*unstructured.Unstructured {
 	t.Helper()
 	if _, err := os.Stat(dir); err != nil {
@@ -408,11 +393,13 @@ func loadCorpus(t *testing.T, dir string) []*unstructured.Unstructured {
 	return out
 }
 
+// gvrOf guesses the resource of u from its kind
 func gvrOf(u *unstructured.Unstructured) schema.GroupVersionResource {
 	gvr, _ := meta.UnsafeGuessKindToResource(u.GroupVersionKind())
 	return gvr
 }
 
+// partialOf gives back the metadata-only view of u, as the metadata API serves it
 func partialOf(u *unstructured.Unstructured) *metav1.PartialObjectMetadata {
 	p := &metav1.PartialObjectMetadata{TypeMeta: metav1.TypeMeta{APIVersion: u.GetAPIVersion(), Kind: u.GetKind()}}
 	m, _ := u.Object["metadata"].(map[string]any)
@@ -422,8 +409,10 @@ func partialOf(u *unstructured.Unstructured) *metav1.PartialObjectMetadata {
 	return p
 }
 
+// refOf gives back u's ref, for naming it in messages
 func refOf(u *unstructured.Unstructured) string { return resource.New(u).Ref() }
 
+// uidSet gives back the uids of objs as a set
 func uidSet(objs ...*unstructured.Unstructured) map[types.UID]bool {
 	out := map[types.UID]bool{}
 	for _, u := range objs {
@@ -432,6 +421,7 @@ func uidSet(objs ...*unstructured.Unstructured) map[types.UID]bool {
 	return out
 }
 
+// without gives back a copy of objs leaving out the uids in drop
 func without(objs []*unstructured.Unstructured, drop map[types.UID]bool) []*unstructured.Unstructured {
 	return slices.DeleteFunc(slices.Clone(objs), func(u *unstructured.Unstructured) bool { return drop[u.GetUID()] })
 }

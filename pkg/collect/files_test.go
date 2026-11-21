@@ -1,3 +1,5 @@
+// tests reading manifests from a directory, what gets skipped, what gets refused and that errors never print secret values
+
 package collect_test
 
 import (
@@ -13,6 +15,7 @@ import (
 	"setdrift.io/setdrift-engine/pkg/collect"
 )
 
+// writeFiles writes files, keyed by relative path, into a new temp directory and gives back the directory
 func writeFiles(t *testing.T, files map[string]string) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -28,9 +31,10 @@ func writeFiles(t *testing.T, files map[string]string) string {
 	return dir
 }
 
+// configMap is a minimal ConfigMap manifest the tests read back
 const configMap = "apiVersion: v1\nkind: ConfigMap\nmetadata: {name: settings, namespace: shop}\n"
 
-// TestFileSourceSkips: a repository checkout can be read directly.
+// check that a repository checkout can be read directly, skipping dot-directories, Kustomization files, runtime state and non-yaml files
 func TestFileSourceSkips(t *testing.T) {
 	dir := writeFiles(t, map[string]string{
 		"apps/settings.yaml":            configMap,
@@ -63,8 +67,7 @@ func TestFileSourceSkips(t *testing.T) {
 	}
 }
 
-// TestFileSourceErrors: errors name the document, and never print its
-// content, which may be a Secret.
+// check that decode errors name the document and never print its content, which may be a Secret
 func TestFileSourceErrors(t *testing.T) {
 	secretNoKind := "apiVersion: v1\nmetadata: {name: db}\ndata: {password: aHVudGVyMg==}\n"
 	for _, tc := range []struct {
@@ -92,9 +95,7 @@ func TestFileSourceErrors(t *testing.T) {
 	}
 }
 
-// TestFileSourceKustomize: a Kustomization that only lists files in the tree
-// is skipped, with or without kind; one whose output differs from its files is
-// refused, naming why and the command that renders it.
+// check that a Kustomization only listing files in the tree is skipped, with or without kind, and one whose output differs is refused naming why and the command that renders it
 func TestFileSourceKustomize(t *testing.T) {
 	for _, tc := range []struct{ name, file, kustomization, want string }{
 		{"resources only, no kind", "kustomization.yaml", "resources: [settings.yaml]\n", ""},
@@ -121,8 +122,7 @@ func TestFileSourceKustomize(t *testing.T) {
 	}
 }
 
-// An export read as manifests leaves out its own snapshots and verify
-// reports; a snapshots/ directory elsewhere is read.
+// check that an export read as manifests leaves out its own snapshots and verify reports, while a snapshots/ directory elsewhere is read
 func TestFileSourceSkipsExportRecords(t *testing.T) {
 	dir := t.TempDir()
 	cm := func(name string) string {
@@ -156,8 +156,7 @@ func TestFileSourceSkipsExportRecords(t *testing.T) {
 	}
 }
 
-// A symlink in the directory is not followed: it could lead to a file
-// outside it.
+// check that a symlink in the directory isnt followed, since it could lead to a file outside it
 func TestFileSourceSkipsSymlinks(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlinks need privileges on Windows")

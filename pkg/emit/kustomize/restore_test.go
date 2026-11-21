@@ -1,3 +1,5 @@
+// tests RESTORE.md and its platform playbooks, built from small snapshots, and the helpers that find lines, charts and pull secrets
+
 package kustomize
 
 import (
@@ -10,6 +12,7 @@ import (
 	snapshotv1alpha1 "setdrift.io/setdrift-engine/pkg/snapshot/v1alpha1"
 )
 
+// check that a redaction path finds its line in the yaml, through keys with dots and list items by name or index
 func TestLineOf(t *testing.T) {
 	doc := []byte(`apiVersion: v1
 data:
@@ -40,6 +43,7 @@ spec:
 	}
 }
 
+// check that a helm.sh/chart label splits into the chart and its version, even when the chart name has dashes
 func TestChartOf(t *testing.T) {
 	for label, want := range map[string][2]string{
 		"external-secrets-2.15.0": {"external-secrets", "2.15.0"},
@@ -52,6 +56,7 @@ func TestChartOf(t *testing.T) {
 	}
 }
 
+// check that shell quoting leaves safe words alone and quotes spaces, quotes and the empty string
 func TestShellQuote(t *testing.T) {
 	for in, want := range map[string]string{"web": "web", "a b": "'a b'", "it's": `'it'\''s'`, "": "''", "arn:aws:iam::1:role/x": "arn:aws:iam::1:role/x"} {
 		if got := text.ShellQuote(in); got != want {
@@ -60,6 +65,7 @@ func TestShellQuote(t *testing.T) {
 	}
 }
 
+// check that an EKS export gets a generic RESTORE.md without aws commands, and platform playbooks with the roles, ids, volumes, storage classes and helm installs
 func TestRestorePlaybook(t *testing.T) {
 	s := &snapshotv1alpha1.Snapshot{
 		Cluster:  &snapshotv1alpha1.Cluster{Name: "prod", Platform: "eks", ProviderId: "arn:aws:eks:us-east-2:111122223333:cluster/prod"},
@@ -101,7 +107,7 @@ func TestRestorePlaybook(t *testing.T) {
 	}
 	root := ClusterDir(dir, "prod")
 	generic := readFile(t, root, "RESTORE.md")
-	// The AWS steps are in the platform's playbooks; RESTORE.md points to them.
+	// the aws steps are in the platform's playbooks, RESTORE.md points to them
 	md := generic + readFile(t, root, "platform/aws/RESTORE.md") + readFile(t, root, "platform/aws/eks/RESTORE.md")
 	for _, aws := range []string{"aws eks ", "aws ec2 ", "aws iam ", "$REGION", "$DST_CLUSTER"} {
 		if strings.Contains(generic, aws) {
@@ -146,6 +152,7 @@ func TestRestorePlaybook(t *testing.T) {
 	}
 }
 
+// check that a Secret only a controller generates is left to it, and one with some user keys is merged with only those keys
 func TestGeneratedSecrets(t *testing.T) {
 	gen := func(path string) *snapshotv1alpha1.Redaction {
 		return &snapshotv1alpha1.Redaction{Path: path, Reason: snapshotv1alpha1.RedactionReason_REDACTION_REASON_GENERATED_VALUE, Controller: "argocd-server"}
@@ -197,8 +204,7 @@ func TestGeneratedSecrets(t *testing.T) {
 	}
 }
 
-// Pull Secrets are told apart by their type, the one thing the redacted
-// manifest keeps about them.
+// check that pull Secrets are told apart by their type, the one thing the redacted manifest keeps about them
 func TestPullSecret(t *testing.T) {
 	for manifest, want := range map[string]bool{
 		`{"type":"kubernetes.io/dockerconfigjson","data":{".dockerconfigjson":"x"}}`: true,
@@ -212,10 +218,7 @@ func TestPullSecret(t *testing.T) {
 	}
 }
 
-// Redacted add-on configuration is named under the add-on commands, with the
-// command that reads the real values from the source.
-// Add-on configuration values never go into RESTORE.md, redacted or not:
-// each command reads them from the source add-on as it runs.
+// check that add-on configuration values never go into RESTORE.md, redacted or not, each command reads them from the source add-on as it runs
 func TestAddonConfigNotWritten(t *testing.T) {
 	s := &snapshotv1alpha1.Snapshot{
 		Cluster:  &snapshotv1alpha1.Cluster{Name: "prod", Platform: "eks", ProviderId: "arn:aws:eks:us-east-2:111122223333:cluster/prod"},
@@ -249,9 +252,7 @@ func TestAddonConfigNotWritten(t *testing.T) {
 	}
 }
 
-// A chart installed by hand gets the repository Argo CD or Flux installs the
-// same chart from; a chart from two repositories, or a release with no
-// recorded chart, gets none, with the command that shows the chart.
+// check that a chart installed by hand gets the repository argo cd or flux installs the same chart from, and a chart from two repositories or a release with no recorded chart gets none, with the command that shows the chart
 func TestHelmRepoFromGitOps(t *testing.T) {
 	obj := func(apiVersion, kind, ns, name, spec string) *snapshotv1alpha1.Resource {
 		return &snapshotv1alpha1.Resource{ApiVersion: apiVersion, Kind: kind, Namespace: ns, Name: name,
@@ -278,7 +279,7 @@ func TestHelmRepoFromGitOps(t *testing.T) {
 				`{"chart":{"spec":{"chart":"ingress-nginx","sourceRef":{"kind":"HelmRepository","name":"ingress","namespace":"flux-system"}}}}`),
 			obj("source.toolkit.fluxcd.io/v1", "OCIRepository", "apps", "podinfo", `{"url":"oci://ghcr.io/stefanprodan/charts/podinfo"}`),
 			obj("helm.toolkit.fluxcd.io/v2", "HelmRelease", "apps", "podinfo", `{"chartRef":{"kind":"OCIRepository","name":"podinfo"}}`),
-			// two repositories for one chart: no guess
+			// two repositories for one chart, so no guess
 			obj("argoproj.io/v1alpha1", "Application", "argocd", "a", `{"sources":[{"repoURL":"https://one.example.com","chart":"web"}]}`),
 			obj("argoproj.io/v1alpha1", "Application", "argocd", "b", `{"source":{"repoURL":"https://two.example.com","chart":"web"}}`),
 			helmObj("monitoring", "prom", "kube-prometheus-stack-60.0.0"),
@@ -309,8 +310,7 @@ func TestHelmRepoFromGitOps(t *testing.T) {
 	}
 }
 
-// A Secret its controller only fills in is created empty, then its namespace
-// restarted; one the controller creates whole stays "nothing to do".
+// check that a Secret its controller only fills in is created empty and its namespace restarted, while one the controller creates with all its keys stays "nothing to do"
 func TestSecretsFilledByController(t *testing.T) {
 	secret := func(name string, finding bool) *snapshotv1alpha1.Resource {
 		r := &snapshotv1alpha1.Resource{ApiVersion: "v1", Kind: "Secret", Namespace: "argocd", Name: name,
@@ -344,7 +344,7 @@ func TestSecretsFilledByController(t *testing.T) {
 	}
 }
 
-// readFile reads a file under root, or "" if there is none.
+// readFile reads a file under root, or gives back "" if theres none, for the playbooks that are only written for some platforms
 func readFile(t *testing.T, root, rel string) string {
 	t.Helper()
 	b, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
@@ -354,6 +354,7 @@ func readFile(t *testing.T, root, rel string) string {
 	return string(b)
 }
 
+// mustRead reads a file, failing the test if it cant be read
 func mustRead(t *testing.T, path string) []byte {
 	t.Helper()
 	b, err := os.ReadFile(path)
@@ -363,7 +364,7 @@ func mustRead(t *testing.T, path string) []byte {
 	return b
 }
 
-// mustReadDir returns the entries of dir, failing the test if it can't be read.
+// mustReadDir gives back the entries of dir, failing the test if it cant be read
 func mustReadDir(t *testing.T, dir string) []os.DirEntry {
 	t.Helper()
 	entries, err := os.ReadDir(dir)
@@ -373,7 +374,7 @@ func mustReadDir(t *testing.T, dir string) []os.DirEntry {
 	return entries
 }
 
-// mustExternalSecrets is DefaultExternalSecrets, failing the test on an error.
+// mustExternalSecrets calls DefaultExternalSecrets for the provider, failing the test on an error
 func mustExternalSecrets(t *testing.T, provider string) *ExternalSecrets {
 	t.Helper()
 	x, err := DefaultExternalSecrets(provider)

@@ -1,3 +1,5 @@
+// tests an Object's ref, the capture time in the context and the StatefulSet claim prefixes
+
 package resource
 
 import (
@@ -8,6 +10,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
+// object builds an Object of the given type, namespace and name for the tests
 func object(apiVersion, kind, ns, name string) *Object {
 	u := &unstructured.Unstructured{}
 	u.SetAPIVersion(apiVersion)
@@ -17,6 +20,7 @@ func object(apiVersion, kind, ns, name string) *Object {
 	return New(u)
 }
 
+// check that Ref puts the group before the kind only when there is one, and the namespace before the name only when there is one
 func TestRef(t *testing.T) {
 	for _, c := range []struct {
 		o    *Object
@@ -32,6 +36,7 @@ func TestRef(t *testing.T) {
 	}
 }
 
+// check that CaptureTime reports no time when none or a zero one was set, and gives back the time that was set
 func TestCaptureTime(t *testing.T) {
 	if _, ok := CaptureTime(context.Background()); ok {
 		t.Error("CaptureTime on a context without one: ok")
@@ -45,6 +50,7 @@ func TestCaptureTime(t *testing.T) {
 	}
 }
 
+// check that a StatefulSet's volume claim template gives the claim prefix mapped to the StatefulSet, and other kinds give nothing
 func TestClaimTemplatePrefixes(t *testing.T) {
 	sts := object("apps/v1", "StatefulSet", "shop", "db")
 	if err := unstructured.SetNestedSlice(sts.Object, []any{map[string]any{"metadata": map[string]any{"name": "data"}}},

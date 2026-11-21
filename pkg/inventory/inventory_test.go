@@ -1,3 +1,5 @@
+// tests the inventory of volumes, load balancers and Helm releases built from the objects
+
 package inventory
 
 import (
@@ -9,10 +11,12 @@ import (
 	snapshotv1alpha1 "setdrift.io/setdrift-engine/pkg/snapshot/v1alpha1"
 )
 
+// obj wraps a raw manifest in an Object
 func obj(m map[string]any) *resource.Object {
 	return resource.New(&unstructured.Unstructured{Object: m})
 }
 
+// check that bound claims give volumes with their CSI or in-tree ids, zone and StatefulSet, pending ones none, and only LoadBalancer Services and Ingresses give addresses
 func TestBuild(t *testing.T) {
 	objs := []*resource.Object{
 		obj(map[string]any{"apiVersion": "apps/v1", "kind": "StatefulSet", "metadata": map[string]any{"name": "db", "namespace": "shop"},
@@ -26,15 +30,15 @@ func TestBuild(t *testing.T) {
 				"csi": map[string]any{"driver": "ebs.csi.eks.amazonaws.com", "volumeHandle": "vol-0123456789abcdef0", "fsType": "ext4"},
 				"nodeAffinity": map[string]any{"required": map[string]any{"nodeSelectorTerms": []any{map[string]any{"matchExpressions": []any{
 					map[string]any{"key": "topology.kubernetes.io/zone", "operator": "In", "values": []any{"us-east-2a"}}}}}}}}}),
-		// In-tree EBS, bound.
+		// in-tree EBS, bound
 		obj(map[string]any{"apiVersion": "v1", "kind": "PersistentVolumeClaim", "metadata": map[string]any{"name": "legacy", "namespace": "shop"},
 			"spec": map[string]any{"volumeName": "pv-2"}}),
 		obj(map[string]any{"apiVersion": "v1", "kind": "PersistentVolume", "metadata": map[string]any{"name": "pv-2"},
 			"spec": map[string]any{"capacity": map[string]any{"storage": "5Gi"}, "storageClassName": "gp2",
 				"awsElasticBlockStore": map[string]any{"volumeID": "aws://us-east-2b/vol-0aaaaaaaaaaaaaaaa"}}}),
-		// Pending: no volume yet.
+		// pending, no volume yet
 		obj(map[string]any{"apiVersion": "v1", "kind": "PersistentVolumeClaim", "metadata": map[string]any{"name": "pending", "namespace": "shop"}}),
-		// Bound, but its volume was not collected (-n).
+		// bound, but its volume was not collected, like with -n
 		obj(map[string]any{"apiVersion": "v1", "kind": "PersistentVolumeClaim", "metadata": map[string]any{"name": "scoped", "namespace": "shop"},
 			"spec": map[string]any{"volumeName": "pv-3"}}),
 		obj(map[string]any{"apiVersion": "v1", "kind": "Service", "metadata": map[string]any{"name": "web", "namespace": "shop"},
@@ -68,6 +72,7 @@ func TestBuild(t *testing.T) {
 	}
 }
 
+// check that Helm releases are listed sorted, with the chart repository filled in from the annotations when one names it
 func TestHelmReleases(t *testing.T) {
 	rec := obj(map[string]any{"apiVersion": "v1", "kind": "Secret", "metadata": map[string]any{"name": "sh.helm.release.v1.web.v3", "namespace": "shop"}})
 	rec.HelmRelease = &snapshotv1alpha1.HelmRelease{Namespace: "shop", Name: "web", Chart: "nginx"}

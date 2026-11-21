@@ -1,7 +1,10 @@
+// tests the wording helpers, plural nouns and shell quoting
+
 package text
 
 import "testing"
 
+// check that Plural picks the singular noun only for one
 func TestPlural(t *testing.T) {
 	for _, c := range []struct {
 		n    int
@@ -13,6 +16,7 @@ func TestPlural(t *testing.T) {
 	}
 }
 
+// check that ShellQuote leaves safe words alone and quotes empty words, spaces, quotes and shell syntax
 func TestShellQuote(t *testing.T) {
 	for in, want := range map[string]string{
 		"prod":                        "prod",

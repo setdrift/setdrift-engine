@@ -1,3 +1,5 @@
+// tests the ownership stage and the rules for objects the cluster generates
+
 package ownership
 
 import (
@@ -11,6 +13,7 @@ import (
 	"setdrift.io/setdrift-engine/pkg/resource"
 )
 
+// obj builds a core Object of the given kind, name and uid in namespace shop, with owner as its controller when given
 func obj(kind, name, uid string, owner *metav1.OwnerReference) *resource.Object {
 	u := &unstructured.Unstructured{}
 	u.SetAPIVersion("v1")
@@ -26,6 +29,7 @@ func obj(kind, name, uid string, owner *metav1.OwnerReference) *resource.Object 
 	return resource.New(u)
 }
 
+// check that children of collected objects, garbage and generated objects are dropped, and an object whose owner wasnt collected is kept with a warning
 func TestProcess(t *testing.T) {
 	parent := obj("ConfigMap", "parent", "p", nil)
 	child := obj("ConfigMap", "child", "c", &metav1.OwnerReference{Kind: "ConfigMap", Name: "parent", UID: "p"})
@@ -55,6 +59,7 @@ func TestProcess(t *testing.T) {
 	}
 }
 
+// check that a default ServiceAccount counts as generated only until someone adds pull secrets to it
 func TestUntouchedDefaultServiceAccount(t *testing.T) {
 	sa := obj("ServiceAccount", "default", "s", nil)
 	if generatedBy(sa, index{}) == "" {
@@ -66,6 +71,7 @@ func TestUntouchedDefaultServiceAccount(t *testing.T) {
 	}
 }
 
+// check that only claims named after a claim template, the StatefulSet and a numeric ordinal count as generated
 func TestStatefulSetClaims(t *testing.T) {
 	idx := newIndex([]*resource.Object{resource.New(&unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "apps/v1", "kind": "StatefulSet",
@@ -80,6 +86,7 @@ func TestStatefulSetClaims(t *testing.T) {
 	}
 }
 
+// check that the controllers' ServiceAccounts and the API server's built-in objects count as generated, and look-alikes dont
 func TestKubernetesGenerated(t *testing.T) {
 	mk := func(apiVersion, kind, ns, name string, managed bool) *resource.Object {
 		u := &unstructured.Unstructured{Object: map[string]any{"apiVersion": apiVersion, "kind": kind}}

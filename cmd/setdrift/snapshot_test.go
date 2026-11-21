@@ -1,5 +1,5 @@
-// tests for setdrift snapshot json; decoding and the JSON format are tested
-// in pkg/snapshot
+// tests for setdrift snapshot json
+// decoding and the json format itself are tested in pkg/snapshot
 
 package main
 
@@ -12,8 +12,7 @@ import (
 	"testing"
 )
 
-// snapshot json on an exported .pb prints what --snapshot-json writes for
-// the same export: valid JSON, with each manifest inlined as an object.
+// check that snapshot json on an exported .pb prints what --snapshot-json writes for the same export, valid json with each manifest inlined as an object
 func TestSnapshotJSON(t *testing.T) {
 	dir := t.TempDir()
 	pb, js := filepath.Join(dir, "snap.pb"), filepath.Join(dir, "snap.json")
@@ -57,7 +56,7 @@ func TestSnapshotJSON(t *testing.T) {
 	}
 }
 
-// A file that isn't a snapshot fails with a message saying so.
+// check that a file that isnt a snapshot fails with a message saying so
 func TestSnapshotJSONRejectsOtherFiles(t *testing.T) {
 	dir := t.TempDir()
 	for name, content := range map[string]string{"empty": "", "text": "apiVersion: v1\nkind: ConfigMap\n"} {

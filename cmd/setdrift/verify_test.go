@@ -1,4 +1,4 @@
-// tests for the verify command's own checks and messages; the dry-run, comparison is tested in pkg/verify
+// tests the verify command's own checks, messages and report files, the dry-run and the comparison are tested in pkg/verify
 
 package main
 
@@ -22,7 +22,7 @@ import (
 	"setdrift.io/setdrift-engine/pkg/verify"
 )
 
-// A DIR that isn't an export is reported as such, even with no usable kubeconfig: the directory is checked first
+// check that a DIR that isnt an export is reported as that even with no usable kubeconfig, since the directory is checked first
 func TestVerifyChecksDirFirst(t *testing.T) {
 	t.Setenv("KUBECONFIG", filepath.Join(t.TempDir(), "missing"))
 	root := newRootCmd()
@@ -33,7 +33,7 @@ func TestVerifyChecksDirFirst(t *testing.T) {
 	}
 }
 
-// The failure message names the part of the acceptance test that was missed
+// check that the failure message names the part of the acceptance test that was missed
 func TestFailReason(t *testing.T) {
 	unexplained := verify.Diff{Ref: "a"}
 	explained := verify.Diff{Ref: "b", Explanation: "bare Pod"}
@@ -52,8 +52,7 @@ func TestFailReason(t *testing.T) {
 	}
 }
 
-// The note appears only when the export's kube-system UID is known and differs
-// from the cluster's.
+// check that the other cluster note appears only when the export's kube-system uid is known and differs from the cluster's
 func TestOtherClusterNote(t *testing.T) {
 	ns := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "v1", "kind": "Namespace",
 		"metadata": map[string]any{"name": "kube-system", "uid": "uid-target"}}}
@@ -85,6 +84,7 @@ func TestOtherClusterNote(t *testing.T) {
 	}
 }
 
+// check that likelyCause picks the right cause for a clean run, another cluster, changes since the export, one common field and missing resources
 func TestLikelyCause(t *testing.T) {
 	no, yes := false, true
 	changed := func(n int, d verify.Diff) []verify.Diff {
@@ -114,6 +114,7 @@ func TestLikelyCause(t *testing.T) {
 	}
 }
 
+// check that the report files get a file-safe name, private permissions and a .gitignore, the json round-trips and the markdown escapes pipes in table cells
 func TestVerifyReportFiles(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "verify")
 	at := time.Date(2026, 11, 20, 19, 14, 2, 0, time.UTC)

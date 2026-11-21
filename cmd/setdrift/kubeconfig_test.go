@@ -1,3 +1,5 @@
+// tests what the cli says when the kubeconfig or the cluster cant be used, and the insecure context warning
+
 package main
 
 import (
@@ -13,6 +15,7 @@ import (
 	"k8s.io/client-go/rest"
 )
 
+// check that a missing, empty or malformed kubeconfig, no current context and an unknown context each fail with a clear message, never client-go's hint
 func TestKubeconfigErrors(t *testing.T) {
 	dir := t.TempDir()
 	write := func(name, content string) string {
@@ -50,6 +53,7 @@ contexts: [{name: a, context: {cluster: c, user: u}}, {name: b, context: {cluste
 	}
 }
 
+// check that each kind of failed first request, 401, 403, refused, missing credential plugin and bad certificate, is explained in the user's terms
 func TestUnreachableErrors(t *testing.T) {
 	gr := schema.GroupResource{}
 	for _, c := range []struct {
@@ -68,8 +72,7 @@ func TestUnreachableErrors(t *testing.T) {
 	}
 }
 
-// A kubeconfig that is a directory or can't be read says so plainly, and a ~
-// the shell left alone is the home directory.
+// check that a kubeconfig thats a directory or cant be read says so clearly, and a ~ the shell left alone is the home directory
 func TestKubeconfigFileErrors(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("HOME", dir)
@@ -90,7 +93,7 @@ func TestKubeconfigFileErrors(t *testing.T) {
 	}
 }
 
-// A context that skips the certificate check is named in a warning.
+// check that a context with insecure-skip-tls-verify gets a warning, and a verified one doesnt
 func TestWarnInsecure(t *testing.T) {
 	var b strings.Builder
 	warnInsecure(&b, &kubeContext{name: "dev", config: &rest.Config{Host: "https://k.example.com"}})
