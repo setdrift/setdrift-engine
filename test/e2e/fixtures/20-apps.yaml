@@ -228,7 +228,12 @@ spec:
 ---
 apiVersion: v1
 kind: Pod
-metadata: {name: scratch-user, namespace: sd-apps}
+metadata:
+  name: scratch-user
+  namespace: sd-apps
+  # a bare Pod is not recreated when EKS Auto Mode consolidates its node away;
+  # this keeps it, on the source and, as the export carries it, after the restore
+  annotations: {karpenter.sh/do-not-disrupt: "true"}
 spec:
   containers:
   - name: c
