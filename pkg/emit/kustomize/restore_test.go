@@ -1,13 +1,8 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 package kustomize
 
 import (
-	"encoding/base64"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 
@@ -202,30 +197,17 @@ func TestGeneratedSecrets(t *testing.T) {
 	}
 }
 
-// ECR hosts are found in both docker config forms, in data (base64) and
-// stringData, with or without a scheme, in China and FIPS endpoints; other
-// registries are not ECR.
-func TestECRRegistries(t *testing.T) {
-	b64 := func(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
-	for _, c := range []struct {
-		name, manifest string
-		want           []string
-	}{
-		{"dockerconfigjson in data",
-			`{"data":{".dockerconfigjson":"` + b64(`{"auths":{"https://111122223333.dkr.ecr.us-east-1.amazonaws.com":{},"ghcr.io":{}}}`) + `"}}`,
-			[]string{"https://111122223333.dkr.ecr.us-east-1.amazonaws.com"}},
-		{"dockercfg in stringData",
-			`{"stringData":{".dockercfg":"{\"111122223333.dkr.ecr.cn-north-1.amazonaws.com.cn\":{}}"}}`,
-			[]string{"111122223333.dkr.ecr.cn-north-1.amazonaws.com.cn"}},
-		{"FIPS endpoint",
-			`{"data":{".dockerconfigjson":"` + b64(`{"auths":{"111122223333.dkr.ecr-fips.us-gov-west-1.amazonaws.com":{}}}`) + `"}}`,
-			[]string{"111122223333.dkr.ecr-fips.us-gov-west-1.amazonaws.com"}},
-		{"other registries", `{"data":{".dockerconfigjson":"` + b64(`{"auths":{"docker.io":{},"public.ecr.aws":{}}}`) + `"}}`, nil},
-		{"not a docker config", `{"data":{"password":"` + b64("x") + `"}}`, nil},
+// Pull Secrets are told apart by their type, the one thing the redacted
+// manifest keeps about them.
+func TestPullSecret(t *testing.T) {
+	for manifest, want := range map[string]bool{
+		`{"type":"kubernetes.io/dockerconfigjson","data":{".dockerconfigjson":"x"}}`: true,
+		`{"type":"kubernetes.io/dockercfg"}`:                                         true,
+		`{"type":"Opaque","data":{"password":"x"}}`:                                  false,
+		`not json`: false,
 	} {
-		r := &snapshotv1alpha1.Resource{ApiVersion: "v1", Kind: "Secret", ManifestJson: c.manifest}
-		if got := ecrRegistries(r); !slices.Equal(got, c.want) {
-			t.Errorf("%s: %v, want %v", c.name, got, c.want)
+		if got := pullSecret(&snapshotv1alpha1.Resource{ApiVersion: "v1", Kind: "Secret", ManifestJson: manifest}); got != want {
+			t.Errorf("%s: %v, want %v", manifest, got, want)
 		}
 	}
 }
@@ -239,8 +221,8 @@ func TestAddonConfigNotWritten(t *testing.T) {
 		Cluster:  &snapshotv1alpha1.Cluster{Name: "prod", Platform: "eks", ProviderId: "arn:aws:eks:us-east-2:111122223333:cluster/prod"},
 		Producer: &snapshotv1alpha1.Producer{Version: "test"},
 		Inventory: &snapshotv1alpha1.Inventory{Aws: &snapshotv1alpha1.AwsInventory{ClusterName: "prod", Region: "us-east-2", Addons: []*snapshotv1alpha1.Addon{
-			{Name: "agent", Version: "v1", ConfigurationValues: `{"apiKey":"SETDRIFT_REDACTED","site":"eu"}`, ConfigurationRedactions: []string{"apiKey"}},
-			{Name: "plain", Version: "v1", ConfigurationValues: `{"replicas":2,"token":"missed-by-the-patterns"}`},
+			{Name: "agent", Version: "v1", HasConfiguration: true},
+			{Name: "plain", Version: "v1", HasConfiguration: true},
 			{Name: "none", Version: "v1"},
 		}}},
 	}
@@ -372,20 +354,6 @@ func readFile(t *testing.T, root, rel string) string {
 	return string(b)
 }
 
-// RESTORE.md's secrets export command gives every setting, from the export's own.
-func TestSecretsExportCommand(t *testing.T) {
-	x := mustExternalSecrets(t, "aws-parameter-store")
-	got := strings.Join((&restoreData{secretSettings: x}).secretsExportCommand("us-east-2"), "\n")
-	for _, want := range []string{"setdrift secrets export --aws redacted", `--context "$SRC" --region us-east-2`,
-		"--secret-manager aws-parameter-store --secret-key-template '/{{.Cluster}}/{{.Namespace}}/{{.Name}}'",
-		"--store-kind ClusterSecretStore --store-name secret-store", "--external-secrets-out external-secrets --force"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("lacks %q:\n%s", want, got)
-		}
-	}
-}
-
-// mustRead returns the file at path, failing the test if it can't be read.
 func mustRead(t *testing.T, path string) []byte {
 	t.Helper()
 	b, err := os.ReadFile(path)
@@ -414,3 +382,6 @@ func mustExternalSecrets(t *testing.T, provider string) *ExternalSecrets {
 	}
 	return x
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

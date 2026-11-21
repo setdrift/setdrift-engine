@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 package verify
 
 import (
@@ -75,3 +72,6 @@ func TestAnalyze(t *testing.T) {
 		t.Error("server-side apply is not by hand; kubectl scale is")
 	}
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

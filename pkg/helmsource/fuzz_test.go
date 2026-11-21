@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 package helmsource
 
 import (
@@ -18,3 +15,6 @@ func FuzzAnnotate(f *testing.F) {
 		_ = Annotate(bytes.NewReader(in), &out, "https://charts.example.com")
 	})
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

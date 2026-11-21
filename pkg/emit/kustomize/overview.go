@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 package kustomize
 
 import (
@@ -165,3 +162,6 @@ func (o Overview) markdown() string {
 	}
 	return b.String()
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

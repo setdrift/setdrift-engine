@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 package platform
 
 import (
@@ -248,3 +245,6 @@ func sortedKeys(m map[string]string) []string {
 	slices.Sort(keys)
 	return keys
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

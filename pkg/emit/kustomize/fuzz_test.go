@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 package kustomize
 
 import (
@@ -33,3 +30,6 @@ func FuzzPathNames(f *testing.F) {
 		one(t, "ClusterDir", kind, filepath.Base(dir))
 	})
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 package redact_test
 
 import (
@@ -151,3 +148,6 @@ func TestFieldValue(t *testing.T) {
 		t.Error("FieldValue changed its input")
 	}
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

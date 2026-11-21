@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 package collect_test
 
 // Race tests for hydration. Every corpus in testdata/corpus is served through
@@ -438,3 +435,6 @@ func uidSet(objs ...*unstructured.Unstructured) map[types.UID]bool {
 func without(objs []*unstructured.Unstructured, drop map[types.UID]bool) []*unstructured.Unstructured {
 	return slices.DeleteFunc(slices.Clone(objs), func(u *unstructured.Unstructured) bool { return drop[u.GetUID()] })
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

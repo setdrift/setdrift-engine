@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 // Package snapshot builds and serializes snapshots. Protobuf is the canonical
 // format; JSON export is for people to read and is not meant to be parsed back.
 package snapshot
@@ -8,6 +5,7 @@ package snapshot
 import (
 	"bytes"
 	"cmp"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,6 +17,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"setdrift.io/setdrift-engine/internal/kube"
+	"setdrift.io/setdrift-engine/pkg/redact"
 	"setdrift.io/setdrift-engine/pkg/resource"
 	snapshotv1alpha1 "setdrift.io/setdrift-engine/pkg/snapshot/v1alpha1"
 )
@@ -129,13 +128,35 @@ func checkRedacted(o *resource.Object) error {
 	}
 	for _, field := range []string{"data", "stringData"} {
 		m, _ := o.Object[field].(map[string]any)
-		for k := range m {
-			if !redacted[field+"."+k] {
+		for k, v := range m {
+			if !redacted[field+"."+k] || !placeholder(k, v, field == "data") {
 				return fmt.Errorf("%s: %s.%s was not redacted; Secret values must not reach a snapshot (run the Redactor stage)", o.Ref(), field, k)
 			}
 		}
 	}
 	return nil
+}
+
+// placeholder reports whether v, a Secret's value for key, is one of the
+// redactor's placeholders, base64-encoded when encoded (data): a redaction
+// record alone is not proof the value was replaced.
+func placeholder(key string, v any, encoded bool) bool {
+	s, ok := v.(string)
+	if !ok {
+		return false
+	}
+	if encoded {
+		b, err := base64.StdEncoding.DecodeString(s)
+		if err != nil {
+			return false
+		}
+		s = string(b)
+	}
+	switch s {
+	case redact.Placeholder, redact.DockerConfigJSONPlaceholder, redact.DockerCfgPlaceholder:
+		return true
+	}
+	return false
 }
 
 // marshalJSON is json.Marshal without HTML escaping, so "a && b" stays
@@ -270,3 +291,6 @@ func MarshalInspectJSON(s *snapshotv1alpha1.Snapshot) ([]byte, error) {
 	}
 	return out.Bytes(), nil
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

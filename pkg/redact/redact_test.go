@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 package redact_test
 
 import (
@@ -76,8 +73,8 @@ func secretObj(typ string, data map[string]any) *resource.Object {
 }
 
 // TestImagePullSecretPlaceholders: the API server requires valid JSON in
-// image pull secrets. The placeholder keeps the registry hosts and nothing
-// else.
+// image pull secrets. The placeholder keeps nothing of the value, not even
+// the registry hosts.
 func TestImagePullSecretPlaceholders(t *testing.T) {
 	const creds = `"username":"ci","password":"hunter2","auth":"Y2k6aHVudGVyMg=="`
 	enc := func(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
@@ -86,11 +83,11 @@ func TestImagePullSecretPlaceholders(t *testing.T) {
 	}{
 		{"kubernetes.io/dockerconfigjson", ".dockerconfigjson",
 			`{"auths":{"111122223333.dkr.ecr.us-east-1.amazonaws.com":{` + creds + `},"ghcr.io":{` + creds + `}}}`,
-			`{"auths":{"111122223333.dkr.ecr.us-east-1.amazonaws.com":{"auth":"U0VURFJJRlRfUkVEQUNURUQ="},"ghcr.io":{"auth":"U0VURFJJRlRfUkVEQUNURUQ="}}}`},
+			redact.DockerConfigJSONPlaceholder},
 		{"kubernetes.io/dockercfg", ".dockercfg",
 			`{"ghcr.io":{` + creds + `}}`,
-			`{"ghcr.io":{"auth":"U0VURFJJRlRfUkVEQUNURUQ="}}`},
-		{"kubernetes.io/dockerconfigjson", ".dockerconfigjson", "not json", `{"auths":{}}`},
+			redact.DockerCfgPlaceholder},
+		{"kubernetes.io/dockerconfigjson", ".dockerconfigjson", "not json", redact.DockerConfigJSONPlaceholder},
 	} {
 		o := secretObj(tc.typ, map[string]any{tc.key: enc(tc.value)})
 		if _, _, err := (redact.SecretRedactor{}).Process(context.Background(), []*resource.Object{o}); err != nil {
@@ -102,6 +99,9 @@ func TestImagePullSecretPlaceholders(t *testing.T) {
 		}
 		if string(got) != tc.want {
 			t.Errorf("%s: got %s, want %s", tc.typ, got, tc.want)
+		}
+		if strings.Contains(string(got), "ghcr.io") || strings.Contains(string(got), "dkr.ecr") {
+			t.Errorf("%s: the placeholder keeps a registry host: %s", tc.typ, got)
 		}
 		if !json.Valid(got) {
 			t.Errorf("%s: placeholder is not valid JSON: %s", tc.typ, got)
@@ -123,3 +123,6 @@ func TestServiceAccountTokenData(t *testing.T) {
 		t.Errorf("data %v, redactions %v: want no data and no redactions", o.Object["data"], o.Redactions)
 	}
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

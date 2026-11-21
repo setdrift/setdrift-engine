@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 // Helpers the command tests share.
 
 package main
@@ -36,3 +33,6 @@ func setClock(t *testing.T, at time.Time) {
 	now = func() time.Time { return at }
 	t.Cleanup(func() { now = old })
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

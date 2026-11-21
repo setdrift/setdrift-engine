@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 // RESTORE.md's controllers step: Helm releases, GitOps tools and admission
 // webhooks to have in place before the rest is applied.
 
@@ -407,3 +404,6 @@ func manager(r *snapshotv1alpha1.Resource) string {
 	}
 	return src
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

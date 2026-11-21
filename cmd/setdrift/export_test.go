@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 // runs eight tests sequentially, validates tests inputs for the export command itself, output evaluated elsewhere
 
 package main
@@ -520,3 +517,6 @@ data: {a: "1"}
 		t.Errorf("summary:\n%s", summary)
 	}
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

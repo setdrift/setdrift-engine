@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 // Package pipeline runs the stages in order: collect, redact, (the
 // inventory), hygiene, ownership, lifecycle, platform, provenance,
 // normalize, then builds the snapshot.
@@ -140,3 +137,6 @@ func (p *Pipeline) Run(ctx context.Context, meta snapshot.Meta) (*snapshotv1alph
 	meta.Cluster = cluster
 	return snapshot.Build(meta, objs)
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

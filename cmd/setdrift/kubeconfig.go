@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 // Reading the kubeconfig, and what the CLI says when it or the cluster can't
 // be used: what is wrong, in the user's terms, and what to do about it.
 // client-go's own messages assume its internals (KUBERNETES_MASTER,
@@ -338,3 +335,6 @@ func applyContext(c *snapshotv1alpha1.Cluster, kc *kubeContext) {
 		c.Name = contextName
 	}
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

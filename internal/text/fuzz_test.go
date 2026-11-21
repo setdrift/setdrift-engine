@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 package text
 
 import (
@@ -35,3 +32,6 @@ func FuzzShellQuote(f *testing.F) {
 		}
 	})
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

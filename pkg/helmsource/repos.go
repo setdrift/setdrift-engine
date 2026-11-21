@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 // The --helm-repos file: the chart repository of each Helm release, given
 // by the user at export time. Helm keeps no record of it, and this needs no
 // change to the cluster or to how Helm is run, unlike the post-renderer.
@@ -103,3 +100,6 @@ func (r *Repos) Unmatched() []string {
 	sort.Strings(out)
 	return out
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

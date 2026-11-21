@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 package inventory
 
 import (
@@ -84,3 +81,6 @@ func TestHelmReleases(t *testing.T) {
 		t.Errorf("releases %v", inv.HelmReleases)
 	}
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

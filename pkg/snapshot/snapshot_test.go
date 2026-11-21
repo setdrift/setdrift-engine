@@ -1,9 +1,7 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 package snapshot
 
 import (
+	"encoding/base64"
 	"strings"
 	"testing"
 
@@ -11,6 +9,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
+	"setdrift.io/setdrift-engine/pkg/redact"
 	"setdrift.io/setdrift-engine/pkg/resource"
 	snapshotv1alpha1 "setdrift.io/setdrift-engine/pkg/snapshot/v1alpha1"
 )
@@ -73,9 +72,27 @@ func TestBuildRejectsUnredactedSecret(t *testing.T) {
 	if _, err := Build(Meta{}, []*resource.Object{o}); err == nil || !strings.Contains(err.Error(), "data.password") {
 		t.Errorf("unredacted value accepted: %v", err)
 	}
+	// a redaction record for every key is not enough: the values are still real
 	o.Redactions = append(o.Redactions, &snapshotv1alpha1.Redaction{Path: "data.password"})
-	if _, err := Build(Meta{}, []*resource.Object{o}); err != nil {
-		t.Errorf("redacted Secret refused: %v", err)
+	if _, err := Build(Meta{}, []*resource.Object{o}); err == nil {
+		t.Error("Secret with redaction records but its real values accepted")
+	}
+	// stringData is checked too, unencoded
+	p := obj("v1", "Secret", "a", "plain")
+	p.Object["stringData"] = map[string]any{"token": "s3cr3t"}
+	p.Redactions = []*snapshotv1alpha1.Redaction{{Path: "stringData.token"}}
+	if _, err := Build(Meta{}, []*resource.Object{p}); err == nil {
+		t.Error("stringData with its real value accepted")
+	}
+	// the placeholders themselves pass
+	enc := func(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
+	o.Object["data"] = map[string]any{"password": enc(redact.Placeholder), "user": enc(redact.Placeholder)}
+	p.Object["stringData"] = map[string]any{"token": redact.Placeholder}
+	pull := obj("v1", "Secret", "a", "pull")
+	pull.Object["data"] = map[string]any{".dockerconfigjson": enc(redact.DockerConfigJSONPlaceholder), ".dockercfg": enc(redact.DockerCfgPlaceholder)}
+	pull.Redactions = []*snapshotv1alpha1.Redaction{{Path: "data..dockerconfigjson"}, {Path: "data..dockercfg"}}
+	if _, err := Build(Meta{}, []*resource.Object{o, p, pull}); err != nil {
+		t.Errorf("redacted Secrets refused: %v", err)
 	}
 	// Not a core Secret: the embedded-secret redactor's business, not a guard here.
 	cr := obj("example.com/v1", "Secret", "a", "x")
@@ -154,3 +171,6 @@ func TestParseJSONRoundTrip(t *testing.T) {
 		t.Error("JSON that is no snapshot parsed")
 	}
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 // Package collect reads objects from a source, a live cluster or a
 // directory of manifests, for the rest of the pipeline.
 package collect
@@ -38,3 +35,6 @@ func (r *Result) warn(code, msg string) {
 		Message:  msg,
 	})
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

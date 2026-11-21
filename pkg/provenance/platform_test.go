@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 package provenance
 
 import (
@@ -127,3 +124,6 @@ func TestKubeadmAndKind(t *testing.T) {
 		}
 	}
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

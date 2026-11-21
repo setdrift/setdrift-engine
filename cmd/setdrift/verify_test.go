@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 // tests for the verify command's own checks and messages; the dry-run, comparison is tested in pkg/verify
 
 package main
@@ -155,3 +152,6 @@ func TestVerifyReportFiles(t *testing.T) {
 		t.Errorf("markdown table:\n%s", text)
 	}
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 // Package verify checks an exported repository against the live cluster with a
 // server-side dry-run apply. This is the MVP acceptance test: at least 95% of
 // resources (or another threshold) must show no diff, and every remaining
@@ -230,3 +227,6 @@ func (r Report) Analyze() Analysis {
 	}
 	return a
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

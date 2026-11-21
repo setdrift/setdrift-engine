@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 // Fields a controller wrote and no person or tool owns: removed, as a new
 // cluster's controllers write them again.
 
@@ -261,3 +258,6 @@ func empty(v any) bool {
 	}
 	return false
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

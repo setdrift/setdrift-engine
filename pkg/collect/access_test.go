@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 package collect_test
 
 import (
@@ -137,3 +134,6 @@ func TestListDeniedInOneNamespace(t *testing.T) {
 		t.Errorf("unread = %v", u)
 	}
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

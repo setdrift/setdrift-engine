@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 // Collecting from a Kubernetes API server (as opposed to a directory of
 // manifests).
 
@@ -957,3 +954,6 @@ func (c *ClusterCollector) accessHint(ctx context.Context, ns string) string {
 	}
 	return "in it they can list " + strings.Join(listable, ", ") + more
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

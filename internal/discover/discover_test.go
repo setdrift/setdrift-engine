@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 package discover
 
 import (
@@ -275,3 +272,6 @@ func TestErrorsAreTyped(t *testing.T) {
 		t.Errorf("error %T %v, want a 401 status error", err, err)
 	}
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

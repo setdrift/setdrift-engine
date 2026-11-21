@@ -1,7 +1,4 @@
 #!/usr/bin/env bash
-# Copyright The SetDrift Authors
-# SPDX-License-Identifier: Apache-2.0
-
 # Manages the e2e test cluster (eks-cluster.yaml). The reaper (reaper.yaml)
 # deletes it after E2E_IDLE_MINUTES (default 120) without use; any command
 # here except status counts as use.
@@ -158,3 +155,6 @@ case ${1:-} in
   context) echo "$context" ;;
   *) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac
+
+# Copyright The SetDrift Authors
+# SPDX-License-Identifier: Apache-2.0

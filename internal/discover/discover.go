@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 // Package discover asks an API server which APIs it serves: its version,
 // its groups, and each group version's resources.
 //
@@ -260,3 +257,6 @@ func (l aggregatedList) groups(resources map[string]*metav1.APIResourceList, fai
 	}
 	return out
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

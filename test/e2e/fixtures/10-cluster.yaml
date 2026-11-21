@@ -1,5 +1,3 @@
-# Copyright The SetDrift Authors
-# SPDX-License-Identifier: Apache-2.0
 # Cluster-scoped test objects (client-side kubectl apply).
 apiVersion: v1
 kind: Namespace
@@ -88,3 +86,6 @@ spec:
             properties:
               color: {type: string}
               size: {type: integer, default: 3}
+
+# Copyright The SetDrift Authors
+# SPDX-License-Identifier: Apache-2.0

@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 // setdrift export command - reads a cluster or directory, writes it as kustomize repo, converts flags into a pipeline run
 
 package main
@@ -711,3 +708,6 @@ func newID() (string, error) {
 	}
 	return hex.EncodeToString(b), nil
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

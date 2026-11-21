@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 package resource
 
 import (
@@ -59,3 +56,6 @@ func TestClaimTemplatePrefixes(t *testing.T) {
 		t.Errorf("ClaimTemplatePrefixes = %v, want shop/data-db- -> db", got)
 	}
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

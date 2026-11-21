@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 // Package awsinventory reads, read-only, the EKS configuration that lives in
 // AWS rather than in the cluster, for the restore playbook: IRSA roles, Pod
 // Identity, access entries, add-ons and EBS volumes. A failed call is
@@ -22,9 +19,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/eks"
 	"github.com/aws/aws-sdk-go-v2/service/iam"
 	"github.com/aws/smithy-go"
-	"sigs.k8s.io/yaml"
 
-	"setdrift.io/setdrift-engine/pkg/redact"
 	snapshotv1alpha1 "setdrift.io/setdrift-engine/pkg/snapshot/v1alpha1"
 )
 
@@ -299,37 +294,14 @@ func addons(ctx context.Context, c EKS, cluster string, inv *snapshotv1alpha1.Aw
 			fail("add-on "+n, err)
 			continue
 		}
-		config, redacted := addonConfig(aws.ToString(d.Addon.ConfigurationValues))
+		// only whether it has configuration: the values can hold secrets, and are never kept
 		inv.Addons = append(inv.Addons, &snapshotv1alpha1.Addon{
-			Name:                    n,
-			Version:                 aws.ToString(d.Addon.AddonVersion),
-			ServiceAccountRoleArn:   aws.ToString(d.Addon.ServiceAccountRoleArn),
-			ConfigurationValues:     config,
-			ConfigurationRedactions: redacted,
+			Name:                  n,
+			Version:               aws.ToString(d.Addon.AddonVersion),
+			ServiceAccountRoleArn: aws.ToString(d.Addon.ServiceAccountRoleArn),
+			HasConfiguration:      strings.TrimSpace(aws.ToString(d.Addon.ConfigurationValues)) != "",
 		})
 	}
-}
-
-// addonConfig redacts secret values (e.g. a vendor add-on's API key) from an add-on's configuration, since it is
-// written into RESTORE.md. It is returned unchanged when nothing was redacted, as JSON when something was, and
-// as SETDRIFT_REDACTED when it does not parse, since then nothing can be checked.
-func addonConfig(config string) (string, []string) {
-	if strings.TrimSpace(config) == "" {
-		return config, nil
-	}
-	var v any
-	if err := yaml.Unmarshal([]byte(config), &v); err != nil {
-		return redact.Placeholder, nil
-	}
-	v, paths := redact.Values(v)
-	if len(paths) == 0 {
-		return config, nil
-	}
-	out, err := json.Marshal(v)
-	if err != nil {
-		return redact.Placeholder, nil
-	}
-	return string(out), paths
 }
 
 // describeVolumesBatch is how many volume IDs one DescribeVolumes call
@@ -435,3 +407,6 @@ func short(err error) string {
 	}
 	return err.Error()
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

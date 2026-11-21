@@ -1,6 +1,3 @@
-# Copyright The SetDrift Authors
-# SPDX-License-Identifier: Apache-2.0
-
 # code generation for snapshot schema in proto/
 # make generate runs buf generate with this file, must match exactly otherwise it fails
 version: v2
@@ -10,3 +7,6 @@ plugins:
     out: .
     opt:
       - module=setdrift.io/setdrift-engine
+
+# Copyright The SetDrift Authors
+# SPDX-License-Identifier: Apache-2.0

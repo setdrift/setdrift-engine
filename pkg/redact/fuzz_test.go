@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 package redact
 
 import (
@@ -62,3 +59,6 @@ func FuzzHelmRelease(f *testing.F) {
 		}}))
 	})
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

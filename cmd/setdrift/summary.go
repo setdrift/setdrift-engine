@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 // What setdrift export prints when it is done: what was read and written,
 // what the export found, and what RESTORE.md asks.
 
@@ -283,3 +280,6 @@ func restoreTodo(s *snapshotv1alpha1.Snapshot, needsValues, regenerated int) []s
 	}
 	return todo
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 package discover
 
 import (
@@ -188,3 +185,6 @@ func RESTMapper(ctx context.Context, d Interface) (meta.RESTMapper, error) {
 	}
 	return m, nil
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

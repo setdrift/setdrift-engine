@@ -1,6 +1,3 @@
-# Copyright The SetDrift Authors
-# SPDX-License-Identifier: Apache-2.0
-
 BIN := $(CURDIR)/bin
 ## override set version e.g. make build VERSION=v0.1.0
 ## empty before the first tag: the binary then uses the version Go records
@@ -42,11 +39,11 @@ generate: tools ## Regenerate Go code from proto/
 notices: ## Regenerate THIRD_PARTY_NOTICES after a dependency change
 	scripts/third-party-notices.sh
 
-lint: tools ## Lint Go and proto, and check license headers
+lint: tools ## Lint Go and proto, and check license footers
 	test -z "$$(gofmt -l .)" || (gofmt -l . && exit 1)
 	go vet ./...
 	$(BIN)/buf lint
-	bash scripts/check-license-headers.sh
+	bash scripts/check-license-footers.sh
 
 vulncheck: $(BIN)/govulncheck ## Scan the built CLI for known vulnerabilities in Go and its dependencies
 	go build -o $(BIN)/setdrift-vulncheck ./cmd/setdrift
@@ -102,3 +99,6 @@ release-snapshot: ## Build the release archives and Homebrew formula into dist/ 
 
 clean:
 	rm -rf $(BIN)
+
+# Copyright The SetDrift Authors
+# SPDX-License-Identifier: Apache-2.0

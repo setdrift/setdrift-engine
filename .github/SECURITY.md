@@ -30,10 +30,8 @@ In scope:
   applies with server-side dry-run, and export's one create call is a
   SelfSubjectRulesReview, a question about the caller's permissions that the
   API server doesn't store.
-- `setdrift secrets export`, the one command that reads secret values:
-  a value written to disk, printed or logged, or sent anywhere but the
-  secret manager it names; a write it did not show in its plan, or made
-  without confirmation (or `--yes`).
+- A secret value sent anywhere, or written to disk, printed or logged: no
+  command copies secret values out of the cluster.
 - Credentials (kubeconfig, AWS) logged, written to output, or sent anywhere.
 - Code execution or path traversal through cluster data or `--from-dir`
   input, e.g. an object name that makes the exporter write outside its

@@ -1,6 +1,3 @@
-# Copyright The SetDrift Authors
-# SPDX-License-Identifier: Apache-2.0
-
 # CI for every pull request and every push to main: lint, check that
 # generated files are current, test, and build for each release platform.
 # Each step runs a make target, so a failure can be reproduced locally.
@@ -162,3 +159,6 @@ jobs:
   # three Kubernetes versions EKS supports (n-2). The harness is in test/e2e;
   # running it from CI needs AWS credentials through OIDC (no stored keys) and
   # a way to keep forked pull requests from starting billed clusters.
+
+# Copyright The SetDrift Authors
+# SPDX-License-Identifier: Apache-2.0

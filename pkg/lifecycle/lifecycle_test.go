@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 package lifecycle
 
 import (
@@ -91,3 +88,6 @@ func TestRunOncePods(t *testing.T) {
 		}
 	}
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 package helmsource
 
 import (
@@ -76,3 +73,6 @@ func TestCappedReader(t *testing.T) {
 		t.Errorf("over the limit: %v", err)
 	}
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

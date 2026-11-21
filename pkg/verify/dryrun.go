@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 package verify
 
 import (
@@ -571,3 +568,6 @@ func countRedacted(dir string) (int, error) {
 	})
 	return n, err
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

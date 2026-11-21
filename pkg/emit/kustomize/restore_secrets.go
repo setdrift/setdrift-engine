@@ -1,16 +1,11 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 // RESTORE.md's secrets step: the values to supply, how, and what a
 // controller writes again.
 
 package kustomize
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"regexp"
 	"slices"
 	"sort"
 	"strconv"
@@ -116,7 +111,7 @@ func (d *restoreData) redactedSteps(p *playbook, redacted []writtenFile) {
 	}
 	restartSteps(p, redacted)
 	// About the registry, wherever the cluster runs: ECR tokens expire.
-	ecrNote(p, redacted)
+	pullSecretNote(p, redacted)
 	if n := countNonSecrets(redacted); n > 0 {
 		p.printf("%s other than Secrets hold secret values (see the files above). Moving\n"+
 			"those values into Secrets and referencing them makes the next export apply\n"+
@@ -192,15 +187,9 @@ func (d *restoreData) externalSecretsSteps(p *playbook) {
 	p.printf("**C. External Secrets Operator.** external-secrets/ has an ExternalSecret\n" +
 		"for each Secret (see its README); those marked *merge* add their keys to\n" +
 		"the Secret the controller creates (`creationPolicy: Merge`). Put the values\n" +
-		"in your secret manager, install the operator and its store, then apply the\n" +
-		"directory. On AWS, `setdrift secrets export` copies the values from the\n" +
-		"source cluster into Secrets Manager or Parameter Store (it shows a plan\n" +
-		"first and never writes or prints a value); elsewhere, create the remote\n" +
-		"secrets the README lists, with their keys:\n\n")
-	if d.secretService == serviceSecretsManager || d.secretService == serviceParameterStore {
-		// source cluster, read-only; checks everything, then writes to AWS and rewrites external-secrets/ to match
-		p.code(d.secretsExportCommand(text.ShellQuote(d.region))...)
-	}
+		"in your secret manager (the remote secrets the README lists, with their\n" +
+		"keys; SetDrift never copies them for you), install the operator and its\n" +
+		"store, then apply the directory:\n\n")
 	p.code(`kubectl --context "$DST" apply -k external-secrets/`)
 	// The AWS commands that create the remote secrets, for a new cluster on AWS.
 	if q := d.awsp; q != nil && (d.secretService == serviceSecretsManager || d.secretService == serviceParameterStore) {
@@ -213,14 +202,8 @@ func (d *restoreData) externalSecretsSteps(p *playbook) {
 func (d *restoreData) awsRemoteSecrets(q *playbook) {
 	q.section("Secrets in " + text.Choose(d.secretService == serviceParameterStore, "Parameter Store", "Secrets Manager"))
 	q.printf("Before applying external-secrets/ (RESTORE.md's secrets step), create each\n" +
-		"remote secret with the values. `setdrift secrets export` copies them from\n" +
-		"the source cluster, never writing or printing them. It checks the settings,\n" +
-		"the source cluster and the AWS permissions first, skips remote secrets that\n" +
-		"exist already (`--overwrite` replaces them), reads each one back, and\n" +
-		"rewrites external-secrets/ to match; `--check` runs the checks only. From\n" +
-		"the cluster's directory:\n\n")
-	q.code(d.secretsExportCommand(`"$REGION"`)...)
-	q.printf("Or by hand, as JSON with one property per key:\n\n")
+		"remote secret with its values, as JSON with one property per key. Fill in\n" +
+		"each `<value>` yourself: SetDrift never copies secret values.\n\n")
 	var lines []string
 	for _, r := range d.remotes {
 		props := make([]string, len(r.properties))
@@ -256,19 +239,6 @@ func restartSteps(p *playbook, redacted []writtenFile) {
 		restart = append(restart, fmt.Sprintf(`kubectl --context "$DST" -n %s rollout restart deployment,statefulset,daemonset`, text.ShellQuote(ns)))
 	}
 	p.code(restart...)
-}
-
-// secretsExportCommand is the setdrift secrets export command for the
-// export's own settings, every one given, as the command requires.
-func (d *restoreData) secretsExportCommand(region string) []string {
-	x := d.secretSettings
-	return []string{
-		`setdrift secrets export --aws redacted \`,
-		`  --context "$SRC" --region ` + region + ` \`,
-		`  --secret-manager ` + text.ShellQuote(x.ID) + ` --secret-key-template ` + text.ShellQuote(x.KeyTemplate) + ` \`,
-		`  --store-kind ` + text.ShellQuote(x.StoreKind) + ` --store-name ` + text.ShellQuote(x.StoreName) + ` \`,
-		`  --external-secrets-out external-secrets --force`,
-	}
 }
 
 // lineOf returns the line in doc of the field at path, a redaction path
@@ -353,86 +323,43 @@ func controllersOf(r *snapshotv1alpha1.Resource) string {
 	return strings.Join(names, ", ")
 }
 
-// ecrHost matches an Amazon ECR registry host in a docker config, with an
-// optional scheme or path: <account>.dkr.ecr[-fips].<region>.amazonaws.com[.cn].
-var ecrHost = regexp.MustCompile(`^(https?://)?[0-9]{12}\.dkr\.ecr(-fips)?\.[a-z0-9-]+\.amazonaws\.com(\.cn)?(/.*)?$`)
-
-// ecrRegistries returns the ECR hosts in a pull Secret's docker config. The
-// redacted placeholder keeps the host names, so this works on the export.
-func ecrRegistries(r *snapshotv1alpha1.Resource) []string {
+// pullSecret reports whether r is an image pull Secret, by its type: the
+// placeholder keeps nothing of the value, so which registry it is for is not known.
+func pullSecret(r *snapshotv1alpha1.Resource) bool {
 	if r.Kind != "Secret" || r.ApiVersion != "v1" {
-		return nil
+		return false
 	}
 	var m struct {
-		Data       map[string]string `json:"data"`
-		StringData map[string]string `json:"stringData"`
+		Type string `json:"type"`
 	}
 	if json.Unmarshal([]byte(r.ManifestJson), &m) != nil {
-		return nil
+		return false
 	}
-	var hosts []string
-	add := func(raw []byte, auths bool) {
-		var entries map[string]json.RawMessage
-		if auths {
-			var cfg struct {
-				Auths map[string]json.RawMessage `json:"auths"`
-			}
-			if json.Unmarshal(raw, &cfg) != nil {
-				return
-			}
-			entries = cfg.Auths
-		} else if json.Unmarshal(raw, &entries) != nil {
-			return
-		}
-		for h := range entries {
-			if ecrHost.MatchString(h) && !slices.Contains(hosts, h) {
-				hosts = append(hosts, h)
-			}
-		}
-	}
-	for key, auths := range map[string]bool{".dockerconfigjson": true, ".dockercfg": false} {
-		if v, ok := m.Data[key]; ok {
-			if raw, err := base64.StdEncoding.DecodeString(v); err == nil {
-				add(raw, auths)
-			}
-		}
-		if v, ok := m.StringData[key]; ok {
-			add([]byte(v), auths)
-		}
-	}
-	sort.Strings(hosts)
-	return hosts
+	return m.Type == "kubernetes.io/dockerconfigjson" || m.Type == "kubernetes.io/dockercfg"
 }
 
-// ecrNote warns about pull Secrets for Amazon ECR: their token lasts 12
-// hours, so a copied or stored value stops working soon after the restore
-// unless whatever refreshed it in the source cluster comes along.
-func ecrNote(p *playbook, redacted []writtenFile) {
-	var names, hosts []string
+// pullSecretNote warns that a pull Secret's registry token may expire: an
+// Amazon ECR token lasts 12 hours, so a copied or stored value stops working
+// soon after the restore unless whatever refreshed it in the source cluster
+// comes along.
+func pullSecretNote(p *playbook, redacted []writtenFile) {
+	var names []string
 	for _, w := range redacted {
-		h := ecrRegistries(w.resource)
-		if len(h) == 0 {
-			continue
-		}
-		names = append(names, w.resource.Namespace+"/"+w.resource.Name)
-		for _, x := range h {
-			if !slices.Contains(hosts, x) {
-				hosts = append(hosts, x)
-			}
+		if pullSecret(w.resource) {
+			names = append(names, w.resource.Namespace+"/"+w.resource.Name)
 		}
 	}
 	if len(names) == 0 {
 		return
 	}
-	sort.Strings(hosts)
-	p.printf("**Amazon ECR tokens expire.** %s %s an ECR token (`%s`)\n"+
-		"that lasts 12 hours: a copied, filled-in or stored value stops working\n"+
-		"within a day. Restore what refreshes it in the source cluster (often a\n"+
-		"CronJob, or a controller that rewrites the Secret), or drop the Secret and\n"+
-		"let nodes pull with their IAM role: on EKS, a node role with ECR read access\n"+
-		"(AmazonEC2ContainerRegistryReadOnly) pulls from its own account, and from\n"+
-		"other accounts whose repository policy allows it.\n\n",
-		strings.Join(names, ", "), text.Choose(len(names) == 1, "holds", "hold"), strings.Join(hosts, "`, `"))
+	p.printf("**Registry tokens can expire.** %s %s registry credentials. If they are\n"+
+		"for Amazon ECR, the token lasts 12 hours: a copied, filled-in or stored value\n"+
+		"stops working within a day. Restore what refreshes it in the source cluster\n"+
+		"(often a CronJob, or a controller that rewrites the Secret), or drop the\n"+
+		"Secret and let nodes pull with their IAM role: on EKS, a node role with ECR\n"+
+		"read access (AmazonEC2ContainerRegistryReadOnly) pulls from its own account,\n"+
+		"and from other accounts whose repository policy allows it.\n\n",
+		strings.Join(names, ", "), text.Choose(len(names) == 1, "holds", "hold"))
 }
 
 // jqString writes s as a jq (JSON) string literal.
@@ -451,3 +378,6 @@ func countNonSecrets(ws []writtenFile) int {
 	}
 	return n
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

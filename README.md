@@ -26,7 +26,8 @@ What you get:
 - **No secret values** - Secrets, and passwords sitting in other manifests,
   are written for reference only with placeholders, outside every
   kustomization, with an ExternalSecret for each Secret so External Secrets
-  Operator can restore it from your secret manager.
+  Operator can restore it from your secret manager. SetDrift never copies a
+  secret value anywhere: you put the values in your secret manager yourself.
 - **Proof it matches** - `setdrift verify` dry-runs the export against the
   cluster and reports how much would change: nothing, if the export is
   right. Differences are grouped by cause, with the cluster's and the
@@ -150,16 +151,6 @@ setdrift diff staging prod --map-namespace shop-staging=shop --exit-code
 
 # differences in a cluster's own values
 setdrift diff prod prod --map-namespace shop=shop-canary   # two namespaces of one cluster
-
-# Copy the redacted Secrets' values from the source cluster into AWS, and write
-# the ExternalSecrets that read them: every setting given, checked before
-# anything is written; see
-# https://github.com/setdrift/setdrift-engine/blob/main/docs/secrets.md#copying-secret-values
-setdrift secrets export --aws ./out/clusters/prod/redacted \
-  --context prod --region us-east-2 --secret-manager aws-secrets-manager \
-  --secret-key-template '{{.Cluster}}/{{.Namespace}}/{{.Name}}' \
-  --store-kind ClusterSecretStore --store-name secret-store \
-  --external-secrets-out ./out/clusters/prod/external-secrets --force
 
 # Inspect a snapshot (the .json beside each .pb is the same, written by export)
 setdrift snapshot json ./out/snapshots/2026-11-16T090000Z-prod.pb

@@ -78,11 +78,9 @@ kubectl --context "$DST" apply --server-side --field-manager=setdrift-restore -f
 **C. External Secrets Operator.** external-secrets/ has an ExternalSecret
 for each Secret (see its README); those marked *merge* add their keys to
 the Secret the controller creates (`creationPolicy: Merge`). Put the values
-in your secret manager, install the operator and its store, then apply the
-directory. On AWS, `setdrift secrets export` copies the values from the
-source cluster into Secrets Manager or Parameter Store (it shows a plan
-first and never writes or prints a value); elsewhere, create the remote
-secrets the README lists, with their keys:
+in your secret manager (the remote secrets the README lists, with their
+keys; SetDrift never copies them for you), install the operator and its
+store, then apply the directory:
 
 ```sh
 kubectl --context "$DST" apply -k external-secrets/
@@ -96,13 +94,13 @@ kubectl --context "$DST" -n argocd rollout restart deployment,statefulset,daemon
 kubectl --context "$DST" -n shop rollout restart deployment,statefulset,daemonset
 ```
 
-**Amazon ECR tokens expire.** shop/ecr-pull holds an ECR token (`111122223333.dkr.ecr.us-east-1.amazonaws.com`)
-that lasts 12 hours: a copied, filled-in or stored value stops working
-within a day. Restore what refreshes it in the source cluster (often a
-CronJob, or a controller that rewrites the Secret), or drop the Secret and
-let nodes pull with their IAM role: on EKS, a node role with ECR read access
-(AmazonEC2ContainerRegistryReadOnly) pulls from its own account, and from
-other accounts whose repository policy allows it.
+**Registry tokens can expire.** shop/ecr-pull holds registry credentials. If they are
+for Amazon ECR, the token lasts 12 hours: a copied, filled-in or stored value
+stops working within a day. Restore what refreshes it in the source cluster
+(often a CronJob, or a controller that rewrites the Secret), or drop the
+Secret and let nodes pull with their IAM role: on EKS, a node role with ECR
+read access (AmazonEC2ContainerRegistryReadOnly) pulls from its own account,
+and from other accounts whose repository policy allows it.
 
 2 objects other than Secrets hold secret values (see the files above). Moving
 those values into Secrets and referencing them makes the next export apply

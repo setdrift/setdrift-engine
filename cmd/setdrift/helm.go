@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 // setdrift helm-postrender: a Helm post-renderer that records the chart
 // repository on what Helm installs.
 
@@ -42,3 +39,6 @@ credentials is refused.`,
 	_ = cmd.MarkFlagRequired("chart-repo") // fails only for a flag that does not exist
 	return cmd
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

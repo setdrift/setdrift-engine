@@ -1,6 +1,3 @@
-# Copyright The SetDrift Authors
-# SPDX-License-Identifier: Apache-2.0
-
 # A change to docs/ or README.md on main (the site builds its docs home and
 # its Install and Usage pages from the README) rebuilds preview.setdrift.io,
 # where main's docs are the latest, and setdrift.io (which shows released
@@ -31,3 +28,6 @@ jobs:
             exit 0
           fi
           gh api repos/setdrift/setdrift.io/dispatches -f event_type=engine-docs
+
+# Copyright The SetDrift Authors
+# SPDX-License-Identifier: Apache-2.0

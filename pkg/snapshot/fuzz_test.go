@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 package snapshot
 
 import "testing"
@@ -15,3 +12,6 @@ func FuzzParse(f *testing.F) {
 		_, _ = UnmarshalInspectJSON(b)
 	})
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

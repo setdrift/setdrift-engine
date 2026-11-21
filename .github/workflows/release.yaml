@@ -1,6 +1,3 @@
-# Copyright The SetDrift Authors
-# SPDX-License-Identifier: Apache-2.0
-
 # Release on a version tag: git tag v0.1.0 && git push origin v0.1.0.
 # GoReleaser (.goreleaser.yaml) builds every platform, publishes the GitHub
 # release with checksums.txt, and updates the formula in
@@ -66,3 +63,6 @@ jobs:
             exit 0
           fi
           gh api repos/setdrift/setdrift.io/dispatches -f event_type=engine-release
+
+# Copyright The SetDrift Authors
+# SPDX-License-Identifier: Apache-2.0

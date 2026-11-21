@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 package verify
 
 import "testing"
@@ -33,3 +30,6 @@ func TestPassed(t *testing.T) {
 		}
 	}
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

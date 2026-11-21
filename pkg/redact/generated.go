@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 package redact
 
 import (
@@ -99,3 +96,6 @@ func generated(o *owners) (string, bool) {
 	sort.Strings(o.managers)
 	return strings.Join(o.managers, ","), true
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

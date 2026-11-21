@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 // RESTORE.md's identity steps: IAM roles service accounts use (IRSA and Pod
 // Identity), and the AWS resources the manifests name.
 
@@ -167,3 +164,6 @@ func (d *restoreData) awsIDsStep(p *playbook, ids []awsIDRef) {
 	}
 	q.printf("\n")
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

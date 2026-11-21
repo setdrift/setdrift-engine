@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 package kustomize
 
 import (
@@ -46,3 +43,6 @@ func TestOverview(t *testing.T) {
 		t.Error("empty overview writes a section")
 	}
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

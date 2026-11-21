@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 // Package version holds build information: set with -ldflags by the
 // Makefile and release builds, or else read from what Go records in every
 // binary, so a `go install …@v0.1.0` build reports its version too.
@@ -61,3 +58,6 @@ func resolve(info *debug.BuildInfo, setVersion, setCommit string) (version, comm
 	}
 	return version, commit
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

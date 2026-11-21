@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 package text
 
 import "testing"
@@ -30,3 +27,6 @@ func TestShellQuote(t *testing.T) {
 		}
 	}
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

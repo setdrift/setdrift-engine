@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 // Package provenance classifies which system manages each object: Argo CD,
 // Flux, Helm, an operator, a CI/CD pipeline, the platform, or nothing (a
 // person's kubectl apply).
@@ -680,3 +677,6 @@ func join(ns, name string) string {
 func customGroup(group string) bool {
 	return strings.Contains(group, ".") && !strings.HasSuffix(group, ".k8s.io")
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

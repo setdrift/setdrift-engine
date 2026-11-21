@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 package pipeline_test
 
 import (
@@ -65,3 +62,6 @@ func TestPartialWithoutOwnership(t *testing.T) {
 		t.Errorf("error %v, want one naming the Ownership stage", err)
 	}
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

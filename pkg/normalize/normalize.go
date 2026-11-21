@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 // Package normalize reduces objects to what a person or tool declared:
 // server-set metadata, status, the API server's defaults and what
 // controllers wrote are removed, so an export applies cleanly to another
@@ -234,3 +231,6 @@ func (n Normalizer) removeToolMarkers(o *resource.Object) {
 	}
 	o.SetLabels(labels)
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 package redact
 
 import (
@@ -73,3 +70,6 @@ func helmRelease(o *resource.Object) *snapshotv1alpha1.HelmRelease {
 		Chart: m.Name, ChartVersion: m.Version, AppVersion: m.AppVersion, Home: m.Home, Sources: m.Sources,
 	}
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

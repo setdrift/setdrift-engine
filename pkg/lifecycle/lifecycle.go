@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 // Package lifecycle drops what is finished or temporary from the export:
 // objects being deleted, terminated Pods, and Helm and Argo CD hooks. It
 // keeps finished Jobs in the snapshot, as a record of what ran, and marks
@@ -203,3 +200,6 @@ func runOnceWarning(o *resource.Object, isPod, isJob bool) {
 		}
 	}
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

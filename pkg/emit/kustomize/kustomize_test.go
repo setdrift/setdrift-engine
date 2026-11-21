@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 package kustomize
 
 import (
@@ -463,3 +460,6 @@ func TestPathsStayInsideExport(t *testing.T) {
 		t.Error("outDir wrote a path above its directory")
 	}
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

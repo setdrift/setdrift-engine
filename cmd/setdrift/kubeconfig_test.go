@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 package main
 
 import (
@@ -105,3 +102,6 @@ func TestWarnInsecure(t *testing.T) {
 		t.Errorf("no warning: %q", b.String())
 	}
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

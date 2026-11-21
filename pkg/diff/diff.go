@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 // Package diff compares two snapshots: two clusters, or one cluster at two
 // times. It pairs resources by group, kind, namespace and name, compares
 // their normalized manifests field by field, and says for each difference
@@ -899,3 +896,6 @@ func sortedKeys(m map[Key]entry) []Key {
 	})
 	return keys
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

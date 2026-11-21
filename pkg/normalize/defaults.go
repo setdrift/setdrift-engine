@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 // The defaults the API server and admission set (pkg/apis/*/defaults.go in
 // Kubernetes' source), removed where they equal the default.
 
@@ -681,3 +678,6 @@ func secretDefaults(o *resource.Object) {
 		dropAnnotation(o, serviceAccountUIDAnnotation)
 	}
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

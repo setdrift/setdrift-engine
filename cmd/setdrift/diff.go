@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 // setdrift diff: compares two clusters, or a cluster with an earlier
 // snapshot of itself, and says what differs and what it can tell about why.
 
@@ -655,3 +652,6 @@ func account(a string) string {
 	}
 	return "account " + a
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

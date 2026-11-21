@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 package diff
 
 import (
@@ -20,3 +17,6 @@ func FuzzFields(f *testing.F) {
 		Fields(x, y)
 	})
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

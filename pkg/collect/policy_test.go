@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 package collect_test
 
 import (
@@ -349,3 +346,6 @@ func TestNothingListed(t *testing.T) {
 		t.Error("no error when nothing could be listed")
 	}
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 package ownership
 
 import (
@@ -195,3 +192,6 @@ func isOrdinal(s string) bool {
 	}
 	return true
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

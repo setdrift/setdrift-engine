@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 // setdrift snapshot: work with snapshot files.
 
 package main
@@ -44,3 +41,6 @@ func newSnapshotCmd() *cobra.Command {
 	})
 	return cmd
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

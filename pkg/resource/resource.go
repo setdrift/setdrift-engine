@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 // Package resource defines the object that flows through the pipeline, and
 // the Stage interface each pipeline step implements.
 package resource
@@ -143,3 +140,6 @@ func CaptureTime(ctx context.Context) (time.Time, bool) {
 	t, ok := ctx.Value(captureTimeKey{}).(time.Time)
 	return t, ok && !t.IsZero()
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 package provenance
 
 import (
@@ -34,3 +31,6 @@ func FuzzParseTrackingID(f *testing.F) {
 	}
 	f.Fuzz(func(t *testing.T, s string) { parseTrackingID(s) })
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

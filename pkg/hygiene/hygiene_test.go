@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 package hygiene
 
 import (
@@ -109,3 +106,6 @@ func TestStuckDeletions(t *testing.T) {
 		t.Errorf("findings without a capture time: %v", findings)
 	}
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

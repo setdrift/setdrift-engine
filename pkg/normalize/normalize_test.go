@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 package normalize
 
 import (
@@ -314,3 +311,6 @@ func TestPipelineAnnotationsRemoved(t *testing.T) {
 		t.Errorf("metadata: %s", got)
 	}
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

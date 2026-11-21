@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 // tests for setdrift snapshot json; decoding and the JSON format are tested
 // in pkg/snapshot
 
@@ -76,3 +73,6 @@ func TestSnapshotJSONRejectsOtherFiles(t *testing.T) {
 		}
 	}
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 package kustomize
 
 import (
@@ -34,9 +31,6 @@ type ExportInfo struct {
 	// PlatformDir is the platform set, e.g. platform/aws/eks, empty when the platform was not identified
 	PlatformDir     string `json:"platformDir,omitempty"`
 	SetDriftVersion string `json:"setdriftVersion,omitempty"`
-	// SecretManager is what the ExternalSecrets read from, as --external-secrets names it
-	// (aws-secrets-manager, aws-parameter-store, generic), for setdrift secrets export
-	SecretManager string `json:"secretManager,omitempty"`
 	// Region is the AWS region, when known
 	Region string `json:"region,omitempty"`
 }
@@ -65,10 +59,8 @@ func exportInfo(s *snapshotv1alpha1.Snapshot) ExportInfo {
 }
 
 // writeExportInfo writes ExportInfoFile into root.
-// secretManager is the resolved --external-secrets, or "".
-func writeExportInfo(out *outDir, s *snapshotv1alpha1.Snapshot, secretManager string) error {
+func writeExportInfo(out *outDir, s *snapshotv1alpha1.Snapshot) error {
 	info := exportInfo(s)
-	info.SecretManager = secretManager
 	if r, ok := regionOf(s); ok {
 		info.Region = r
 	}
@@ -95,3 +87,6 @@ func ReadExportInfo(root string) (*ExportInfo, error) {
 	}
 	return &info, nil
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

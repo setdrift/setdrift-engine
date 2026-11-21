@@ -1,5 +1,3 @@
-# Copyright The SetDrift Authors
-# SPDX-License-Identifier: Apache-2.0
 # Namespace sd-apps: a typical app, applied client-side, with defaults written
 # out explicitly in places (as many real manifests do).
 apiVersion: v1
@@ -354,3 +352,6 @@ spec:
   loadBalancerClass: eks.amazonaws.com/nlb
   selector: {app: web}
   ports: [{port: 80, targetPort: 80}]
+
+# Copyright The SetDrift Authors
+# SPDX-License-Identifier: Apache-2.0

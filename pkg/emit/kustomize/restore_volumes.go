@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 // RESTORE.md's storage steps: the storage classes claims ask for, and the
 // volumes to bring over.
 
@@ -418,3 +415,6 @@ func restoreVolume(v *snapshotv1alpha1.Volume) ([]byte, error) {
 		"# To use a copy, replace the volume ID with the copy's.\n", v.Namespace, v.Claim, v.VolumeHandle)
 	return []byte(header + string(out) + "---\n" + string(claim)), nil
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

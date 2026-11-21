@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 // Package ownership keeps the objects that carry configuration (a
 // Deployment) and drops the ones generated from them (its ReplicaSets and
 // Pods) or by the cluster itself, which a new cluster creates again.
@@ -123,3 +120,6 @@ func IsChild(o *resource.Object, present map[types.UID]bool) bool {
 	_, mirror := o.GetAnnotations()[mirrorPodAnnotation]
 	return mirror && gvk.Group == "" && gvk.Kind == "Pod" && owner.Kind == "Node"
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

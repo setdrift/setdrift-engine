@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 // Package kustomize writes a snapshot as a Kustomize repository:
 //
 //	clusters/<cluster>/kustomization.yaml
@@ -302,11 +299,7 @@ func (e Emitter) write(s *snapshotv1alpha1.Snapshot, out *outDir, name string) e
 	if err := e.writeRestore(out, s, written, remotes, bound); err != nil {
 		return err
 	}
-	secretManager := ""
-	if settings != nil && referenceOnly {
-		secretManager = settings.ID
-	}
-	if err := writeExportInfo(out, s, secretManager); err != nil {
+	if err := writeExportInfo(out, s); err != nil {
 		return err
 	}
 	_, hasCRDs := buckets[crdsDir]
@@ -634,3 +627,6 @@ func (out *outDir) write(path string, data []byte) error {
 	}
 	return out.root.WriteFile(path, data, 0o644) //#nosec G306 -- see write's doc
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

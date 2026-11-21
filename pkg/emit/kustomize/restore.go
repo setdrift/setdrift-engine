@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 package kustomize
 
 import (
@@ -103,8 +100,6 @@ type restoreData struct {
 	helmRepos *helmsource.Repos
 	// secretService is the ExternalSecrets' AWS service, SecretsManager or ParameterStore
 	secretService string
-	// secrets are the export's ExternalSecrets settings, resolved for the platform
-	secretSettings *ExternalSecrets
 	// cls is the source's platform; platDir its directory in the export
 	// (platform/aws/eks), empty when it is not known.
 	cls     *platform.Classification
@@ -139,8 +134,7 @@ func classification(s *snapshotv1alpha1.Snapshot) *platform.Classification {
 func (e Emitter) writeRestore(out *outDir, s *snapshotv1alpha1.Snapshot, written []writtenFile, remotes []remoteSecret, platformObjects int) error {
 	d := &restoreData{s: s, written: written, remotes: remotes, helmRepos: e.HelmRepos, platformObjects: platformObjects}
 	if e.ExternalSecrets != nil {
-		d.secretSettings = e.ExternalSecrets.resolved(classification(s))
-		d.secretService = d.secretSettings.Service
+		d.secretService = e.ExternalSecrets.resolved(classification(s)).Service
 	}
 	if r, ok := regionOf(s); ok {
 		d.region = r
@@ -421,7 +415,7 @@ func (d *restoreData) addonSteps(q *playbook, addons []*snapshotv1alpha1.Addon) 
 		if a.ServiceAccountRoleArn != "" {
 			l += " --service-account-role-arn " + text.ShellQuote(a.ServiceAccountRoleArn)
 		}
-		if a.ConfigurationValues != "" {
+		if a.HasConfiguration {
 			configured = true
 			lines = append(lines, fmt.Sprintf(`CONFIG=$(aws eks describe-addon --region "$REGION" --cluster-name %s --addon-name %s --query addon.configurationValues --output text)   # source cluster, read-only`,
 				text.ShellQuote(d.source), text.ShellQuote(a.Name)))
@@ -661,3 +655,6 @@ func sortedMapKeys[V any](m map[string]V) []string { return slices.Sorted(maps.K
 
 // sortedCopy returns a sorted copy of ss.
 func sortedCopy(ss []string) []string { return slices.Sorted(slices.Values(ss)) }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

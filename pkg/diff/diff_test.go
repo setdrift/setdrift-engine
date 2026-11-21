@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 package diff
 
 import (
@@ -295,3 +292,6 @@ func mustCompare(t *testing.T, a, b *snapshotv1alpha1.Snapshot, opts Options) Re
 	}
 	return r
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

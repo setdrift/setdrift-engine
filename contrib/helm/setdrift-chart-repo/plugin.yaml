@@ -1,6 +1,3 @@
-# Copyright The SetDrift Authors
-# SPDX-License-Identifier: Apache-2.0
-
 # Helm 4 post-renderer plugin - adds setdrift.io/chart-repo=<url> to every release object, install with:
 #   helm plugin install contrib/helm/setdrift-chart-repo
 #   helm install web oci://registry.example.com/charts/web \
@@ -19,3 +16,6 @@ runtimeConfig:
     # through sh, so the script runs even when a copy lost its executable bit
     - command: sh
       args: ["${HELM_PLUGIN_DIR}/postrender.sh"]
+
+# Copyright The SetDrift Authors
+# SPDX-License-Identifier: Apache-2.0

@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 package platform
 
 import (
@@ -159,3 +156,6 @@ func FromProto(p *snapshotv1alpha1.Platform) *Classification {
 func (s Signal) String() string {
 	return fmt.Sprintf("%s: %s (%s/%s, %d)", s.Source, s.Detail, s.Distribution, s.Infrastructure, s.Weight)
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

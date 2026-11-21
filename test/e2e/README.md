@@ -40,9 +40,10 @@ target's own stack made.
 
 Where the playbook offers a choice it follows the platform's playbooks
 (platform/aws/eks, platform/aws) and applies the EKS set, restores Secrets
-through External Secrets Operator (option C: `setdrift secrets export`
-copies the values into Secrets Manager, and the restored Secrets must match
-the source's by hash), copies other objects holding secret values from the
+through External Secrets Operator (option C: the test runs the playbook's
+create-secret commands by hand, filling each value from the source's fixture
+Secret without writing it to disk, as SetDrift never copies values itself, and
+the restored Secrets must match the source's by hash), copies other objects holding secret values from the
 source (option A), and copies volumes from snapshots. It skips the IRSA
 trust update (the fixture's role is in an account no one can read), and the
 options that need real secret values typed in. The fixture's local Helm chart has

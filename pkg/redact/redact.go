@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 // Package redact removes secret values. It runs immediately after collection,
 // so no later stage, snapshot or output ever sees a secret value.
 package redact
@@ -147,7 +144,7 @@ func redactMap(o *resource.Object, field string, encoded bool) {
 			})
 			continue
 		}
-		v := placeholderFor(k, m[k], encoded)
+		v := placeholderFor(k)
 		if encoded {
 			v = base64.StdEncoding.EncodeToString([]byte(v))
 		}
@@ -161,63 +158,25 @@ func redactMap(o *resource.Object, field string, encoded bool) {
 
 // placeholderFor returns the placeholder for one value, before base64. Keys
 // the API server validates the content of get a placeholder of the right
-// shape: image pull secrets must hold JSON. Their registry host names are
-// kept, as they are not secret and show which registries a workload pulls
-// from; everything else in them is replaced.
-func placeholderFor(key string, original any, encoded bool) string {
+// shape: image pull secrets must hold JSON. Nothing of the value is kept, not
+// even its registry host names.
+func placeholderFor(key string) string {
 	switch key {
 	case ".dockerconfigjson":
-		return dockerConfigPlaceholder(registries(original, encoded, true), true)
+		return DockerConfigJSONPlaceholder
 	case ".dockercfg":
-		return dockerConfigPlaceholder(registries(original, encoded, false), false)
+		return DockerCfgPlaceholder
 	}
 	return Placeholder
 }
 
-// registries returns the registry host names in a docker config value, or
-// none if it does not parse.
-func registries(original any, encoded, auths bool) []string {
-	s, _ := original.(string)
-	raw := []byte(s)
-	if encoded {
-		var err error
-		if raw, err = base64.StdEncoding.DecodeString(s); err != nil {
-			return nil
-		}
-	}
-	var hosts map[string]json.RawMessage
-	if auths {
-		var cfg struct {
-			Auths map[string]json.RawMessage `json:"auths"`
-		}
-		if json.Unmarshal(raw, &cfg) != nil {
-			return nil
-		}
-		hosts = cfg.Auths
-	} else if json.Unmarshal(raw, &hosts) != nil {
-		return nil
-	}
-	out := make([]string, 0, len(hosts))
-	for h := range hosts {
-		out = append(out, h)
-	}
-	sort.Strings(out)
-	return out
-}
-
-func dockerConfigPlaceholder(hosts []string, auths bool) string {
-	entries := map[string]map[string]string{}
-	auth := base64.StdEncoding.EncodeToString([]byte(Placeholder))
-	for _, h := range hosts {
-		entries[h] = map[string]string{"auth": auth}
-	}
-	var v any = entries
-	if auths {
-		v = map[string]any{"auths": entries}
-	}
-	b, _ := json.Marshal(v) // maps of strings always marshal
-	return string(b)
-}
+// DockerConfigJSONPlaceholder and DockerCfgPlaceholder replace an image pull
+// secret's value: valid JSON, as the API server requires, naming one registry,
+// SETDRIFT_REDACTED, with the auth SETDRIFT_REDACTED (base64).
+const (
+	DockerConfigJSONPlaceholder = `{"auths":{"SETDRIFT_REDACTED":{"auth":"U0VURFJJRlRfUkVEQUNURUQ="}}}`
+	DockerCfgPlaceholder        = `{"SETDRIFT_REDACTED":{"auth":"U0VURFJJRlRfUkVEQUNURUQ="}}`
+)
 
 // keepLastApplied keeps a Service's last-applied configuration, parsed, on
 // the object: it is the only record of which node ports a client-side
@@ -232,3 +191,6 @@ func keepLastApplied(o *resource.Object, last string) {
 		o.LastApplied = m
 	}
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

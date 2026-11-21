@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 package redact
 
 import (
@@ -55,3 +52,6 @@ func TestHelmReleaseMetadata(t *testing.T) {
 		t.Error("superseded revision read")
 	}
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

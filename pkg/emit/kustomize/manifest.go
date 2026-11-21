@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 // Reading snapshot resources' manifests, each decoded once.
 
 package kustomize
@@ -82,3 +79,6 @@ func comment(s string) string {
 func cell(s string) string {
 	return strings.NewReplacer("|", `\|`, "`", "'", "\n", " ", "\r", " ").Replace(s)
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

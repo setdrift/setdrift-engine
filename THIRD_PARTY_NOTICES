@@ -286,28 +286,7 @@ github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.14.12
 
 
 ================================================================================
-github.com/aws/aws-sdk-go-v2/service/kms v1.63.0
-================================================================================
-
---- LICENSE.txt: identical to github.com/aws/aws-sdk-go-v2/config LICENSE.txt above ---
-
-
-================================================================================
-github.com/aws/aws-sdk-go-v2/service/secretsmanager v1.51.0
-================================================================================
-
---- LICENSE.txt: identical to github.com/aws/aws-sdk-go-v2/config LICENSE.txt above ---
-
-
-================================================================================
 github.com/aws/aws-sdk-go-v2/service/signin v1.13.1
-================================================================================
-
---- LICENSE.txt: identical to github.com/aws/aws-sdk-go-v2/config LICENSE.txt above ---
-
-
-================================================================================
-github.com/aws/aws-sdk-go-v2/service/ssm v1.83.0
 ================================================================================
 
 --- LICENSE.txt: identical to github.com/aws/aws-sdk-go-v2/config LICENSE.txt above ---

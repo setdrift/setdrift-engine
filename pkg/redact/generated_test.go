@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 package redact
 
 import (
@@ -112,3 +109,6 @@ func TestFilledByController(t *testing.T) {
 		t.Errorf("whole: %v", whole.Findings)
 	}
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

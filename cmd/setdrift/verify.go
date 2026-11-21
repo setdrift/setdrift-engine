@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 // setdrift verify: checks an export against a live cluster with a
 // server-side dry-run.
 
@@ -352,3 +349,6 @@ func skippedTotal(r *verify.Report) int {
 	}
 	return n
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

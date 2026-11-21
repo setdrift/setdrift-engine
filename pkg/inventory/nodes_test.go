@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 package inventory
 
 import (
@@ -37,3 +34,6 @@ func TestSummarizeNodes(t *testing.T) {
 		t.Errorf("no nodes = %+v", e)
 	}
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

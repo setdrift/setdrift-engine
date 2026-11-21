@@ -1,6 +1,3 @@
-# Copyright The SetDrift Authors
-# SPDX-License-Identifier: Apache-2.0
-
 # Installs the setdrift CLI from the latest GitHub release (or $env:SETDRIFT_VERSION).
 # In PowerShell on Windows:
 #
@@ -136,3 +133,6 @@ try {
   $global:LASTEXITCODE = 1
 }
 }
+
+# Copyright The SetDrift Authors
+# SPDX-License-Identifier: Apache-2.0

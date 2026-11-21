@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 package helmsource
 
 import (
@@ -81,3 +78,6 @@ only-in-another-cluster: https://charts.example.com
 		t.Error("nil Repos has unmatched entries")
 	}
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

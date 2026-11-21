@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 package main
 
 import (
@@ -280,3 +277,6 @@ current-context: prod
 		t.Error("same: the same directory by two paths is one side; a directory and a context are not")
 	}
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

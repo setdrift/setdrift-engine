@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 package text
 
 import (
@@ -56,3 +53,6 @@ func TestKeyTemplateUses(t *testing.T) {
 		t.Error("Uses is wrong")
 	}
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 package inventory
 
 import (
@@ -83,3 +80,6 @@ func SummarizeNodes(nodes []unstructured.Unstructured) *snapshotv1alpha1.NodeSum
 	}
 	return s
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

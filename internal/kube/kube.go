@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 // Package kube holds the small Kubernetes helpers several SetDrift packages
 // share: an apiVersion's group, a managedFields entry decoded, and telling
 // an error about one object from one that stops a run.
@@ -51,3 +48,6 @@ func IsObjectError(err error) bool {
 	var status apierrors.APIStatus
 	return errors.As(err, &status)
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

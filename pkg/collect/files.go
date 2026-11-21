@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 // Collecting manifests from a directory, not a cluster.
 
 package collect
@@ -300,3 +297,6 @@ func decodeError(err error) error {
 		return errors.New("not a Kubernetes object (content left out of this error, as it may hold secrets)")
 	}
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

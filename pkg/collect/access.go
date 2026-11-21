@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 // What the credentials may read, asked before reading: who the cluster
 // says they are, whether a namespace exists, and whether they can read in
 // it. Every command that reads a cluster checks the same way, so a missing
@@ -305,3 +302,6 @@ func truncateList(items []string, n int) string {
 	}
 	return strings.Join(items[:n], ", ") + fmt.Sprintf(" and %d more (kubectl get namespaces)", len(items)-n)
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

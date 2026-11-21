@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 package awsinventory
 
 import (
@@ -19,6 +16,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/iam"
 	iamtypes "github.com/aws/aws-sdk-go-v2/service/iam/types"
 	"github.com/aws/smithy-go"
+	"google.golang.org/protobuf/encoding/protojson"
 
 	snapshotv1alpha1 "setdrift.io/setdrift-engine/pkg/snapshot/v1alpha1"
 )
@@ -110,10 +108,12 @@ func TestCollect(t *testing.T) {
 	if len(inv.IamRoles) != 2 || !inv.IamRoles[0].TrustsPodIdentity || inv.IamRoles[1].OidcProviders[0] != "oidc.eks.us-east-2.amazonaws.com/id/OLD" {
 		t.Errorf("roles %v", inv.IamRoles)
 	}
-	if len(inv.Addons) != 1 || inv.Addons[0].Version != "v0.9.0-eksbuild.14" ||
-		inv.Addons[0].ConfigurationValues != `{"agent":{"apiKey":"SETDRIFT_REDACTED"},"replicas":2}` ||
-		!slices.Equal(inv.Addons[0].ConfigurationRedactions, []string{"agent.apiKey"}) {
+	// the add-on's configuration holds an API key: only that it has configuration is kept
+	if len(inv.Addons) != 1 || inv.Addons[0].Version != "v0.9.0-eksbuild.14" || !inv.Addons[0].HasConfiguration {
 		t.Errorf("addons %v", inv.Addons)
+	}
+	if b, _ := protojson.Marshal(snap); strings.Contains(string(b), "0123456789abcdef0123456789abcdef") || strings.Contains(string(b), "replicas") {
+		t.Errorf("the add-on's configuration values reached the snapshot: %s", b)
 	}
 	if a := snap.Inventory.Volumes[0].Aws; a == nil || a.VolumeType != "gp3" || a.Iops != 3000 || !a.Encrypted {
 		t.Errorf("volume %v", a)
@@ -133,23 +133,6 @@ func TestAccessPoliciesPaged(t *testing.T) {
 	e := snap.Inventory.Aws.AccessEntries
 	if len(e) != 1 || len(e[0].Policies) != 2 || e[0].Policies[1].PolicyArn != "edit" {
 		t.Errorf("access entries %v", e)
-	}
-}
-
-// Configuration is kept as written unless something is redacted, and replaced
-// whole when it can't be parsed.
-func TestAddonConfig(t *testing.T) {
-	for _, c := range []struct{ in, want, paths string }{
-		{"", "", ""},
-		{`{"replicas":2}`, `{"replicas":2}`, ""},
-		{"replicas: 2\n", "replicas: 2\n", ""},
-		{`{"env":[{"name":"API_TOKEN","value":"s3cr3t-v4lue-abcdef"}]}`, `{"env":[{"name":"API_TOKEN","value":"SETDRIFT_REDACTED"}]}`, "env[API_TOKEN].value"},
-		{"{not: [valid", "SETDRIFT_REDACTED", ""},
-	} {
-		got, paths := addonConfig(c.in)
-		if got != c.want || strings.Join(paths, ",") != c.paths {
-			t.Errorf("%q: %q %v, want %q %q", c.in, got, paths, c.want, c.paths)
-		}
 	}
 }
 
@@ -218,3 +201,6 @@ func TestRolesOfOtherAccountsNotRead(t *testing.T) {
 		t.Errorf("the skipped role is not recorded: %s", errs)
 	}
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

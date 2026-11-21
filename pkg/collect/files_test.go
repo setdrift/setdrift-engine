@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 package collect_test
 
 import (
@@ -181,3 +178,6 @@ func TestFileSourceSkipsSymlinks(t *testing.T) {
 		t.Errorf("read %d objects, want only the ConfigMap in the directory", len(res.Objects))
 	}
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

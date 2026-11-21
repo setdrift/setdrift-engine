@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 package text
 
 import (
@@ -108,3 +105,6 @@ func (t *KeyTemplate) Execute(cluster, namespace, name string) string {
 	}
 	return b.String()
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

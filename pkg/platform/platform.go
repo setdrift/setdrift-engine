@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 // Package platform classifies the Kubernetes platform a cluster runs on:
 // its distribution (EKS, AKS, GKE, kubeadm, kind...), the infrastructure
 // under it (AWS, Azure, GCP, a laptop...) and whether a provider manages
@@ -301,3 +298,6 @@ func (c *Classification) Dir() string {
 	}
 	return "platform/" + cloud + "/" + leaf
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

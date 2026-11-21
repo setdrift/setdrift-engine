@@ -1,5 +1,3 @@
-# Copyright The SetDrift Authors
-# SPDX-License-Identifier: Apache-2.0
 # A real Argo CD Application (Argo CD installed by populate.sh).
 apiVersion: argoproj.io/v1alpha1
 kind: Application
@@ -18,3 +16,6 @@ spec:
   syncPolicy:
     automated: {prune: true, selfHeal: true}
     syncOptions: [CreateNamespace=true]
+
+# Copyright The SetDrift Authors
+# SPDX-License-Identifier: Apache-2.0

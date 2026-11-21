@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 package kustomize
 
 import (
@@ -207,7 +204,7 @@ func hostileSnapshot(t *testing.T) *snapshotv1alpha1.Snapshot {
 			HelmReleases:  []*snapshotv1alpha1.HelmRelease{{Namespace: h, Name: h, Chart: h, ChartVersion: h, Repository: "oci://registry.example.com/" + h}},
 			LoadBalancers: []*snapshotv1alpha1.LoadBalancer{{Kind: "Service", Namespace: h, Name: h, Hostnames: []string{h}}},
 			Aws: &snapshotv1alpha1.AwsInventory{ClusterName: h, Region: h, OidcIssuer: "https://" + h,
-				Addons: []*snapshotv1alpha1.Addon{{Name: h, Version: h, ServiceAccountRoleArn: h, ConfigurationValues: `{"a":1}`}},
+				Addons: []*snapshotv1alpha1.Addon{{Name: h, Version: h, ServiceAccountRoleArn: h, HasConfiguration: true}},
 				AccessEntries: []*snapshotv1alpha1.AccessEntry{{PrincipalArn: h, Type: "STANDARD", KubernetesGroups: []string{h},
 					Policies: []*snapshotv1alpha1.AccessPolicy{{PolicyArn: h, Scope: "namespace", Namespaces: []string{h}}}}},
 				PodIdentityAssociations: []*snapshotv1alpha1.PodIdentityAssociation{{Namespace: h, ServiceAccount: h, RoleArn: h}},
@@ -215,3 +212,6 @@ func hostileSnapshot(t *testing.T) *snapshotv1alpha1.Snapshot {
 		},
 	}
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 package collect
 
 import (
@@ -25,3 +22,6 @@ func FuzzDecodeManifests(f *testing.F) {
 		_, _ = decodeManifests(bytes.NewReader(b))
 	})
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

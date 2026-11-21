@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 package discover
 
 import (
@@ -24,3 +21,6 @@ func FuzzAggregated(f *testing.F) {
 		l.groups(map[string]*metav1.APIResourceList{}, map[string]error{})
 	})
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

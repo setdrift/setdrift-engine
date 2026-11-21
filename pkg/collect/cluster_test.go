@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 package collect_test
 
 import (
@@ -252,3 +249,6 @@ func TestPodPhasesTagged(t *testing.T) {
 	}
 	t.Fatal("web-abc-1 not collected")
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 // Command setdrift exports a Kubernetes cluster's configuration as a
 // Git-ready Kustomize repository, compares clusters, and verifies and
 // restores exports. Installed as kubectl-setdrift, it runs as kubectl
@@ -67,7 +64,7 @@ func newRootCmd() *cobra.Command {
 	}
 
 	// the subcommands are in this folder's other files; version is small enough to define here
-	root.AddCommand(newExportCmd(), newVerifyCmd(), newDiffCmd(), newSecretsCmd(), newSnapshotCmd(), newHelmPostRenderCmd(), &cobra.Command{
+	root.AddCommand(newExportCmd(), newVerifyCmd(), newDiffCmd(), newSnapshotCmd(), newHelmPostRenderCmd(), &cobra.Command{
 		Use:   "version",
 		Short: "Print the version",
 		Run: func(cmd *cobra.Command, _ []string) {
@@ -76,3 +73,6 @@ func newRootCmd() *cobra.Command {
 	})
 	return root
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

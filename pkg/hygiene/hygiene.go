@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 // Package hygiene reports what a cluster keeps that it no longer needs:
 // terminated Pods, finished Jobs with no TTL, long CronJob histories and
 // deletions stuck on finalizers. It changes nothing, and runs before the
@@ -253,3 +250,6 @@ func nameList(names []string) string {
 	}
 	return fmt.Sprintf("%s and %d more", strings.Join(names[:maxNames], ", "), len(names)-maxNames)
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 // What setdrift verify prints and writes: its differences grouped by cause,
 // with values and who changed them, the likely cause overall, and the
 // report files.
@@ -395,3 +392,6 @@ func verifyMarkdown(d verifyDocument) []byte {
 func mdCell(s string) string {
 	return "`" + strings.NewReplacer("|", `\|`, "`", "'", "\n", " ").Replace(s) + "`"
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

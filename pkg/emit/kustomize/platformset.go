@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 package kustomize
 
 import (
@@ -124,3 +121,6 @@ func evidence(cls *platform.Classification) string {
 	}
 	return strings.Join(parts, "; ")
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

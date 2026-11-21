@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 // Package text holds the wording helpers SetDrift's messages, READMEs and
 // playbooks share: counts with the right noun, and shell words quoted for
 // the commands they show.
@@ -52,3 +49,6 @@ func ShellQuoteAll(ss []string) []string {
 	}
 	return out
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

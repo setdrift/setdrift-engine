@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 // Package inventory records what restoring a cluster elsewhere needs that
 // the exported manifests do not hold: the volumes behind
 // PersistentVolumeClaims (with their storage IDs) and the addresses load
@@ -186,3 +183,6 @@ func has(obj map[string]any, path ...string) bool {
 	_, ok, _ := unstructured.NestedFieldNoCopy(obj, path...)
 	return ok
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

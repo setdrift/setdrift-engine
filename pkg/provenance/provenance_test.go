@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 package provenance
 
 import (
@@ -237,3 +234,6 @@ func TestCanonicalRepo(t *testing.T) {
 		t.Errorf("classified: %+v", p)
 	}
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

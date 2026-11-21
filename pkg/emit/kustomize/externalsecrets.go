@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 package kustomize
 
 import (
@@ -112,6 +109,21 @@ func (x *ExternalSecrets) Validate() error {
 // keyTemplate parses KeyTemplate, refusing syntax errors and unknown fields (e.g. {{.Namespce}}).
 func (x *ExternalSecrets) keyTemplate() (*text.KeyTemplate, error) {
 	return text.ParseKeyTemplate(x.KeyTemplate)
+}
+
+// SecretSource is one redacted Secret, for its ExternalSecret: the remote
+// secret its values are to be read from, and how to rebuild it.
+type SecretSource struct {
+	Namespace, Name, Type string
+	Labels, Annotations   map[string]string
+	// Keys are the Secret keys, each a property of RemoteKey.
+	Keys      []string
+	RemoteKey string
+	// Merge: a controller writes the Secret's other keys; the ExternalSecret
+	// adds these without owning it.
+	Merge bool
+	// Binary are the keys stored base64-encoded, which the ExternalSecret decodes.
+	Binary []string
 }
 
 // remoteSecret is one secret to create in the secret manager.
@@ -466,3 +478,6 @@ func indent(s, prefix string) string {
 	}
 	return strings.Join(lines, "\n") + "\n"
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

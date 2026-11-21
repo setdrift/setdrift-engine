@@ -1,6 +1,3 @@
-// Copyright The SetDrift Authors
-// SPDX-License-Identifier: Apache-2.0
-
 // Package helmsource records which chart repository a Helm release came
 // from, which Helm itself does not keep, so RESTORE.md can write a complete
 // helm install command. Two ways: Repos, a file the user passes to export
@@ -141,3 +138,6 @@ func set(m *yamlv3.Node, key, value string) {
 		&yamlv3.Node{Kind: yamlv3.ScalarNode, Tag: "!!str", Value: key},
 		&yamlv3.Node{Kind: yamlv3.ScalarNode, Tag: "!!str", Value: value})
 }
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0
