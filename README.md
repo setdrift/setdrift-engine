@@ -1,5 +1,5 @@
 # SetDrift
-SetDrift is the premier platform for platform engineers. It seeks to solve the problems that anyone who has worked with Kubernetes in production has faced. Problems like: Our clusters have become pets, We aren't sure how that got there, How to we make sure West and East are running the same things, How do we even check this cluster against that cluster, or the slack @all Who changed something just now everything is broken. 
+SetDrift is the premier platform for platform engineers. It seeks to solve the problems that anyone who has worked with Kubernetes in production has faced. Problems like: Our clusters have become pets, We aren't sure how that got there, How do we make sure West and East are running the same things, How do we even check this cluster against that cluster, or the slack @all Who changed something just now everything is broken. 
 
 # SetDrift-Engine
 So what is this repo for? This is the open-source engine that enables the development of the SetDrift platform. 
