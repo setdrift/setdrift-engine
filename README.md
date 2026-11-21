@@ -87,8 +87,7 @@ One command for each tool, for Intel/AMD and ARM:
 | Go 1.27+ (any OS) | `go install setdrift.io/setdrift-engine/cmd/setdrift@latest` |
 
 Where each one installs, installing a given version or by hand, checking a
-release, and running as `kubectl setdrift`: see
-[docs/install.md](https://github.com/setdrift/setdrift-engine/blob/main/docs/install.md).
+release, and running as `kubectl setdrift`: see [docs/install.md](https://github.com/setdrift/setdrift-engine/blob/main/docs/install.md).
 
 Check it works with `setdrift version`
 
