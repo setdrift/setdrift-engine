@@ -75,6 +75,7 @@ func TestBuildRejectsUnredactedSecret(t *testing.T) {
 	o := obj("v1", "Secret", "a", "db")
 	o.Object["data"] = map[string]any{"password": "aHVudGVyMg==", "user": "YWRtaW4="}
 	o.Redactions = []*snapshotv1alpha1.Redaction{{Path: "data.user"}}
+	// both keys are refused, password lacks a record and user is a real value, the sorted check names password first
 	if _, err := Build(Meta{}, []*resource.Object{o}); err == nil || !strings.Contains(err.Error(), "data.password") {
 		t.Errorf("unredacted value accepted: %v", err)
 	}

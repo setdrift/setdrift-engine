@@ -25,7 +25,7 @@ snapshot of everything it read to `setdrift-export/snapshots/`, kept out of
 Git, so you can see later what changed: `setdrift diff setdrift-export/snapshots/<time>-<cluster>.pb <context>`.
 
 Export reads with your kubeconfig credentials and changes nothing; it needs
-get and list on what it exports (the built-in `view` ClusterRole is enough;
+get and list on what it exports (the built-in `view` ClusterRole is enough, except Secrets;
 with access to some namespaces only, see [Permissions](https://github.com/setdrift/setdrift-engine/blob/main/docs/permissions.md)).
 Verify needs patch permission too, for its dry-run, which changes nothing
 either (the built-in `edit` role is enough).

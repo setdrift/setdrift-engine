@@ -69,6 +69,51 @@ setdrift export --context "$SRC" --cluster-name "$source_cluster" --aws -o "$wor
   { cat "$work/export.log"; exit 1; }
 root=$work/export/clusters/$source_cluster
 
+# checks the least-privilege IAM policy in docs/permissions.md against the source cluster's real resources
+# it asks IAM's policy simulator whether the policy allows each call export --aws makes, on each resource it makes it on, nothing is created
+# the actions themselves are kept in step with the code by pkg/awsinventory's TestPermissionsDocMatchesCalls
+check_least_privilege() {
+  local account policy cluster_arn decision pairs=() p action resource arn
+  account=$(aws sts get-caller-identity --query Account --output text)
+  # the policy from the doc, with this cluster's region, account and name filled in
+  policy=$(awk '/^```json$/ { f = 1; next } /^```$/ { f = 0 } f' "$repo/docs/permissions.md" |
+    sed "s/REGION/$region/g; s/ACCOUNT/$account/g; s/CLUSTER/$source_cluster/g")
+  cluster_arn=$(aws eks describe-cluster --region "$region" --name "$source_cluster" --query cluster.arn --output text)
+  for action in DescribeCluster ListPodIdentityAssociations ListAccessEntries ListAddons; do
+    pairs+=("eks:$action $cluster_arn")
+  done
+  # each Pod Identity association, and the role it names
+  for arn in $(aws eks list-pod-identity-associations --region "$region" --cluster-name "$source_cluster" --query 'associations[].associationArn' --output text); do
+    pairs+=("eks:DescribePodIdentityAssociation $arn")
+  done
+  for arn in $(aws eks list-pod-identity-associations --region "$region" --cluster-name "$source_cluster" --query 'associations[].associationId' --output text); do
+    pairs+=("iam:GetRole $(aws eks describe-pod-identity-association --region "$region" --cluster-name "$source_cluster" --association-id "$arn" --query association.roleArn --output text)")
+  done
+  # each access entry
+  for p in $(aws eks list-access-entries --region "$region" --cluster-name "$source_cluster" --query 'accessEntries[]' --output text); do
+    arn=$(aws eks describe-access-entry --region "$region" --cluster-name "$source_cluster" --principal-arn "$p" --query accessEntry.accessEntryArn --output text)
+    pairs+=("eks:DescribeAccessEntry $arn" "eks:ListAssociatedAccessPolicies $arn")
+  done
+  # each add-on
+  for p in $(aws eks list-addons --region "$region" --cluster-name "$source_cluster" --query 'addons[]' --output text); do
+    pairs+=("eks:DescribeAddon $(aws eks describe-addon --region "$region" --cluster-name "$source_cluster" --addon-name "$p" --query addon.addonArn --output text)")
+  done
+  pairs+=("ec2:DescribeVolumes *")
+  for p in "${pairs[@]}"; do
+    action=${p%% *} resource=${p#* }
+    decision=$(aws iam simulate-custom-policy --policy-input-list "$policy" --action-names "$action" --resource-arns "$resource" \
+      --query 'EvaluationResults[0].EvalDecision' --output text)
+    [[ $decision == allowed ]] || fail "docs/permissions.md's policy does not allow $action on $resource ($decision)"
+  done
+  # and a role in another account stays out of reach, as the doc says
+  decision=$(aws iam simulate-custom-policy --policy-input-list "$policy" --action-names iam:GetRole \
+    --resource-arns "arn:aws:iam::000000000000:role/other" --query 'EvaluationResults[0].EvalDecision' --output text)
+  [[ $decision != allowed ]] || fail "docs/permissions.md's policy allows iam:GetRole on another account's role"
+  echo "   least-privilege policy: ${#pairs[@]} calls allowed on the cluster's resources" >&2
+}
+say "least-privilege IAM policy ($(elapsed))"
+check_least_privilege
+
 cluster "$target_cluster" ensure >/dev/null
 DST=$(cluster "$target_cluster" context)
 export SRC DST DST_CLUSTER=$target_cluster REGION=$region

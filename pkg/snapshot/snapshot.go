@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"time"
 
@@ -131,8 +132,9 @@ func checkRedacted(o *resource.Object) error {
 	// going over both places a Secret holds values
 	for _, field := range []string{"data", "stringData"} {
 		m, _ := o.Object[field].(map[string]any)
-		// going over each key and value
-		for k, v := range m {
+		// going over each key in sorted order, so the error always names the same key
+		for _, k := range slices.Sorted(maps.Keys(m)) {
+			v := m[k]
 			// checking if the key has a redaction record and its value is a placeholder, invoking placeholder for that, its defined below
 			// both are needed, if either is missing thats a terminal error
 			if !redacted[field+"."+k] || !placeholder(k, v, field == "data") {
