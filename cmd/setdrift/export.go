@@ -266,6 +266,8 @@ func snapshotFile(flag, arg, def, name string, force bool) (string, error) {
 	if arg == "" {
 		return filepath.Join(def, name), nil
 	}
+	// a path ending in a separator names a directory even when it doesnt exist yet, noted before ~ is expanded since filepath.Join drops the separator
+	dir := strings.HasSuffix(arg, "/") || strings.HasSuffix(arg, string(filepath.Separator))
 	// checking if the path starts with ~, if so we expand it to the home directory ourselves
 	if arg == "~" || strings.HasPrefix(arg, "~/") {
 		home, err := os.UserHomeDir()
@@ -274,8 +276,8 @@ func snapshotFile(flag, arg, def, name string, force bool) (string, error) {
 		}
 		arg = filepath.Join(home, arg[1:])
 	}
-	// checking if the path ends in a separator, if so its a directory even when it doesnt exist yet
-	if strings.HasSuffix(arg, "/") || strings.HasSuffix(arg, string(filepath.Separator)) {
+	// checking if the path named a directory, if so the file goes in it
+	if dir {
 		return filepath.Join(arg, name), nil
 	}
 	fi, err := os.Stat(arg)

@@ -460,8 +460,12 @@ func (c *ClusterCollector) hydrate(ctx context.Context, res *Result, partials []
 				// if so its a warning, the stubs are marked gone and unreadable and their children are fetched next round
 				if kube.IsObjectError(err) {
 					res.warn("HYDRATE_FAILED", fmt.Sprintf("%s: %v", pt.gvr, err))
-					// marking each needed stub gone and unreadable
+					// marking each needed stub that is still a stub gone and unreadable, the ones fetched in full before the failure are kept
 					for _, o := range need {
+						// checking if it was fetched in full, if so its kept
+						if !o.Partial {
+							continue
+						}
 						gone[o] = true
 						unreadable[o] = true
 					}
@@ -513,6 +517,7 @@ func toFetch(pt *partialType, gone, tried map[*resource.Object]bool, present map
 
 // hydrateByGet fetches each needed stub by name, marking gone the ones deleted or recreated since the list
 func (c *ClusterCollector) hydrateByGet(ctx context.Context, pt *partialType, need map[types.UID]*resource.Object, gone map[*resource.Object]bool) error {
+	var failed error
 	// fetching each stub
 	for _, o := range need {
 		u, err := c.Dynamic.Resource(pt.gvr).Namespace(o.GetNamespace()).Get(ctx, o.GetName(), metav1.GetOptions{})
@@ -521,6 +526,12 @@ func (c *ClusterCollector) hydrateByGet(ctx context.Context, pt *partialType, ne
 		// checking if its not found, if so its gone, deleted since the list
 		case apierrors.IsNotFound(err):
 			gone[o] = true
+		// checking if the server refused this one object, if so the error is kept and the other stubs are still fetched, this one stays a stub
+		case err != nil && kube.IsObjectError(err):
+			// checking if its the first refusal, if so its the one reported
+			if failed == nil {
+				failed = err
+			}
 		case err != nil:
 			return err
 		case u.GetUID() != o.GetUID():
@@ -531,7 +542,7 @@ func (c *ClusterCollector) hydrateByGet(ctx context.Context, pt *partialType, ne
 			setFull(o, u, pt)
 		}
 	}
-	return nil
+	return failed
 }
 
 // hydrateByList lists every object of the type in full, filling in the needed stubs by uid, a stub not in the list is gone

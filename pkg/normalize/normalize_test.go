@@ -323,5 +323,17 @@ func TestPipelineAnnotationsRemoved(t *testing.T) {
 	}
 }
 
+// check that a single-stack Service keeps an explicit IPv6 family, while the usual IPv4 default is dropped with its policy
+func TestServiceIPFamilies(t *testing.T) {
+	for fam, keep := range map[string]bool{"IPv4": false, "IPv6": true} {
+		o := parse(t, `{"apiVersion": "v1", "kind": "Service", "metadata": {"name": "x"},
+		  "spec": {"ipFamilyPolicy": "SingleStack", "ipFamilies": ["`+fam+`"], "ports": [{"port": 80}]}}`)
+		spec := run(t, o)["spec"].(map[string]any)
+		if _, kept := spec["ipFamilies"]; kept != keep {
+			t.Errorf("%s: ipFamilies kept %v, want %v: %v", fam, kept, keep, spec)
+		}
+	}
+}
+
 // Copyright The SetDrift Authors
 // SPDX-License-Identifier: Apache-2.0

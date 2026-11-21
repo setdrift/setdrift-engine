@@ -93,18 +93,6 @@ func fieldList() string {
 	return strings.Join(fs, ", ")
 }
 
-// Uses takes a field name and tells if the template names it, so a caller can tell if the keys change with that field
-func (t *KeyTemplate) Uses(field string) bool {
-	// going over each part looking for that field
-	for _, p := range t.parts {
-		// checking if this part is the field
-		if p.field == field {
-			return true
-		}
-	}
-	return false
-}
-
 // Execute takes one Secret's cluster, namespace and name and gives back its key, filling each field part with its value
 func (t *KeyTemplate) Execute(cluster, namespace, name string) string {
 	var b strings.Builder

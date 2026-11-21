@@ -636,7 +636,8 @@ func pruneToCommon(sa, sb *snapshotv1alpha1.ReadScope, back map[string]string, l
 	limitedBy := func(sc *snapshotv1alpha1.ReadScope) bool {
 		return sc.GetMode() == snapshot.ScopeContextNamespace || sc.GetMode() == snapshot.ScopeReadableNamespaces
 	}
-	sameSets := na == nil || nb == nil || len(na) == len(nb) && len(common) == len(na)
+	// both sides read the same namespaces only when both were limited to the same set, a full side against a limited one always leaves something out
+	sameSets := na != nil && nb != nil && len(na) == len(nb) && len(common) == len(na)
 	// checking if neither side was limited by its credentials and they read the same namespaces, if so theres no note
 	if !limitedBy(sa) && !limitedBy(sb) && sameSets {
 		return nil

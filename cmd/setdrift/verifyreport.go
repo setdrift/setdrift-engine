@@ -93,10 +93,15 @@ func likelyCause(d verifyDocument) string {
 			"to see how the two clusters differ, run setdrift diff on them.", d.ExportCluster)
 	// at least half were written after the export
 	case a.ChangedAfterExport*2 >= n:
+		when := ""
+		// checking if the export recorded when it was taken, if so the cause says when, an export without the time leaves it out
+		if d.ExportedAt != "" {
+			when = " (" + d.ExportedAt + ")"
+		}
 		// invoking writers to list who wrote them, its defined below
-		return fmt.Sprintf("The cluster changed after the export (%s): %d of the %d resources were written since, by %s. "+
+		return fmt.Sprintf("The cluster changed after the export%s: %d of the %d resources were written since, by %s. "+
 			"The export is not wrong: export again to include the changes, or review them as drift.",
-			d.ExportedAt, a.ChangedAfterExport, n, writers(a.Writers))
+			when, a.ChangedAfterExport, n, writers(a.Writers))
 	// one field differs on most changed resources, the Analysis found it
 	case a.CommonField != "":
 		return fmt.Sprintf("One field differs on %d of the changed resources: %s. Something in the cluster sets it on each "+

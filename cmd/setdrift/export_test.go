@@ -513,5 +513,38 @@ data: {a: "1"}
 	}
 }
 
+// check that a --snapshot under ~ ending in a slash names a directory that doesnt exist yet, not a file
+func TestSnapshotFileHomeDirectory(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	for arg, want := range map[string]string{
+		"~/snaps/":   filepath.Join(home, "snaps", "x.pb"),
+		"~/snaps":    filepath.Join(home, "snaps"),
+		"~/":         filepath.Join(home, "x.pb"),
+		"./out/new/": filepath.Join("out", "new", "x.pb"),
+	} {
+		got, err := snapshotFile("--snapshot", arg, "def", "x.pb", false)
+		if err != nil || got != want {
+			t.Errorf("%s: %q, %v, want %q", arg, got, err, want)
+		}
+	}
+}
+
+// check that an export folder can be read back with --from-dir, its ExternalSecrets, store and platform sets are left out of its Kustomizations on purpose
+func TestExportFolderReadsBack(t *testing.T) {
+	out, again := t.TempDir(), t.TempDir()
+	in := filepath.Join("..", "..", "testdata", "corpus", "secrets", "input")
+	if _, stderr, err := runCmd(t, "export", "--from-dir", in, "--cluster-name", "rt", "-o", out); err != nil {
+		t.Fatalf("export: %v\n%s", err, stderr)
+	}
+	if _, err := os.Stat(filepath.Join(out, "clusters", "rt", "external-secrets")); err != nil {
+		t.Fatalf("the fixture no longer writes external-secrets/: %v", err)
+	}
+	if _, stderr, err := runCmd(t, "export", "--from-dir", filepath.Join(out, "clusters", "rt"), "--cluster-name", "rt2", "-o", again); err != nil {
+		t.Errorf("reading the export back: %v\n%s", err, stderr)
+	}
+}
+
 // Copyright The SetDrift Authors
 // SPDX-License-Identifier: Apache-2.0

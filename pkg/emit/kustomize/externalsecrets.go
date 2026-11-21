@@ -127,8 +127,6 @@ type SecretSource struct {
 	RemoteKey string
 	// Merge means a controller writes the Secret's other keys, the ExternalSecret adds these without owning it
 	Merge bool
-	// Binary are the keys stored base64-encoded, which the ExternalSecret decodes
-	Binary []string
 }
 
 // remoteSecret is one secret to create in the secret manager, for the README and RESTORE.md
@@ -286,10 +284,6 @@ func (x *ExternalSecrets) manifest(src SecretSource) map[string]any {
 	// going through the keys to give each its remoteRef
 	for _, k := range src.Keys {
 		ref := map[string]any{"key": src.RemoteKey, "property": k}
-		// checking if the key is stored base64-encoded, if so the ExternalSecret decodes it
-		if slices.Contains(src.Binary, k) {
-			ref["decodingStrategy"] = "Base64"
-		}
 		data = append(data, map[string]any{"secretKey": k, "remoteRef": ref})
 	}
 	target := map[string]any{"name": src.Name}

@@ -188,11 +188,16 @@ func iamRoles(ctx context.Context, c IAM, roles map[string]bool, inv *snapshotv1
 		}
 	}
 	sort.Strings(arns)
+	// checking if the cluster's account is unknown, if so no role is read, since theres no way to tell which roles are the cluster's own
+	if inv.AccountId == "" && len(arns) > 0 {
+		fail("IAM roles", fmt.Errorf("not read: the cluster's AWS account is unknown, so %d role(s) named by its ServiceAccounts and Pod Identity associations cant be checked as its own", len(arns)))
+		return
+	}
 	// going over each role
 	for _, arn := range arns {
 		// checking if the role is outside the cluster's own account, invoking arnAccount for that, its defined above, only roles in that account are read
 		// a ServiceAccount annotation can name any role ARN, and anyone who can write one in a namespace could otherwise have the export read and record the trust policy of a role they choose
-		if account := arnAccount(arn); inv.AccountId != "" && account != inv.AccountId {
+		if account := arnAccount(arn); account != inv.AccountId {
 			fail("IAM role "+arn, fmt.Errorf("not read: account %s is not the cluster's (%s)", account, inv.AccountId))
 			continue
 		}

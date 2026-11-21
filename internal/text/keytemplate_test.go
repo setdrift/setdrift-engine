@@ -48,16 +48,5 @@ func TestKeyTemplateRefuses(t *testing.T) {
 	}
 }
 
-// check that Uses tells the fields a template names from the ones it doesnt
-func TestKeyTemplateUses(t *testing.T) {
-	k, err := ParseKeyTemplate("{{.Namespace}}/x")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !k.Uses("Namespace") || k.Uses("Name") {
-		t.Error("Uses is wrong")
-	}
-}
-
 // Copyright The SetDrift Authors
 // SPDX-License-Identifier: Apache-2.0

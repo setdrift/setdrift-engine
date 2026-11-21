@@ -304,5 +304,24 @@ func mustCompare(t *testing.T, a, b *snapshotv1alpha1.Snapshot, opts Options) Re
 	return r
 }
 
+// check that comparing a full read with one limited by -n says what was left out, instead of dropping it silently
+func TestCompareFullAgainstNamespaces(t *testing.T) {
+	cm := func(ns, name string) *snapshotv1alpha1.Resource {
+		return res("v1", "ConfigMap", ns, name, `{"data":{"a":"1"}}`, unmanaged, "")
+	}
+	crd := res("apiextensions.k8s.io/v1", "CustomResourceDefinition", "", "widgets.example.com", `{"spec":{}}`, unmanaged, "")
+	full := snap("prod", "", "", cm("shop", "app"), cm("other", "app"), crd)
+	full.Scope = &snapshotv1alpha1.ReadScope{Mode: "cluster"}
+	limited := snap("prod2", "", "", cm("shop", "app"))
+	limited.Scope = &snapshotv1alpha1.ReadScope{Mode: "namespaces", Namespaces: []string{"shop"}}
+	for _, order := range [][2]*snapshotv1alpha1.Snapshot{{full, limited}, {limited, full}} {
+		r := mustCompare(t, order[0], order[1], Options{})
+		notes := strings.Join(r.Limited, "\n")
+		if !strings.Contains(notes, "compared namespaces shop only") || !strings.Contains(notes, "2 resources outside them were left out") {
+			t.Errorf("%s against %s: notes %q", order[0].Cluster.Name, order[1].Cluster.Name, notes)
+		}
+	}
+}
+
 // Copyright The SetDrift Authors
 // SPDX-License-Identifier: Apache-2.0

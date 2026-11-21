@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"testing"
@@ -231,7 +232,7 @@ func TestBuildCorpus(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		objs, err := build(root)
+		objs, err := build(root, root)
 		if err != nil {
 			t.Errorf("%s: %v", repo, err)
 			continue
@@ -347,19 +348,77 @@ func TestNotCheckedAndNamespaces(t *testing.T) {
 
 // check that an export listing remote resources is refused before kustomize would clone them
 func TestLocalOnly(t *testing.T) {
-	for ref, remote := range map[string]bool{
-		"configmap/a.yaml": false, "../base": false,
-		"https://github.com/acme/x//deploy?ref=v1": true, "github.com/acme/x/deploy": true,
-		"git@github.com:acme/x.git": true, "ssh://git@host/x": true,
+	// each kustomization body, and whether verify must refuse it
+	for body, remote := range map[string]bool{
+		"resources:\n- configmap/a.yaml\n- ../base\n- deployment.apps/web.yaml\n":  false,
+		"resources:\n- https://github.com/acme/x//deploy?ref=v1\n":                 true,
+		"resources:\n- github.com/acme/x/deploy\n":                                 true,
+		"resources:\n- git@github.com:acme/x.git\n":                                true,
+		"resources:\n- ssh://git@host/x\n":                                         true,
+		"resources:\n- git::https://example.com/x.git\n":                           true,
+		"resources:\n- deploy@example.com:org/repo\n":                              true,
+		"resources:\n- HTTPS://example.com/x.yaml\n":                               true,
+		"components:\n- https://example.com/c\n":                                   true,
+		"patches:\n- path: https://example.com/p.yaml\n":                           true,
+		"configMapGenerator:\n- name: c\n  files:\n  - https://example.com/f\n":    true,
+		"transformers:\n- github.com/acme/t\n":                                     true,
+		"openapi:\n  path: http://example.com/schema.json\n":                       true,
+		"crds:\n- file:///etc/crd.yaml\n":                                          true,
+		"commonAnnotations:\n  source: https://github.com/acme/x\n":                false,
+		"patches:\n- patch: |-\n    - op: add\n      value: https://example.com\n": false,
 	} {
 		root := t.TempDir()
-		k := "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources:\n- " + ref + "\n"
+		k := "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\n" + body
 		if err := os.WriteFile(filepath.Join(root, "kustomization.yaml"), []byte(k), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		if err := localOnly(root); (err != nil) != remote {
-			t.Errorf("%s: err = %v, want refused %v", ref, err, remote)
+			t.Errorf("%q: err = %v, want refused %v", body, err, remote)
 		}
+	}
+}
+
+// check that a symlink anywhere in the export is refused, a file or a directory, since it could lead kustomize out of the export
+func TestLocalOnlyRefusesSymlinks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks need privileges on windows")
+	}
+	outside := t.TempDir()
+	for _, link := range []string{"linked-dir", "linked.yaml"} {
+		root := t.TempDir()
+		if err := os.WriteFile(filepath.Join(root, "kustomization.yaml"), []byte("resources: []\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(outside, filepath.Join(root, link)); err != nil {
+			t.Fatal(err)
+		}
+		if err := localOnly(root); err == nil || !strings.Contains(err.Error(), "symlink") {
+			t.Errorf("%s: err = %v, want a symlink refusal", link, err)
+		}
+	}
+}
+
+// check that kustomize builds from a sealed copy, so a kustomization reaching outside the export finds nothing there
+func TestBuildIsSealed(t *testing.T) {
+	parent := t.TempDir()
+	root, outside := filepath.Join(parent, "export"), filepath.Join(parent, "outside")
+	for dir, k := range map[string]string{root: "resources:\n- ../outside\n", outside: "resources:\n- cm.yaml\n"} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "kustomization.yaml"), []byte(k), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(outside, "cm.yaml"), []byte("apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: stolen\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	objs, err := build(root, root)
+	if err == nil {
+		t.Fatalf("built %d objects from outside the export", len(objs))
+	}
+	if !strings.Contains(err.Error(), root) {
+		t.Errorf("the error does not name the real directory: %v", err)
 	}
 }
 

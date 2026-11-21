@@ -99,7 +99,11 @@ func TestFileSourceErrors(t *testing.T) {
 func TestFileSourceKustomize(t *testing.T) {
 	for _, tc := range []struct{ name, file, kustomization, want string }{
 		{"resources only, no kind", "kustomization.yaml", "resources: [settings.yaml]\n", ""},
-		{"resources in a subdirectory", "kustomization.yml", "resources: [prod/settings.yaml]\n", ""},
+		{"resources written with ./", "kustomization.yml", "resources: [./settings.yaml]\n", ""},
+		{"a file left out", "kustomization.yaml", "resources: []\n", "it leaves out settings.yaml"},
+		{"a listed path that isnt the file", "kustomization.yaml", "resources: [prod/settings.yaml]\n", "it leaves out settings.yaml"},
+		{"remote base over ssh", "kustomization.yaml", "resources:\n- git@gitlab.com:example/app.git\n", "it pulls in git@"},
+		{"remote base with git::", "kustomization.yaml", "resources:\n- git::https://gitlab.com/example/app.git\n", "it pulls in git::"},
 		{"patches", "Kustomization", "resources: [settings.yaml]\npatches: [{path: p.yaml}]\n", "it sets patches"},
 		{"transformers", "kustomization.yaml", "namespace: prod\nimages: [{name: web, newTag: v2}]\n", "it sets images, namespace"},
 		{"remote base", "kustomization.yaml", "resources:\n- https://github.com/example/app//base?ref=v1\n", "it pulls in https://"},
@@ -175,6 +179,20 @@ func TestFileSourceSkipsSymlinks(t *testing.T) {
 	}
 	if len(res.Objects) != 1 || res.Objects[0].GetName() != "in" {
 		t.Errorf("read %d objects, want only the ConfigMap in the directory", len(res.Objects))
+	}
+}
+
+// check that a manifest in a subfolder the Kustomization doesnt list is caught, while a subfolder with its own Kustomization is its own unit
+func TestFileSourceKustomizeNested(t *testing.T) {
+	k := "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources: [settings.yaml]\n"
+	dir := writeFiles(t, map[string]string{"settings.yaml": configMap, "kustomization.yaml": k, "extra/more.yaml": strings.Replace(configMap, "settings", "more", 1)})
+	if _, err := (collect.FileSource{Dir: dir}).Collect(context.Background()); err == nil || !strings.Contains(err.Error(), "it leaves out extra/more.yaml") {
+		t.Errorf("unlisted nested manifest: %v", err)
+	}
+	dir = writeFiles(t, map[string]string{"settings.yaml": configMap, "kustomization.yaml": k,
+		"app/more.yaml": strings.Replace(configMap, "settings", "more", 1), "app/kustomization.yaml": strings.Replace(k, "settings.yaml", "more.yaml", 1)})
+	if res, err := (collect.FileSource{Dir: dir}).Collect(context.Background()); err != nil || len(res.Objects) != 2 {
+		t.Errorf("a subfolder with its own Kustomization: %v", err)
 	}
 }
 

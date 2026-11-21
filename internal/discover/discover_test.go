@@ -276,5 +276,17 @@ func TestErrorsAreTyped(t *testing.T) {
 	}
 }
 
+// check that a server listing no API groups at all gets a readable error, not a broken one
+func TestRESTMapperNoGroups(t *testing.T) {
+	c, err := New(server(t, true, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = RESTMapper(context.Background(), c)
+	if err == nil || err.Error() != "discovering API resources: the API server lists no API groups" {
+		t.Errorf("error %v", err)
+	}
+}
+
 // Copyright The SetDrift Authors
 // SPDX-License-Identifier: Apache-2.0

@@ -127,7 +127,7 @@ func (v DryRunVerifier) Verify(ctx context.Context, repoDir string) (*Report, er
 		return nil, err
 	}
 	// invoking build to get what the chosen set's kustomization builds, its defined below
-	objs, err := build(filepath.Join(root, filepath.FromSlash(v.Set)))
+	objs, err := build(root, filepath.Join(root, filepath.FromSlash(v.Set)))
 	if err != nil {
 		return nil, err
 	}
@@ -229,14 +229,25 @@ func ClusterRoot(dir string) (string, error) {
 	return "", fmt.Errorf("%s holds %d clusters; verify one of them:\n  %s", dir, len(dirs), strings.Join(dirs, "\n  "))
 }
 
-// localOnly refuses an export whose kustomizations pull in anything remote
-// kustomize would clone it, running git, and build it, so verifying a directory someone changed could fetch and apply-check code from anywhere
-// an export only ever lists its own files
+// notPaths are the kustomization fields whose values are never paths kustomize loads, like labels or an inline patch, so a url in them is fine
+var notPaths = map[string]bool{
+	"apiVersion": true, "kind": true, "metadata": true, "namespace": true, "namePrefix": true, "nameSuffix": true,
+	"commonLabels": true, "commonAnnotations": true, "labels": true, "images": true, "replicas": true,
+	"literals": true, "patch": true, "buildMetadata": true, "sortOptions": true, "vars": true, "options": true,
+}
+
+// localOnly takes the cluster's directory and refuses an export that would make kustomize fetch anything remote or follow a symlink
+// kustomize clones a git repository or downloads a url named in any field that names a file or directory, so a changed export could pull in code from anywhere
+// a symlink could lead kustomize out of the export, and an export only ever holds its own regular files
 func localOnly(root string) error {
-	// walking every file under root, looking for kustomizations
+	// walking every file and directory under root, looking for symlinks and kustomizations
 	return filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
+		}
+		// checking if its a symlink, file or directory, if so the export is refused
+		if d.Type()&fs.ModeSymlink != 0 {
+			return fmt.Errorf("%s is a symlink: verify builds only an export's own files", path)
 		}
 		// checking if the file is a kustomization, anything else is skipped
 		switch d.Name() {
@@ -244,63 +255,114 @@ func localOnly(root string) error {
 		default:
 			return nil
 		}
-		// checking if the kustomization is a symlink, an export's kustomizations are real files so its refused
-		if d.Type()&fs.ModeSymlink != 0 {
-			return fmt.Errorf("%s is a symlink: an export's kustomizations are files", path)
-		}
 		b, err := os.ReadFile(path) //#nosec G304,G122 -- a file in the directory the user asked to verify
 		if err != nil {
 			return err
 		}
-		// only the lists that can name other files or directories are read
-		var k struct {
-			Resources  []string `json:"resources"`
-			Components []string `json:"components"`
-			Bases      []string `json:"bases"`
-		}
+		var k map[string]any
 		if err := yaml.Unmarshal(b, &k); err != nil {
 			return fmt.Errorf("%s: %w", path, err)
 		}
-		// invoking remoteRef on each resource, component and base, and refusing the export if any is remote, its defined below
-		for _, ref := range append(append(k.Resources, k.Components...), k.Bases...) {
-			// checking if this entry is remote, if so the export is refused
-			if remoteRef(ref) {
-				return fmt.Errorf("%s lists %s, which is not a file of the export: verify builds only local files", path, ref)
-			}
+		// invoking remoteValue to find the first value in any path field kustomize would fetch remotely, its defined below
+		if ref, ok := remoteValue(k); ok {
+			return fmt.Errorf("%s names %s, which is not a file of the export: verify builds only local files", path, ref)
 		}
 		return nil
 	})
 }
 
-// remoteRef tells if a kustomization entry names something remote, a url, a git repository or a hosted repository path
-func remoteRef(ref string) bool {
-	// checking the entry for each marker of a remote reference
-	for _, marker := range []string{"://", "?ref=", "git@", "github.com/", "gitlab.com/", "bitbucket.org/"} {
-		// checking if the entry has this marker, if so its remote
-		if strings.Contains(ref, marker) {
-			return true
+// remoteValue takes a decoded kustomization, or a part of one, and gives back the first string kustomize would fetch remotely
+// it looks at every value except those under notPaths, so a new kustomize field that names files is covered too
+func remoteValue(v any) (string, bool) {
+	// checking what kind of value it is, a map and a list are searched, a string is matched with kube.KustomizeRemote, its defined in internal/kube/kube.go
+	switch v := v.(type) {
+	case string:
+		return v, kube.KustomizeRemote(v)
+	case map[string]any:
+		// going through each field that can hold paths
+		for key, child := range v {
+			// checking if the field never holds paths, if so its skipped
+			if notPaths[key] {
+				continue
+			}
+			// checking if anything under the field is remote, if so thats the answer
+			if ref, ok := remoteValue(child); ok {
+				return ref, true
+			}
+		}
+	case []any:
+		// going through each item of the list
+		for _, child := range v {
+			// checking if the item is remote, if so thats the answer
+			if ref, ok := remoteValue(child); ok {
+				return ref, true
+			}
 		}
 	}
-	return false
+	return "", false
 }
 
-// build gives back the objects the kustomization in root builds, as kubectl kustomize does, so what applying root would apply
-func build(root string) ([]*unstructured.Unstructured, error) {
-	// running kustomize with its default options on the files on disk
-	resMap, err := krusty.MakeKustomizer(krusty.MakeDefaultOptions()).Run(filesys.MakeFsOnDisk(), root)
+// sealedRoot is where build puts its copy of the export in memory, a fixed path so a windows drive letter never gets in the way
+const sealedRoot = "/export"
+
+// build takes the cluster's directory and the directory inside it to build, and gives back the objects that kustomization builds, as kubectl kustomize does
+// kustomize runs on an in-memory copy of the export's regular files, so it cant read anything outside the export even if localOnly missed something
+func build(root, dir string) ([]*unstructured.Unstructured, error) {
+	// invoking sealedCopy to copy the export into memory, its defined below
+	fSys, err := sealedCopy(root)
 	if err != nil {
-		return nil, fmt.Errorf("building %s: %w", root, err)
+		return nil, fmt.Errorf("building %s: %w", dir, err)
+	}
+	rel, err := filepath.Rel(root, dir)
+	if err != nil {
+		return nil, fmt.Errorf("building %s: %w", dir, err)
+	}
+	// running kustomize with its default options on the copy, plugins and helm stay off
+	resMap, err := krusty.MakeKustomizer(krusty.MakeDefaultOptions()).Run(fSys, filepath.Join(sealedRoot, rel))
+	if err != nil {
+		// putting the real directory back in kustomize's message in place of the copy's path
+		return nil, fmt.Errorf("building %s: %s", dir, strings.ReplaceAll(err.Error(), sealedRoot, root))
 	}
 	var out []*unstructured.Unstructured
 	// turning each built resource into an unstructured object
 	for _, r := range resMap.Resources() {
 		m, err := r.Map()
 		if err != nil {
-			return nil, fmt.Errorf("building %s: %w", root, err)
+			return nil, fmt.Errorf("building %s: %w", dir, err)
 		}
 		out = append(out, &unstructured.Unstructured{Object: m})
 	}
 	return out, nil
+}
+
+// sealedCopy takes the cluster's directory and copies its regular files into an in-memory filesystem under sealedRoot, refusing a symlink or any other special file
+func sealedCopy(root string) (filesys.FileSystem, error) {
+	fSys := filesys.MakeFsInMemory()
+	// walking every file and directory under root to copy it
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		dst := filepath.Join(sealedRoot, rel)
+		// checking what the entry is, a directory is made, a regular file is copied, anything else is refused
+		switch {
+		case d.IsDir():
+			return fSys.MkdirAll(dst)
+		case d.Type().IsRegular():
+			b, err := os.ReadFile(path) //#nosec G304,G122 -- a regular file in the directory the user asked to verify
+			if err != nil {
+				return err
+			}
+			return fSys.WriteFile(dst, b)
+		default:
+			return fmt.Errorf("%s is not a regular file: verify builds only an export's own files", path)
+		}
+	})
+	return fSys, err
 }
 
 // Ref names an object as the snapshot does, [group/]Kind [namespace/]name

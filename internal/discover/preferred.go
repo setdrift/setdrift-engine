@@ -215,9 +215,13 @@ func RESTMapper(ctx context.Context, d Interface) (meta.RESTMapper, error) {
 			m.AddSpecific(gv.WithKind(r.Kind), plural, singular, scope)
 		}
 	}
-	// checking if no group version at all could be read, if so thats a terminal error carrying the partial one
+	// checking if no group version at all could be read, if so thats a terminal error
 	if len(lists) == 0 {
-		return nil, fmt.Errorf("discovering API resources: %w", err)
+		// checking if some group versions failed, if so the error says which, otherwise the server listed none at all
+		if err != nil {
+			return nil, fmt.Errorf("discovering API resources: %w", err)
+		}
+		return nil, errors.New("discovering API resources: the API server lists no API groups")
 	}
 	return m, nil
 }

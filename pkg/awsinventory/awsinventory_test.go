@@ -229,5 +229,32 @@ func TestRolesOfOtherAccountsNotRead(t *testing.T) {
 	}
 }
 
+// noArnEKS is fakeEKS for a cluster whose ARN is missing, so its AWS account is unknown
+type noArnEKS struct{ fakeEKS }
+
+// DescribeCluster gives back the prod cluster without its ARN
+func (noArnEKS) DescribeCluster(context.Context, *eks.DescribeClusterInput, ...func(*eks.Options)) (*eks.DescribeClusterOutput, error) {
+	return &eks.DescribeClusterOutput{Cluster: &ekstypes.Cluster{Version: aws.String("1.37")}}, nil
+}
+
+// check that no IAM role is read when the cluster's account is unknown, since then no role can be checked as the cluster's own
+func TestRolesNotReadWhenAccountUnknown(t *testing.T) {
+	snap := &snapshotv1alpha1.Snapshot{Cluster: &snapshotv1alpha1.Cluster{Name: "prod"},
+		Resources: []*snapshotv1alpha1.Resource{
+			{ApiVersion: "v1", Kind: "ServiceAccount", Namespace: "shop", Name: "spy",
+				ManifestJson: `{"metadata":{"annotations":{"eks.amazonaws.com/role-arn":"arn:aws:iam::999988887777:role/admin"}}}`},
+		}}
+	var asked []string
+	if err := Collect(context.Background(), Clients{EKS: noArnEKS{}, IAM: recordingIAM{&asked}, EC2: fakeEC2{}}, "prod", "us-east-2", snap); err != nil {
+		t.Fatal(err)
+	}
+	if len(asked) > 0 {
+		t.Errorf("read roles %v with the cluster's account unknown", asked)
+	}
+	if errs := strings.Join(snap.GetInventory().GetAws().GetErrors(), "\n"); !strings.Contains(errs, "account is unknown") {
+		t.Errorf("the unread roles are not recorded: %s", errs)
+	}
+}
+
 // Copyright The SetDrift Authors
 // SPDX-License-Identifier: Apache-2.0

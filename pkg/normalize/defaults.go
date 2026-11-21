@@ -343,8 +343,9 @@ func serviceDefaults(o *resource.Object) {
 	}
 	// invoking dropIf on the default ip family policy, its defined above
 	dropIf(spec, "SingleStack", "ipFamilyPolicy")
-	// checking if the ip family policy is gone, if so the ip families filled in with it go too
-	if spec["ipFamilyPolicy"] == nil {
+	// checking if the ip family policy is gone and the families are the usual IPv4 default, if so they go too
+	// an explicit IPv6 single-stack choice stays, so a restore into an IPv4 cluster doesnt silently turn the Service into IPv4
+	if fams, _ := spec["ipFamilies"].([]any); spec["ipFamilyPolicy"] == nil && len(fams) == 1 && fams[0] == "IPv4" {
 		delete(spec, "ipFamilies")
 	}
 	dropIf(spec, "None", "sessionAffinity")

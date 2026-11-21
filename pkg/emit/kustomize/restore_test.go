@@ -235,10 +235,9 @@ func TestAddonConfigNotWritten(t *testing.T) {
 	}
 	root := ClusterDir(dir, "prod")
 	md := readFile(t, root, "RESTORE.md") + readFile(t, root, "platform/aws/eks/RESTORE.md")
-	for _, leaked := range []string{"site", "replicas", "missed-by-the-patterns", "SETDRIFT_REDACTED"} {
-		if strings.Contains(md, leaked) {
-			t.Errorf("RESTORE.md holds the configuration value %q", leaked)
-		}
+	// every configuration value in RESTORE.md is read from AWS as the command runs, never written in, the snapshot never holds them anyway
+	if all, looked := strings.Count(md, "--configuration-values"), strings.Count(md, `--configuration-values "$CONFIG"`); all != looked || all != 2 {
+		t.Errorf("RESTORE.md has %d --configuration-values, %d of them from the lookup, want 2 and 2:\n%s", all, looked, md)
 	}
 	for _, name := range []string{"agent", "plain"} {
 		lookup := `CONFIG=$(aws eks describe-addon --region "$REGION" --cluster-name prod --addon-name ` + name + ` --query addon.configurationValues --output text)`

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"regexp"
 	"strings"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -48,6 +49,13 @@ func IsObjectError(err error) bool {
 	var status apierrors.APIStatus
 	return errors.As(err, &status)
 }
+
+// kustomizeRemote matches a value kustomize would fetch over the network, using kustomize's own rules from its internal/git/repospec.go and loader
+// a url it downloads or clones, ssh https http or file, a git user@host form, or a github.com path, with or without the git:: prefix kustomize strips
+var kustomizeRemote = regexp.MustCompile(`(?i)^\s*(git::)?((ssh|https?|file)://|[a-z][a-z0-9-]*@|github\.com[/:])`)
+
+// KustomizeRemote takes a value from a kustomization and tells if kustomize would fetch it remotely instead of reading a local file
+func KustomizeRemote(ref string) bool { return kustomizeRemote.MatchString(ref) }
 
 // Copyright The SetDrift Authors
 // SPDX-License-Identifier: Apache-2.0

@@ -4,10 +4,12 @@ package collect_test
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"strings"
 	"testing"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/fields"
@@ -163,6 +165,36 @@ func TestMetadataOnlyHydrateByGet(t *testing.T) {
 	}
 	assertEqual(t, lists, []string{"deployments"})
 	assertEqual(t, gets, []string{"pods", "pods"})
+}
+
+// check that when the server refuses one Pod, the other Pods fetched one by one are still exported, only the refused one is dropped with HYDRATE_FAILED
+func TestHydrateByGetKeepsFetched(t *testing.T) {
+	c, dyn := newCollector(t)
+	dyn.PrependReactor("get", "pods", func(a clienttesting.Action) (bool, runtime.Object, error) {
+		// refusing the debug Pod only, the toolbox Pod is served as usual
+		if a.(clienttesting.GetAction).GetName() == "debug" {
+			return true, nil, apierrors.NewForbidden(schema.GroupResource{Resource: "pods"}, "debug", errors.New("denied"))
+		}
+		return false, nil, nil
+	})
+	res, err := c.Collect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := summarize(res)
+	assertEqual(t, got, []summary{
+		{name: "toolbox", full: true},
+		{name: "web", full: true},
+		{name: "web-abc", partial: true},
+		{name: "web-abc-1", partial: true},
+	})
+	warned := false
+	for _, f := range res.Findings {
+		warned = warned || f.Code == "HYDRATE_FAILED"
+	}
+	if !warned {
+		t.Error("no HYDRATE_FAILED finding for the refused Pod")
+	}
 }
 
 // check that above HydrateGetLimit the Pods are listed in full instead of fetched one by one

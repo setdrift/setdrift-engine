@@ -21,6 +21,7 @@ import (
 	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
 	"sigs.k8s.io/yaml"
 
+	"setdrift.io/setdrift-engine/internal/kube"
 	"setdrift.io/setdrift-engine/pkg/resource"
 	snapshotv1alpha1 "setdrift.io/setdrift-engine/pkg/snapshot/v1alpha1"
 )
@@ -190,13 +191,15 @@ func (f FileSource) kustomization(path string) (reason string, err error) {
 	if err != nil {
 		return "", err
 	}
+	var listed []string
 	// checking each listed resource stays inside the directory read
 	for _, r := range resources {
 		ref, _ := r.(string)
-		// checking if its a remote reference, a url, a git ref or a github path
-		if strings.Contains(ref, "://") || strings.Contains(ref, "?ref=") || strings.HasPrefix(ref, "github.com/") {
+		// invoking kube.KustomizeRemote to check if kustomize would fetch it remotely, by kustomize's own rules, its defined in internal/kube/kube.go
+		if kube.KustomizeRemote(ref) {
 			return "it pulls in " + ref, nil
 		}
+		listed = append(listed, filepath.Clean(filepath.FromSlash(ref)))
 		abs, err := filepath.Abs(filepath.Join(filepath.Dir(path), ref))
 		// checking if the path cant be resolved, if so its refused as pulled in
 		if err != nil {
@@ -207,7 +210,117 @@ func (f FileSource) kustomization(path string) (reason string, err error) {
 			return "it pulls in " + ref + ", outside the directory read", nil
 		}
 	}
-	return "", nil
+	// invoking leftOut to find manifests under the Kustomization that it doesnt list, which would still be read, its defined below
+	return leftOut(filepath.Dir(path), listed, root)
+}
+
+// exportMarker is the file setdrift export writes in each cluster's directory, kustomize.ExportInfoFile in pkg/emit/kustomize/exportinfo.go, named here so collect doesnt depend on the emitter
+const exportMarker = ".setdrift-export"
+
+// leftOut takes a Kustomization's directory, the paths its resources list and the directory read, and names the first manifest file under it that the list leaves out
+// the directory is read file by file, so a file the Kustomization doesnt build would still be exported, unlike kubectl kustomize
+// a subdirectory with a Kustomization of its own is a separate kustomize root, checked on its own, so its skipped here
+// inside a setdrift export nothing is checked, an export leaves its ExternalSecrets, secret store and platform sets out of its Kustomizations on purpose
+func leftOut(dir string, listed []string, root string) (string, error) {
+	// invoking inExport to check if the Kustomization belongs to a setdrift export, its defined below
+	if inExport(dir, root) {
+		return "", nil
+	}
+	// covered tells if a path under dir is listed itself or sits under a listed directory
+	covered := func(rel string) bool {
+		// checking each listed path for this one or a directory holding it
+		for _, l := range listed {
+			// checking if its the listed path or under it
+			if rel == l || strings.HasPrefix(rel, l+string(filepath.Separator)) {
+				return true
+			}
+		}
+		return false
+	}
+	var missing string
+	// walking everything under the Kustomization's directory for a manifest it doesnt list
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		// checking if its a directory below the top
+		if d.IsDir() && path != dir {
+			// checking if its a dot-directory, which the directory read skips, or has a Kustomization of its own, if so its not this one's to list
+			if strings.HasPrefix(d.Name(), ".") || hasKustomization(path) {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		// checking if its a manifest file, other files are never read
+		switch filepath.Ext(path) {
+		case ".yaml", ".yml", ".json":
+		default:
+			return nil
+		}
+		rel, err := filepath.Rel(dir, path)
+		if err != nil {
+			return err
+		}
+		// checking if its a Kustomization file itself or listed, if not the Kustomization leaves it out
+		if kustomizationFiles[d.Name()] || covered(rel) {
+			return nil
+		}
+		// invoking exportable to check if the file holds anything the read would export, a Component or other kustomize file doesnt, its defined below
+		if !exportable(path) {
+			return nil
+		}
+		missing = rel
+		return fs.SkipAll
+	})
+	if err != nil || missing == "" {
+		return "", err
+	}
+	return "it leaves out " + filepath.ToSlash(missing) + ", which would still be read", nil
+}
+
+// exportable tells if a manifest file holds an object the directory read would export, anything but kustomize's own kinds like Component
+// a file that doesnt read counts as exportable, the read reports it as it goes
+func exportable(path string) bool {
+	// invoking readFile to decode the file the way the read does, its defined below
+	objs, err := readFile(path)
+	if err != nil {
+		return true
+	}
+	// checking each object for one outside kustomize's own group
+	for _, o := range objs {
+		// checking if its a cluster object, if so the file would be exported
+		if o.GroupVersionKind().Group != kustomizeGroup {
+			return true
+		}
+	}
+	return false
+}
+
+// hasKustomization tells if a directory holds a Kustomization file at its top
+func hasKustomization(dir string) bool {
+	// checking each name a Kustomization file can have
+	for name := range kustomizationFiles {
+		// checking if a file of that name is there
+		if fi, err := os.Stat(filepath.Join(dir, name)); err == nil && !fi.IsDir() {
+			return true
+		}
+	}
+	return false
+}
+
+// inExport tells if dir is inside a setdrift export's cluster directory, found by its marker file in dir or a directory above it, up to the directory read
+func inExport(dir, root string) bool {
+	// walking up from dir to the directory read
+	for d := dir; ; d = filepath.Dir(d) {
+		// checking if the marker is here, if so its an export
+		if _, err := os.Stat(filepath.Join(d, exportMarker)); err == nil {
+			return true
+		}
+		// checking if the walk reached the directory read or the top of the filesystem, if so its not an export
+		if rel, err := filepath.Rel(root, d); err != nil || rel == "." || d == filepath.Dir(d) {
+			return false
+		}
+	}
 }
 
 // objectsWord gives back "object was" or "objects were", for a count

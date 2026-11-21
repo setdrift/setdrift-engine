@@ -103,6 +103,7 @@ func TestLikelyCause(t *testing.T) {
 		{"clean", verifyDocument{}, ""},
 		{"other cluster", verifyDocument{SameCluster: &no, ExportCluster: "prod", Report: verify.Report{Diffs: changed(2, byHand)}}, "a different cluster than the export came from (prod)"},
 		{"changed since", verifyDocument{SameCluster: &yes, ExportedAt: "T", Report: verify.Report{Diffs: changed(3, byHand)}}, "The cluster changed after the export (T): 3 of the 3 resources were written since, by kubectl-edit (3)"},
+		{"changed since, time unknown", verifyDocument{SameCluster: &yes, Report: verify.Report{Diffs: changed(3, byHand)}}, "The cluster changed after the export: 3 of the 3 resources were written since"},
 		{"one field everywhere", verifyDocument{Report: verify.Report{Diffs: changed(4, verify.Diff{Kind: verify.KindChanged, Fields: []verify.Field{{Path: "metadata.labels.x"}}})}}, "One field differs on 4 of the changed resources: metadata.labels.x"},
 		{"gone", verifyDocument{Report: verify.Report{Diffs: changed(2, verify.Diff{Kind: verify.KindNotInCluster})}}, "2 of the 2 are not in the cluster"},
 	} {
@@ -141,8 +142,14 @@ func TestVerifyReportFiles(t *testing.T) {
 	}
 	if goruntime.GOOS != "windows" {
 		for _, f := range []string{md, strings.TrimSuffix(md, ".md") + ".json"} {
-			if fi, err := os.Stat(f); err != nil || fi.Mode().Perm() != 0o600 {
-				t.Errorf("%s: mode %v, %v; want 0600", filepath.Base(f), fi.Mode().Perm(), err)
+			fi, err := os.Stat(f)
+			// checking if the file is missing, if so theres no mode to compare
+			if err != nil {
+				t.Errorf("%s: %v", filepath.Base(f), err)
+				continue
+			}
+			if fi.Mode().Perm() != 0o600 {
+				t.Errorf("%s: mode %v; want 0600", filepath.Base(f), fi.Mode().Perm())
 			}
 		}
 	}
