@@ -1,4 +1,4 @@
-# Go import path
+# Go Import Path
 
 This module's path is `setdrift.io/setdrift-engine`, a vanity path for
 https://github.com/setdrift/setdrift-engine: the code can move between

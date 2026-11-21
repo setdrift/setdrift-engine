@@ -1,4 +1,4 @@
-# What `diff A B` reads
+# What `diff A B` Reads
 
 Each of `A` and `B` is a kubeconfig context, a
 snapshot file (`.pb` or `.json`), or a directory of manifests, in any

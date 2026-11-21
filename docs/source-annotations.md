@@ -1,4 +1,4 @@
-# Source annotations
+# Source Annotations
 
 > **To revisit:** the annotation set (repo, path, branch, tag, revision,
 > deployed-by) and their examples were added on 2026-11-20 and are not yet
@@ -9,14 +9,25 @@ resources it deploys look applied by hand: false positives in
 `--unmanaged-only` and in the summary's "Applied by hand" list, though they
 live in Git. Have each pipeline stamp where they come from:
 
-| Annotation | What it holds | GitHub Actions | GitLab CI | Required |
-|---|---|---|---|---|
-| `setdrift.io/source-repo` | The repository | `$GITHUB_SERVER_URL/$GITHUB_REPOSITORY` | `$CI_PROJECT_URL` | Yes |
-| `setdrift.io/source-path` | The directory in it that is applied, e.g. `deploy/overlays/prod` | your path | your path | No |
-| `setdrift.io/source-branch` | The branch deployed | `$GITHUB_REF_NAME` (`$GITHUB_HEAD_REF` on a pull request) | `$CI_COMMIT_BRANCH` | No |
-| `setdrift.io/source-tag` | The tag deployed, when a release deploys a tag | `$GITHUB_REF_NAME` on a tag push | `$CI_COMMIT_TAG` | No |
-| `setdrift.io/source-revision` | The commit deployed, in full | `$GITHUB_SHA` | `$CI_COMMIT_SHA` | No |
-| `setdrift.io/deployed-by` | The pipeline run | `$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID` | `$CI_JOB_URL` | No |
+| Annotation | What it holds | Required |
+|---|---|---|
+| `setdrift.io/source-repo` | The repository | Yes |
+| `setdrift.io/source-path` | The directory in it that is applied, e.g. `deploy/overlays/prod` | No |
+| `setdrift.io/source-branch` | The branch deployed | No |
+| `setdrift.io/source-tag` | The tag deployed, when a release deploys a tag | No |
+| `setdrift.io/source-revision` | The commit deployed, in full | No |
+| `setdrift.io/deployed-by` | The pipeline run | No |
+
+The value to set each one to, in GitHub Actions and in GitLab CI:
+
+| Annotation | GitHub Actions | GitLab CI |
+|---|---|---|
+| `source-repo` | `$GITHUB_SERVER_URL/$GITHUB_REPOSITORY` | `$CI_PROJECT_URL` |
+| `source-path` | your path | your path |
+| `source-branch` | `$GITHUB_REF_NAME`, or `$GITHUB_HEAD_REF` on a pull request | `$CI_COMMIT_BRANCH` |
+| `source-tag` | `$GITHUB_REF_NAME` on a tag push | `$CI_COMMIT_TAG` |
+| `source-revision` | `$GITHUB_SHA` | `$CI_COMMIT_SHA` |
+| `deployed-by` | `$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID` | `$CI_JOB_URL` |
 
 `source-repo` alone ends the false positives. It is read in any common form:
 `https://github.com/foo/bar`, `github.com/foo/bar`, `github/foo/bar`,

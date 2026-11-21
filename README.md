@@ -148,12 +148,12 @@ setdrift snapshot json ./out/snapshots/2026-11-16T090000Z-prod.pb
 ## Further Reading
 
 - **Which comparison?** When to compare a cluster with its own snapshot, two clusters with each other, or an export with a cluster. See [Which comparison?](https://setdrift.io/docs/cli/which-comparison/).
-- **What `diff A B` reads.** How `diff` tells a kubeconfig context from a snapshot file or a directory, and what it does when a name is both. See [What diff A B reads](https://setdrift.io/docs/cli/diff-arguments/).
+- **What `diff A B` Reads.** How `diff` tells a kubeconfig context from a snapshot file or a directory, and what it does when a name is both. See [What diff A B Reads](https://setdrift.io/docs/cli/diff-arguments/).
 - **Snapshots.** What each export saves to `snapshots/`, why it stays out of Git, and how to compare against it later. See [Snapshots](https://setdrift.io/docs/cli/snapshots/).
 - **Output.** The layout of an export, platform identification, CRDs, Helm, storage, and exporting again. See [Output](https://setdrift.io/docs/cli/output/).
 - **Secrets.** How every secret value is dropped right after it is read and never stored, and the secret managers the ExternalSecrets can read from. See [Secrets](https://setdrift.io/docs/cli/secrets/).
 - **Permissions.** What `export`, `diff` and `verify` do with limited access, and the errors they give. See [Permissions](https://setdrift.io/docs/cli/permissions/).
-- **Source annotations.** The annotations a CI/CD pipeline stamps so its resources are not taken for ones applied by hand. See [Source annotations](https://setdrift.io/docs/cli/source-annotations/).
+- **Source Annotations.** The annotations a CI/CD pipeline stamps so its resources are not taken for ones applied by hand. See [Source Annotations](https://setdrift.io/docs/cli/source-annotations/).
 - **How it works.** The pipeline from collect to emit, and what each package does. See [How it works](https://setdrift.io/docs/cli/how-it-works/).
 - **Development.** Building, testing, golden and race tests. See [Development](https://setdrift.io/docs/cli/development/).
 - **Releasing.** Tagging a release, and what the release workflow publishes. See [Releasing](https://setdrift.io/docs/cli/releasing/).
