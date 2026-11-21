@@ -67,6 +67,8 @@ brews:
         url: git@github.com:setdrift/homebrew-tap.git
         private_key: "{{ .Env.HOMEBREW_TAP_DEPLOY_KEY }}"
     directory: Formula
+    # a pre-release (v0.2.0-rc.1) leaves the formula on the last stable release
+    skip_upload: auto
     commit_author:
       name: setdrift-release
       email: release@setdrift.io
