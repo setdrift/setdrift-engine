@@ -5,8 +5,8 @@ One command for each tool, for Intel/AMD and ARM:
 | Tool | Command |
 |---|---|
 | Homebrew (macOS, Linux) | `brew install setdrift/tap/setdrift` |
-| curl (macOS, Linux, WSL) | `curl -fsSL https://raw.githubusercontent.com/setdrift/setdrift-engine/main/scripts/install.sh \| sh` |
-| PowerShell (Windows) | `irm https://raw.githubusercontent.com/setdrift/setdrift-engine/main/scripts/install.ps1 \| iex` |
+| curl (macOS, Linux, WSL) | `curl -fsSL https://setdrift.io/install.sh \| sh` |
+| PowerShell (Windows) | `irm https://setdrift.io/install.ps1 \| iex` |
 | Go 1.27+ (any OS) | `go install setdrift.io/setdrift-engine/cmd/setdrift@latest` |
 
 ## The install scripts
