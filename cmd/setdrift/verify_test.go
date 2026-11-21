@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	goruntime "runtime"
 	"strings"
 	"testing"
 	"time"
@@ -121,7 +122,7 @@ func TestVerifyReportFiles(t *testing.T) {
 	at := time.Date(2026, 11, 20, 19, 14, 2, 0, time.UTC)
 	doc := verifyDocument{Cluster: "arn:aws:eks:us-east-2:111122223333:cluster/prod", Report: verify.Report{Total: 2, Clean: 1, Diffs: []verify.Diff{
 		{Ref: "ConfigMap shop/a", Kind: verify.KindChanged, Fields: []verify.Field{{Path: "data.k", Cluster: "x|y", Export: "z"}}}}}}
-	md, err := writeVerifyReport(dir, doc, at)
+	md, err := writeVerifyReport(dir, doc, at, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,7 +137,20 @@ func TestVerifyReportFiles(t *testing.T) {
 	if err := json.Unmarshal(raw, &back); err != nil || back.Report.Diffs[0].Fields[0].Cluster != "x|y" {
 		t.Errorf("json: %v %+v", err, back)
 	}
-	text, _ := os.ReadFile(md)
+	text, err := os.ReadFile(md)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if goruntime.GOOS != "windows" {
+		for _, f := range []string{md, strings.TrimSuffix(md, ".md") + ".json"} {
+			if fi, err := os.Stat(f); err != nil || fi.Mode().Perm() != 0o600 {
+				t.Errorf("%s: mode %v, %v; want 0600", filepath.Base(f), fi.Mode().Perm(), err)
+			}
+		}
+	}
+	if gi, err := os.ReadFile(filepath.Join(dir, ".gitignore")); err != nil || !strings.Contains(string(gi), "*") {
+		t.Errorf("verify/.gitignore = %q, %v; want the reports ignored", gi, err)
+	}
 	if !strings.Contains(string(text), "| `data.k` | `\"x\\|y\"` | `\"z\"` |") {
 		t.Errorf("markdown table:\n%s", text)
 	}

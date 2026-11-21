@@ -32,7 +32,16 @@ type SecretSource struct {
 // ExternalSecret for each, reading from x's store; the store itself, for AWS
 // in region (one per namespace for a SecretStore); a kustomization.yaml
 // listing them all; and a README. dir must be empty or not exist.
-func WriteExternalSecrets(dir string, x *ExternalSecrets, region string, secrets []SecretSource) error {
+func WriteExternalSecrets(dir string, x *ExternalSecrets, region string, secrets []SecretSource) (err error) {
+	out, err := openOutDir(dir)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if cerr := out.close(); err == nil {
+			err = cerr
+		}
+	}()
 	var files, namespaces []string
 	for _, s := range secrets {
 		if !slices.Contains(namespaces, s.Namespace) {
@@ -43,13 +52,13 @@ func WriteExternalSecrets(dir string, x *ExternalSecrets, region string, secrets
 	if x.StoreKind == "SecretStore" {
 		for _, ns := range namespaces {
 			f := "secret-store-" + SafeName(ns) + ".yaml"
-			if err := writeFile(filepath.Join(dir, f), []byte(x.awsStore(region, ns))); err != nil {
+			if err := out.write(f, []byte(x.awsStore(region, ns))); err != nil {
 				return err
 			}
 			files = append(files, f)
 		}
 	} else {
-		if err := writeFile(filepath.Join(dir, "secret-store.yaml"), []byte(x.awsStore(region, ""))); err != nil {
+		if err := out.write("secret-store.yaml", []byte(x.awsStore(region, ""))); err != nil {
 			return err
 		}
 		files = append(files, "secret-store.yaml")
@@ -58,12 +67,12 @@ func WriteExternalSecrets(dir string, x *ExternalSecrets, region string, secrets
 	var rows strings.Builder
 	for _, s := range secrets {
 		manifest := x.manifest(s)
-		out, err := yaml.Marshal(manifest)
+		b, err := yaml.Marshal(manifest)
 		if err != nil {
 			return err
 		}
 		f := filepath.ToSlash(filepath.Join("namespaces", SafeName(s.Namespace), SafeName(s.Name)+".yaml"))
-		if err := writeFile(filepath.Join(dir, filepath.FromSlash(f)), out); err != nil {
+		if err := out.write(filepath.FromSlash(f), b); err != nil {
 			return err
 		}
 		files = append(files, f)
@@ -73,7 +82,7 @@ func WriteExternalSecrets(dir string, x *ExternalSecrets, region string, secrets
 		}
 		fmt.Fprintf(&rows, "| %s/%s%s | `%s` | `%s` |\n", s.Namespace, s.Name, merge, s.RemoteKey, strings.Join(s.Keys, "`, `"))
 	}
-	if err := writeKustomization(dir, files); err != nil {
+	if err := out.writeKustomization(".", files); err != nil {
 		return err
 	}
 	storeLine := fmt.Sprintf("the %s `%s`, for %s in %s", x.StoreKind, x.StoreName, x.Provider, region)
@@ -90,5 +99,5 @@ func WriteExternalSecrets(dir string, x *ExternalSecrets, region string, secrets
 		"operator creates each Secret. Those marked *merge* add their keys to a\n" +
 		"Secret a controller creates (`creationPolicy: Merge`).\n\n" +
 		"| Secret | Remote secret | Keys |\n|---|---|---|\n" + rows.String()
-	return writeFile(filepath.Join(dir, "README.md"), []byte(readme))
+	return out.write("README.md", []byte(readme))
 }

@@ -207,6 +207,60 @@ func Values(v any) (any, []string) {
 	return v, paths
 }
 
+// FieldValue returns v, the value of a live object's field at path (as
+// diff writes paths: spec.template.spec.containers[web].env[DB_TOKEN].value),
+// with secret values replaced by Placeholder, using the same detection as
+// manifests: a value that is unmistakably a credential, or a plausible value
+// under a secret-like name (the field's own, or the name of the list item it
+// is in, as for an env var). For showing values read from a cluster, which
+// the redactor never saw, outside it. v is not changed.
+func FieldValue(path string, v any) any {
+	key, label := fieldNames(path)
+	if s, ok := v.(string); ok {
+		if matchValue(s) != "" || ((secretName(key) || secretName(label)) && plausibleValue(s)) {
+			return Placeholder
+		}
+		return s
+	}
+	out, _ := Values(deepCopy(v))
+	return out
+}
+
+// fieldNames returns the last key of path, and the label of the last list
+// item in it: "value" and "DB_TOKEN" for ...env[DB_TOKEN].value.
+func fieldNames(path string) (key, label string) {
+	key = path
+	if i := strings.LastIndexAny(path, ".]"); i >= 0 {
+		key = path[i+1:]
+	}
+	if i := strings.LastIndex(path, "["); i >= 0 {
+		if j := strings.Index(path[i:], "]"); j > 0 {
+			label = strings.Trim(path[i+1:i+j], `"`)
+		}
+	}
+	return key, label
+}
+
+// deepCopy copies decoded JSON, so walk's replacements don't change the
+// caller's value.
+func deepCopy(v any) any {
+	switch x := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(x))
+		for k, e := range x {
+			out[k] = deepCopy(e)
+		}
+		return out
+	case []any:
+		out := make([]any, len(x))
+		for i, e := range x {
+			out[i] = deepCopy(e)
+		}
+		return out
+	}
+	return v
+}
+
 // walk returns v with secret values replaced, calling redact for each.
 func walk(v any, path string, redact func(path, why string)) any {
 	switch n := v.(type) {

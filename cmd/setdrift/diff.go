@@ -264,7 +264,7 @@ func (o *diffOptions) resolve(arg string) (side, error) {
 	if fi.IsDir() {
 		return side{arg: arg, path: arg, dir: true}, nil
 	}
-	f, err := os.Open(arg)
+	f, err := os.Open(arg) //#nosec G304 -- a snapshot file the user named
 	if err != nil {
 		return side{}, readError(arg, err)
 	}
@@ -316,7 +316,7 @@ func (o *diffOptions) read(cmd *cobra.Command, sd side, namespaces []string) (*s
 		return onlyNamespaces(s, namespaces), true, nil
 	}
 	fmt.Fprintf(cmd.ErrOrStderr(), "Reading %s...\n", sd.context)
-	src, err := openCluster(cmd.Context(), clusterTarget{kubeconfig: o.kubeconfig, context: sd.context, namespaces: namespaces})
+	src, err := openCluster(cmd.Context(), clusterTarget{kubeconfig: o.kubeconfig, context: sd.context, namespaces: namespaces}, cmd.ErrOrStderr())
 	if err != nil {
 		return nil, false, fmt.Errorf("context %s: %w", sd.context, err)
 	}

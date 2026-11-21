@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -155,5 +156,28 @@ func TestFileSourceSkipsExportRecords(t *testing.T) {
 	sort.Strings(names)
 	if strings.Join(names, ",") != "app-snapshots,in-export" {
 		t.Errorf("read %v, want app-snapshots and in-export", names)
+	}
+}
+
+// A symlink in the directory is not followed: it could lead to a file
+// outside it.
+func TestFileSourceSkipsSymlinks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks need privileges on Windows")
+	}
+	outside := filepath.Join(t.TempDir(), "outside.yaml")
+	if err := os.WriteFile(outside, []byte("apiVersion: v1\nkind: ConfigMap\nmetadata: {name: outside, namespace: shop}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dir := writeFiles(t, map[string]string{"in.yaml": "apiVersion: v1\nkind: ConfigMap\nmetadata: {name: in, namespace: shop}\n"})
+	if err := os.Symlink(outside, filepath.Join(dir, "link.yaml")); err != nil {
+		t.Fatal(err)
+	}
+	res, err := collect.FileSource{Dir: dir}.Collect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Objects) != 1 || res.Objects[0].GetName() != "in" {
+		t.Errorf("read %d objects, want only the ConfigMap in the directory", len(res.Objects))
 	}
 }

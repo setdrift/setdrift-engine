@@ -26,7 +26,7 @@ import (
 // it did.
 // volumes writes the step that brings the volumes' data over, and
 // restore/volumes/; it reports whether it wrote any volume.
-func (d *restoreData) volumes(p *playbook, root string) (bool, error) {
+func (d *restoreData) volumes(p *playbook, out *outDir) (bool, error) {
 	vols := d.s.GetInventory().GetVolumes()
 	if len(vols) == 0 {
 		return false, nil
@@ -47,11 +47,11 @@ func (d *restoreData) volumes(p *playbook, root string) (bool, error) {
 		if v.StatefulSet != "" {
 			claim += " (StatefulSet " + v.StatefulSet + ")"
 		}
-		p.printf("| %s | %s | %s | `%s` | %s | %s |\n", claim, v.Capacity, v.StorageClass, cmp.Or(v.VolumeHandle, "-"), cmp.Or(v.Zone, "-"), v.ReclaimPolicy)
+		p.printf("| %s | %s | %s | `%s` | %s | %s |\n", cell(claim), cell(v.Capacity), cell(v.StorageClass), cell(cmp.Or(v.VolumeHandle, "-")), cell(cmp.Or(v.Zone, "-")), cell(v.ReclaimPolicy))
 	}
 	p.printf("\n")
 
-	ebs, local, wrote, err := writeVolumes(root, vols)
+	ebs, local, wrote, err := writeVolumes(out, vols)
 	if err != nil {
 		return false, err
 	}
@@ -71,7 +71,7 @@ func (d *restoreData) volumes(p *playbook, root string) (bool, error) {
 // writeVolumes writes restore/volumes/: a volume and its claim for each
 // volume another cluster can reach. It returns the EBS volumes, the claims
 // whose data stays on a node, and how many it wrote.
-func writeVolumes(root string, vols []*snapshotv1alpha1.Volume) (ebs []*snapshotv1alpha1.Volume, local []string, wrote int, err error) {
+func writeVolumes(out *outDir, vols []*snapshotv1alpha1.Volume) (ebs []*snapshotv1alpha1.Volume, local []string, wrote int, err error) {
 	// local: claims whose volume is not a CSI volume (hostPath, local), so its data stays on a node
 	for _, v := range vols {
 		if v.VolumeHandle == "" || v.Driver == "" {
@@ -85,7 +85,7 @@ func writeVolumes(root string, vols []*snapshotv1alpha1.Volume) (ebs []*snapshot
 		if err != nil {
 			return nil, nil, 0, err
 		}
-		if err := writeFile(filepath.Join(root, restoreDir, "volumes", SafeName(v.Namespace), SafeName(v.Claim)+".yaml"), pv); err != nil {
+		if err := out.write(filepath.Join(restoreDir, "volumes", SafeName(v.Namespace), SafeName(v.Claim)+".yaml"), pv); err != nil {
 			return nil, nil, 0, err
 		}
 		wrote++
@@ -147,7 +147,7 @@ func (d *restoreData) ebsSteps(p *playbook, ebs []*snapshotv1alpha1.Volume) {
 	var snaps []string
 	for _, v := range ebs {
 		snaps = append(snaps, fmt.Sprintf(`aws ec2 create-snapshot --region "$REGION" --volume-id %s --description %s --query SnapshotId --output text > %s`,
-			v.VolumeHandle, text.ShellQuote("setdrift restore "+v.Namespace+"/"+v.Claim), text.ShellQuote(snapshotFile(v))))
+			text.ShellQuote(v.VolumeHandle), text.ShellQuote("setdrift restore "+v.Namespace+"/"+v.Claim), text.ShellQuote(snapshotFile(v))))
 	}
 	q.code(snaps...)
 	q.printf("**EBS volumes.** Either reuse each volume (same account and region, once\n" +
@@ -163,7 +163,7 @@ func (d *restoreData) ebsSteps(p *playbook, ebs []*snapshotv1alpha1.Volume) {
 	if len(autoMode) > 0 {
 		q.printf("EKS Auto Mode only attaches volumes tagged with its cluster's name. The\n" +
 			"copies above are tagged; when reusing a volume instead, tag it:\n\n")
-		q.code(fmt.Sprintf(`aws ec2 create-tags --region "$REGION" --resources %s --tags Key=eks:eks-cluster-name,Value="$DST_CLUSTER"`, strings.Join(autoMode, " ")))
+		q.code(fmt.Sprintf(`aws ec2 create-tags --region "$REGION" --resources %s --tags Key=eks:eks-cluster-name,Value="$DST_CLUSTER"`, strings.Join(text.ShellQuoteAll(autoMode), " ")))
 		q.printf("If the new cluster uses another EBS CSI driver than the source (Auto Mode's\n" +
 			"`ebs.csi.eks.amazonaws.com` or the add-on's `ebs.csi.aws.com`), change\n" +
 			"`driver:` in the files.\n\n")
@@ -183,7 +183,8 @@ func ebsCopyCommands(ebs []*snapshotv1alpha1.Volume) []string {
 		if az == "" {
 			az = "<zone>"
 		}
-		create := fmt.Sprintf(`NEW=$(aws ec2 create-volume --region "$REGION" --snapshot-id "$SNAP" --availability-zone %s --volume-type %s`, az, cmp.Or(v.GetAws().GetVolumeType(), "gp3"))
+		create := fmt.Sprintf(`NEW=$(aws ec2 create-volume --region "$REGION" --snapshot-id "$SNAP" --availability-zone %s --volume-type %s`,
+			text.ShellQuote(az), text.ShellQuote(cmp.Or(v.GetAws().GetVolumeType(), "gp3")))
 		if a := v.GetAws(); a != nil {
 			if a.Iops > 0 && (a.VolumeType == "gp3" || strings.HasPrefix(a.VolumeType, "io")) {
 				create += fmt.Sprintf(" --iops %d", a.Iops)
@@ -203,7 +204,7 @@ func ebsCopyCommands(ebs []*snapshotv1alpha1.Volume) []string {
 		}
 		create += " --query VolumeId --output text)"
 		lines = append(lines,
-			"# "+v.Namespace+"/"+v.Claim,
+			"# "+comment(v.Namespace+"/"+v.Claim),
 			fmt.Sprintf(`SNAP=$(cat %s)`, text.ShellQuote(snapshotFile(v))),
 			`aws ec2 wait snapshot-completed --region "$REGION" --snapshot-ids "$SNAP"`,
 			create,
@@ -250,7 +251,7 @@ func namespacesOf(vols []*snapshotv1alpha1.Volume) []string {
 // storageClasses: the classes claims ask for, which the target must have.
 // It writes restore/storageclasses/ with the source's definition of each,
 // including those the platform created (EKS's gp2).
-func (d *restoreData) storageClasses(p *playbook, root string) error {
+func (d *restoreData) storageClasses(p *playbook, out *outDir) error {
 	used := map[string]bool{}
 	for _, v := range d.s.GetInventory().GetVolumes() {
 		if v.StorageClass != "" {
@@ -296,16 +297,16 @@ func (d *restoreData) storageClasses(p *playbook, root string) error {
 				}
 			}
 		}
-		out, err := yaml.Marshal(m)
+		b, err := yaml.Marshal(m)
 		if err != nil {
 			return err
 		}
 		file := filepath.ToSlash(filepath.Join(restoreDir, "storageclasses", SafeName(name)+".yaml"))
-		if err := writeFile(filepath.Join(root, file), out); err != nil {
+		if err := out.write(filepath.FromSlash(file), b); err != nil {
 			return err
 		}
-		lines = append(lines, fmt.Sprintf(`kubectl --context "$DST" get storageclass %s >/dev/null 2>&1 || kubectl --context "$DST" apply -f %s   # provisioner %v`,
-			text.ShellQuote(name), text.ShellQuote(file), m["provisioner"]))
+		lines = append(lines, fmt.Sprintf(`kubectl --context "$DST" get storageclass %s >/dev/null 2>&1 || kubectl --context "$DST" apply -f %s   # provisioner %s`,
+			text.ShellQuote(name), text.ShellQuote(file), comment(fmt.Sprint(m["provisioner"]))))
 	}
 	if len(lines) > 0 {
 		p.code(lines...)

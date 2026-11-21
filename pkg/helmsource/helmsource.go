@@ -52,13 +52,39 @@ func CheckRepoURL(repo string) error {
 	return nil
 }
 
+// maxRendered bounds what Annotate reads: Helm's rendered output for one
+// release is far smaller, and everything read is held until it is written.
+const maxRendered = 64 << 20
+
+// errTooLarge is the error Annotate returns past maxRendered.
+var errTooLarge = fmt.Errorf("rendered manifests larger than %d MiB", maxRendered>>20)
+
+// cappedReader reads from r until n bytes have been read, then fails.
+type cappedReader struct {
+	r io.Reader
+	n int64
+}
+
+func (c *cappedReader) Read(p []byte) (int, error) {
+	if c.n <= 0 {
+		return 0, errTooLarge
+	}
+	if int64(len(p)) > c.n {
+		p = p[:c.n]
+	}
+	n, err := c.r.Read(p)
+	c.n -= int64(n)
+	return n, err
+}
+
 // Annotate copies the YAML documents in r to w, adding ChartRepo=repo to
-// each object's metadata.annotations.
+// each object's metadata.annotations. It reads at most 64 MiB.
 func Annotate(r io.Reader, w io.Writer, repo string) error {
 	if err := CheckRepoURL(repo); err != nil {
 		return err
 	}
-	dec := yamlv3.NewDecoder(r)
+	// one byte past the limit, so input of exactly the limit still reads to EOF
+	dec := yamlv3.NewDecoder(&cappedReader{r: r, n: maxRendered + 1})
 	var out bytes.Buffer
 	enc := yamlv3.NewEncoder(&out)
 	enc.SetIndent(2)

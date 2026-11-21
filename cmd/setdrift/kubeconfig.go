@@ -12,6 +12,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"net"
 	"os"
@@ -59,7 +60,7 @@ func explainKubeconfig(err error, rules *clientcmd.ClientConfigLoadingRules, raw
 		case statErr == nil && fi.IsDir():
 			return fmt.Errorf("%s %s is a directory, not a kubeconfig file: give the file in it, e.g. %s", source, p, filepath.Join(p, "config"))
 		case statErr == nil:
-			f, openErr := os.Open(p)
+			f, openErr := os.Open(p) //#nosec G304 -- the user's kubeconfig
 			if errors.Is(openErr, os.ErrPermission) {
 				return fmt.Errorf("%s %s: can't read it (permission denied). Check its owner and mode with `ls -l %s`; "+
 					"a kubeconfig is normally readable by you only: chmod 600 %s", source, p, text.ShellQuote(p), text.ShellQuote(p))
@@ -126,6 +127,16 @@ func listContexts(names []string) string {
 		return strings.Join(names[:10], ", ") + fmt.Sprintf(" and %d more (`kubectl config get-contexts`)", len(names)-10)
 	}
 	return strings.Join(names, ", ")
+}
+
+// warnInsecure warns when the context turns off the API server's
+// certificate check (insecure-skip-tls-verify): what the export or verify
+// reads then comes from whatever answers at that address.
+func warnInsecure(w io.Writer, kc *kubeContext) {
+	if kc.config.Insecure {
+		fmt.Fprintf(w, "warning: context %s skips the API server's certificate check (insecure-skip-tls-verify): "+
+			"anything on the network path to %s could answer in the cluster's place\n", kc.name, kc.config.Host)
+	}
 }
 
 // checkReachable asks the API server its version, with a short timeout, so

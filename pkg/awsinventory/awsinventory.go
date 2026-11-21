@@ -147,6 +147,14 @@ func podIdentity(ctx context.Context, c EKS, cluster string, inv *snapshotv1alph
 	})
 }
 
+// arnAccount returns the account of an ARN, arn:<partition>:<service>:<region>:<account>:..., or "".
+func arnAccount(arn string) string {
+	if parts := strings.SplitN(arn, ":", 6); len(parts) == 6 && parts[0] == "arn" {
+		return parts[4]
+	}
+	return ""
+}
+
 // trustPolicy is the part of an IAM trust policy iamRoles reads.
 type trustPolicy struct {
 	Statement []struct {
@@ -168,6 +176,14 @@ func iamRoles(ctx context.Context, c IAM, roles map[string]bool, inv *snapshotv1
 	}
 	sort.Strings(arns)
 	for _, arn := range arns {
+		// Only roles in the cluster's own account are read. A ServiceAccount
+		// annotation can name any role ARN, and anyone who can write one in a
+		// namespace could otherwise have the export read, and record, the
+		// trust policy of a role they choose.
+		if account := arnAccount(arn); inv.AccountId != "" && account != inv.AccountId {
+			fail("IAM role "+arn, fmt.Errorf("not read: account %s is not the cluster's (%s)", account, inv.AccountId))
+			continue
+		}
 		name := arn[strings.LastIndex(arn, "/")+1:]
 		out, err := c.GetRole(ctx, &iam.GetRoleInput{RoleName: aws.String(name)})
 		if err != nil {

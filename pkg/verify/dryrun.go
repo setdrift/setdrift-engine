@@ -27,10 +27,12 @@ import (
 	"k8s.io/client-go/dynamic"
 	"sigs.k8s.io/kustomize/api/krusty"
 	"sigs.k8s.io/kustomize/kyaml/filesys"
+	"sigs.k8s.io/yaml"
 
 	"setdrift.io/setdrift-engine/internal/kube"
 	sdiff "setdrift.io/setdrift-engine/pkg/diff"
 	"setdrift.io/setdrift-engine/pkg/emit/kustomize"
+	"setdrift.io/setdrift-engine/pkg/redact"
 )
 
 // FieldManager is the field manager of the dry-run applies.
@@ -129,6 +131,9 @@ func (v DryRunVerifier) Verify(ctx context.Context, repoDir string) (*Report, er
 	if err != nil {
 		return nil, err
 	}
+	if err := localOnly(root); err != nil {
+		return nil, err
+	}
 	objs, err := build(filepath.Join(root, filepath.FromSlash(v.Set)))
 	if err != nil {
 		return nil, err
@@ -217,6 +222,55 @@ func ClusterRoot(dir string) (string, error) {
 		dirs = append(dirs, filepath.Dir(m))
 	}
 	return "", fmt.Errorf("%s holds %d clusters; verify one of them:\n  %s", dir, len(dirs), strings.Join(dirs, "\n  "))
+}
+
+// localOnly refuses an export whose kustomizations pull in anything remote:
+// kustomize would clone it (running git) and build it, so verifying a
+// directory someone changed could fetch and apply-check code from anywhere.
+// An export only ever lists its own files.
+func localOnly(root string) error {
+	return filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		switch d.Name() {
+		case "kustomization.yaml", "kustomization.yml", "Kustomization":
+		default:
+			return nil
+		}
+		if d.Type()&fs.ModeSymlink != 0 {
+			return fmt.Errorf("%s is a symlink: an export's kustomizations are files", path)
+		}
+		b, err := os.ReadFile(path) //#nosec G304,G122 -- a file in the directory the user asked to verify
+		if err != nil {
+			return err
+		}
+		var k struct {
+			Resources  []string `json:"resources"`
+			Components []string `json:"components"`
+			Bases      []string `json:"bases"`
+		}
+		if err := yaml.Unmarshal(b, &k); err != nil {
+			return fmt.Errorf("%s: %w", path, err)
+		}
+		for _, ref := range append(append(k.Resources, k.Components...), k.Bases...) {
+			if remoteRef(ref) {
+				return fmt.Errorf("%s lists %s, which is not a file of the export: verify builds only local files", path, ref)
+			}
+		}
+		return nil
+	})
+}
+
+// remoteRef reports whether a kustomization entry names something remote:
+// a URL, a git repository or a hosted repository path.
+func remoteRef(ref string) bool {
+	for _, marker := range []string{"://", "?ref=", "git@", "github.com/", "gitlab.com/", "bitbucket.org/"} {
+		if strings.Contains(ref, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // build returns the objects the kustomization in root builds, as kubectl
@@ -316,7 +370,10 @@ func (v DryRunVerifier) check(ctx context.Context, obj *unstructured.Unstructure
 			d.Paths = append(d.Paths, f.Path)
 		}
 		if i < maxFields {
-			d.Fields = append(d.Fields, Field{Path: f.Path, Cluster: f.A, Export: f.B, SetBy: owned.owners(f.Keys)})
+			// the live value never went through the redactor: a secret in it is
+			// replaced before it reaches the terminal or the report
+			d.Fields = append(d.Fields, Field{Path: f.Path, Cluster: redact.FieldValue(f.Path, f.A), Export: redact.FieldValue(f.Path, f.B),
+				SetBy: owned.owners(f.Keys)})
 		}
 	}
 	if len(fields) > maxPaths {

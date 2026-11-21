@@ -112,6 +112,7 @@ func (o *verifyOptions) run(cmd *cobra.Command, dir string) error {
 	if err != nil {
 		return err
 	}
+	warnInsecure(cmd.ErrOrStderr(), kc)
 	if err := checkReachable(cmd.Context(), kc); err != nil {
 		return err
 	}
@@ -197,11 +198,11 @@ func (o *verifyOptions) run(cmd *cobra.Command, dir string) error {
 
 	printVerify(w, doc, root, kc.name)
 	if !o.noReport {
-		out := o.output
+		out, ignore := o.output, false
 		if out == "" {
-			out = filepath.Join(dir, "verify")
+			out, ignore = filepath.Join(dir, "verify"), true
 		}
-		md, err := writeVerifyReport(out, doc, started)
+		md, err := writeVerifyReport(out, doc, started, ignore)
 		if err != nil {
 			return fmt.Errorf("writing the report: %w", err)
 		}

@@ -78,7 +78,7 @@ func createEmptySteps(p *playbook, fill []writtenFile) {
 	var lines, nss []string
 	for _, w := range fill {
 		lines = append(lines, fmt.Sprintf(`kubectl --context "$DST" apply --server-side --field-manager=setdrift-restore -f %s   # filled in by %s`,
-			text.ShellQuote(w.path), controllersOf(w.resource)))
+			text.ShellQuote(w.path), comment(controllersOf(w.resource))))
 		if !slices.Contains(nss, w.resource.Namespace) {
 			nss = append(nss, w.resource.Namespace)
 		}
@@ -139,16 +139,18 @@ func copyFromSource(p *playbook, redacted []writtenFile) {
 				if red.Reason == snapshotv1alpha1.RedactionReason_REDACTION_REASON_SECRET_VALUE {
 					field, key, _ := strings.Cut(red.Path, ".")
 					if field == "data" || field == "stringData" {
-						keys = append(keys, fmt.Sprintf(`%q: .data[%q]`, key, key))
+						k := jqString(key)
+						keys = append(keys, k+": .data["+k+"]")
 					}
 				}
 			}
-			lines = append(lines, fmt.Sprintf(`kubectl --context "$SRC" -n %s get secret %s -o json | jq '{apiVersion: "v1", kind: "Secret", metadata: {name: .metadata.name, namespace: .metadata.namespace}, data: {%s}}' | kubectl --context "$DST" apply --server-side --field-manager=setdrift-restore -f -   # merge`,
-				text.ShellQuote(r.Namespace), text.ShellQuote(r.Name), strings.Join(keys, ", ")))
+			program := `{apiVersion: "v1", kind: "Secret", metadata: {name: .metadata.name, namespace: .metadata.namespace}, data: {` + strings.Join(keys, ", ") + `}}`
+			lines = append(lines, fmt.Sprintf(`kubectl --context "$SRC" -n %s get secret %s -o json | jq %s | kubectl --context "$DST" apply --server-side --field-manager=setdrift-restore -f -   # merge`,
+				text.ShellQuote(r.Namespace), text.ShellQuote(r.Name), text.ShellQuote(program)))
 			continue
 		}
 		lines = append(lines, fmt.Sprintf(`kubectl --context "$SRC" -n %s get %s %s -o json | jq 'del(.metadata.uid, .metadata.resourceVersion, .metadata.creationTimestamp, .metadata.managedFields, .metadata.ownerReferences, .metadata.annotations["kubectl.kubernetes.io/last-applied-configuration"], .status)' | kubectl --context "$DST" apply --server-side --field-manager=setdrift-restore -f -`,
-			text.ShellQuote(r.Namespace), strings.ToLower(KindDir(r.ApiVersion, r.Kind)), text.ShellQuote(r.Name)))
+			text.ShellQuote(r.Namespace), text.ShellQuote(strings.ToLower(KindDir(r.ApiVersion, r.Kind))), text.ShellQuote(r.Name)))
 	}
 	p.code(lines...)
 }
@@ -197,7 +199,7 @@ func (d *restoreData) externalSecretsSteps(p *playbook) {
 		"secrets the README lists, with their keys:\n\n")
 	if d.secretService == serviceSecretsManager || d.secretService == serviceParameterStore {
 		// source cluster, read-only; checks everything, then writes to AWS and rewrites external-secrets/ to match
-		p.code(d.secretsExportCommand(d.region)...)
+		p.code(d.secretsExportCommand(text.ShellQuote(d.region))...)
 	}
 	p.code(`kubectl --context "$DST" apply -k external-secrets/`)
 	// The AWS commands that create the remote secrets, for a new cluster on AWS.
@@ -228,10 +230,10 @@ func (d *restoreData) awsRemoteSecrets(q *playbook) {
 		value := text.ShellQuote("{" + strings.Join(props, ",") + "}")
 		if d.secretService == serviceParameterStore {
 			lines = append(lines, fmt.Sprintf(`aws ssm put-parameter --region "$REGION" --type SecureString --name %s --value %s   # replaces %s`,
-				text.ShellQuote(r.key), value, r.secret))
+				text.ShellQuote(r.key), value, comment(r.secret)))
 		} else {
 			lines = append(lines, fmt.Sprintf(`aws secretsmanager create-secret --region "$REGION" --name %s --secret-string %s   # replaces %s`,
-				text.ShellQuote(r.key), value, r.secret))
+				text.ShellQuote(r.key), value, comment(r.secret)))
 		}
 	}
 	q.code(lines...)
@@ -263,8 +265,8 @@ func (d *restoreData) secretsExportCommand(region string) []string {
 	return []string{
 		`setdrift secrets export --aws redacted \`,
 		`  --context "$SRC" --region ` + region + ` \`,
-		`  --secret-manager ` + x.ID + ` --secret-key-template ` + text.ShellQuote(x.KeyTemplate) + ` \`,
-		`  --store-kind ` + x.StoreKind + ` --store-name ` + x.StoreName + ` \`,
+		`  --secret-manager ` + text.ShellQuote(x.ID) + ` --secret-key-template ` + text.ShellQuote(x.KeyTemplate) + ` \`,
+		`  --store-kind ` + text.ShellQuote(x.StoreKind) + ` --store-name ` + text.ShellQuote(x.StoreName) + ` \`,
 		`  --external-secrets-out external-secrets --force`,
 	}
 }
@@ -431,6 +433,12 @@ func ecrNote(p *playbook, redacted []writtenFile) {
 		"(AmazonEC2ContainerRegistryReadOnly) pulls from its own account, and from\n"+
 		"other accounts whose repository policy allows it.\n\n",
 		strings.Join(names, ", "), text.Choose(len(names) == 1, "holds", "hold"), strings.Join(hosts, "`, `"))
+}
+
+// jqString writes s as a jq (JSON) string literal.
+func jqString(s string) string {
+	b, _ := json.Marshal(s) // a string always marshals
+	return string(b)
 }
 
 // countNonSecrets counts the files that are not Secrets.

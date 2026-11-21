@@ -232,14 +232,16 @@ func TestECRRegistries(t *testing.T) {
 
 // Redacted add-on configuration is named under the add-on commands, with the
 // command that reads the real values from the source.
-func TestAddonConfigRedactions(t *testing.T) {
+// Add-on configuration values never go into RESTORE.md, redacted or not:
+// each command reads them from the source add-on as it runs.
+func TestAddonConfigNotWritten(t *testing.T) {
 	s := &snapshotv1alpha1.Snapshot{
 		Cluster:  &snapshotv1alpha1.Cluster{Name: "prod", Platform: "eks", ProviderId: "arn:aws:eks:us-east-2:111122223333:cluster/prod"},
 		Producer: &snapshotv1alpha1.Producer{Version: "test"},
 		Inventory: &snapshotv1alpha1.Inventory{Aws: &snapshotv1alpha1.AwsInventory{ClusterName: "prod", Region: "us-east-2", Addons: []*snapshotv1alpha1.Addon{
 			{Name: "agent", Version: "v1", ConfigurationValues: `{"apiKey":"SETDRIFT_REDACTED","site":"eu"}`, ConfigurationRedactions: []string{"apiKey"}},
-			{Name: "broken", Version: "v1", ConfigurationValues: "SETDRIFT_REDACTED"},
-			{Name: "plain", Version: "v1", ConfigurationValues: `{"replicas":2}`},
+			{Name: "plain", Version: "v1", ConfigurationValues: `{"replicas":2,"token":"missed-by-the-patterns"}`},
+			{Name: "none", Version: "v1"},
 		}}},
 	}
 	dir := t.TempDir()
@@ -247,19 +249,21 @@ func TestAddonConfigRedactions(t *testing.T) {
 		t.Fatal(err)
 	}
 	root := ClusterDir(dir, "prod")
-	b := []byte(readFile(t, root, "RESTORE.md") + readFile(t, root, "platform/aws/eks/RESTORE.md"))
-	md := string(b)
-	for _, want := range []string{
-		"configuration values of `agent` hold what look like secrets", "`apiKey`",
-		"--addon-name agent --query addon.configurationValues",
-		"configuration values of `broken` did not parse",
-	} {
-		if !strings.Contains(md, want) {
-			t.Errorf("RESTORE.md lacks %q", want)
+	md := readFile(t, root, "RESTORE.md") + readFile(t, root, "platform/aws/eks/RESTORE.md")
+	for _, leaked := range []string{"site", "replicas", "missed-by-the-patterns", "SETDRIFT_REDACTED"} {
+		if strings.Contains(md, leaked) {
+			t.Errorf("RESTORE.md holds the configuration value %q", leaked)
 		}
 	}
-	if strings.Contains(md, "values of `plain`") {
-		t.Error("note for an add-on with nothing redacted")
+	for _, name := range []string{"agent", "plain"} {
+		lookup := `CONFIG=$(aws eks describe-addon --region "$REGION" --cluster-name prod --addon-name ` + name + ` --query addon.configurationValues --output text)`
+		create := `--addon-name ` + name + ` --addon-version v1 --configuration-values "$CONFIG"`
+		if !strings.Contains(md, lookup) || !strings.Contains(md, create) {
+			t.Errorf("RESTORE.md lacks the lookup for %s:\n%s", name, md)
+		}
+	}
+	if strings.Contains(md, "--addon-name none --query") {
+		t.Error("a configuration lookup for an add-on with none")
 	}
 }
 

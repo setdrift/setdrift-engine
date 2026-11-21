@@ -62,12 +62,13 @@ func LoadRedacted(dir string) (*Folder, error) {
 		if err != nil {
 			return err
 		}
-		if d.IsDir() || !strings.HasSuffix(path, RedactedExt) {
+		// a symlink is not followed: it could lead out of the folder
+		if d.IsDir() || d.Type()&fs.ModeSymlink != 0 || !strings.HasSuffix(path, RedactedExt) {
 			return nil
 		}
-		rel, _ := filepath.Rel(dir, path)
+		rel, _ := filepath.Rel(dir, path) // path is under dir: cannot fail
 		rel = filepath.ToSlash(rel)
-		b, err := os.ReadFile(path)
+		b, err := os.ReadFile(path) //#nosec G304,G122 -- a regular file (symlinks skipped above) in the folder the user named
 		if err != nil {
 			return err
 		}

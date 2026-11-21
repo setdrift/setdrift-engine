@@ -176,22 +176,41 @@ func CanonicalRepo(repo string) string {
 	if _, rest, ok := strings.Cut(r, "://"); ok {
 		r = rest
 	}
-	if at := strings.LastIndex(r, "@"); at >= 0 && at < strings.Index(r+"/", "/") {
+	// the last "@" of the host part: an "@" in the path is not userinfo
+	if at := strings.LastIndex(r[:strings.Index(r+"/", "/")], "@"); at >= 0 {
 		r = r[at+1:]
 	}
 	host, path, ok := strings.Cut(r, "/")
 	if !ok || path == "" {
-		return strings.TrimSpace(repo)
+		return withoutUserinfo(repo)
 	}
 	host = strings.ToLower(host)
 	if full, ok := repoHosts[host]; ok {
 		host = full
 	}
 	if !strings.Contains(host, ".") && !strings.Contains(host, ":") {
-		// no host named: keep it as written
-		return strings.TrimSpace(repo)
+		// no host named: keep it as written, but for credentials
+		return withoutUserinfo(repo)
 	}
 	return "https://" + host + "/" + strings.TrimSuffix(path, "/")
+}
+
+// withoutUserinfo returns repo, trimmed, without what precedes an "@" in its
+// first path element ([scheme://]user:token@host/...).
+func withoutUserinfo(repo string) string {
+	r := strings.TrimSpace(repo)
+	start := 0
+	if i := strings.Index(r, "://"); i >= 0 {
+		start = i + len("://")
+	}
+	end := len(r)
+	if i := strings.Index(r[start:], "/"); i >= 0 {
+		end = start + i
+	}
+	if at := strings.LastIndex(r[start:end], "@"); at >= 0 {
+		r = r[:start] + r[start+at+1:]
+	}
+	return r
 }
 
 // SourceAnnotations are the CI/CD source annotations.

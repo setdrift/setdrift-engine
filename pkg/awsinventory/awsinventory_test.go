@@ -188,3 +188,33 @@ func TestCollectCanceled(t *testing.T) {
 		t.Errorf("got %v, want context.Canceled", err)
 	}
 }
+
+// recordingIAM records the roles GetRole was asked for.
+type recordingIAM struct{ asked *[]string }
+
+func (r recordingIAM) GetRole(ctx context.Context, in *iam.GetRoleInput, opts ...func(*iam.Options)) (*iam.GetRoleOutput, error) {
+	*r.asked = append(*r.asked, aws.ToString(in.RoleName))
+	return fakeIAM{}.GetRole(ctx, in, opts...)
+}
+
+// A ServiceAccount annotation naming a role in another account doesn't make
+// the export read that role: only the cluster's own account's roles are read.
+func TestRolesOfOtherAccountsNotRead(t *testing.T) {
+	snap := &snapshotv1alpha1.Snapshot{Cluster: &snapshotv1alpha1.Cluster{Name: "prod"},
+		Resources: []*snapshotv1alpha1.Resource{
+			{ApiVersion: "v1", Kind: "ServiceAccount", Namespace: "shop", Name: "web",
+				ManifestJson: `{"metadata":{"annotations":{"eks.amazonaws.com/role-arn":"arn:aws:iam::111122223333:role/web"}}}`},
+			{ApiVersion: "v1", Kind: "ServiceAccount", Namespace: "shop", Name: "spy",
+				ManifestJson: `{"metadata":{"annotations":{"eks.amazonaws.com/role-arn":"arn:aws:iam::999988887777:role/admin"}}}`},
+		}}
+	var asked []string
+	if err := Collect(context.Background(), Clients{EKS: fakeEKS{}, IAM: recordingIAM{&asked}, EC2: fakeEC2{}}, "prod", "us-east-2", snap); err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(asked, "admin") {
+		t.Errorf("read a role of another account: asked for %v", asked)
+	}
+	if errs := strings.Join(snap.GetInventory().GetAws().GetErrors(), "\n"); !strings.Contains(errs, "999988887777") {
+		t.Errorf("the skipped role is not recorded: %s", errs)
+	}
+}

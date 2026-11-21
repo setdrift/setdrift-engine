@@ -13,6 +13,7 @@ import (
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/rest"
 )
 
 func TestKubeconfigErrors(t *testing.T) {
@@ -89,5 +90,18 @@ func TestKubeconfigFileErrors(t *testing.T) {
 	}
 	if _, err := loadConfig("~/missing", ""); err == nil || !strings.Contains(err.Error(), filepath.Join(dir, "missing")+": no such file") {
 		t.Errorf("~: %v", err)
+	}
+}
+
+// A context that skips the certificate check is named in a warning.
+func TestWarnInsecure(t *testing.T) {
+	var b strings.Builder
+	warnInsecure(&b, &kubeContext{name: "dev", config: &rest.Config{Host: "https://k.example.com"}})
+	if b.Len() != 0 {
+		t.Errorf("warned for a verified context: %s", b.String())
+	}
+	warnInsecure(&b, &kubeContext{name: "dev", config: &rest.Config{Host: "https://k.example.com", TLSClientConfig: rest.TLSClientConfig{Insecure: true}}})
+	if !strings.Contains(b.String(), "context dev skips the API server's certificate check") {
+		t.Errorf("no warning: %q", b.String())
 	}
 }

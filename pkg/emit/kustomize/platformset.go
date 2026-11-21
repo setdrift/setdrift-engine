@@ -69,17 +69,17 @@ func resourceGroupKind(r *snapshotv1alpha1.Resource) schema.GroupKind {
 // platform serves, and its README. It lists the generic directories rather
 // than the cluster's directory: that contains this one, which Kustomize
 // rejects as a cycle.
-func writePlatformSet(root, dir string, cls *platform.Classification, generic, buckets []string, objects int) error {
+func writePlatformSet(out *outDir, dir string, cls *platform.Classification, generic, buckets []string, objects int) error {
 	up := strings.Repeat("../", strings.Count(dir, "/")+1)
 	var resources []string
 	for _, b := range generic {
 		resources = append(resources, up+b)
 	}
 	resources = append(resources, sortedCopy(buckets)...)
-	if err := writeKustomization(filepath.Join(root, dir), resources); err != nil {
+	if err := out.writeKustomization(dir, resources); err != nil {
 		return err
 	}
-	return writeFile(filepath.Join(root, dir, "README.md"), []byte(platformReadme(dir, cls, objects)))
+	return out.write(filepath.Join(dir, "README.md"), []byte(platformReadme(dir, cls, objects)))
 }
 
 // platformReadme explains a platform set.

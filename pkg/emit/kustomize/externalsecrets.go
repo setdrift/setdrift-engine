@@ -130,12 +130,12 @@ type remoteSecret struct {
 }
 
 // emit writes external-secrets/ for the redacted Secrets in resources, and returns the remote secrets they read.
-func (x *ExternalSecrets) emit(s *snapshotv1alpha1.Snapshot, resources []*snapshotv1alpha1.Resource, root, platDir string) ([]remoteSecret, error) {
+func (x *ExternalSecrets) emit(s *snapshotv1alpha1.Snapshot, resources []*snapshotv1alpha1.Resource, out *outDir, platDir string) ([]remoteSecret, error) {
 	tmpl, err := x.keyTemplate()
 	if err != nil {
 		return nil, fmt.Errorf("secret key template: %w", err)
 	}
-	var out []*snapshotv1alpha1.Resource
+	var ess []*snapshotv1alpha1.Resource
 	var remotes []remoteSecret
 	for _, r := range resources {
 		if r.ApiVersion != "v1" || r.Kind != "Secret" || !ReferenceOnly(r) {
@@ -146,11 +146,11 @@ func (x *ExternalSecrets) emit(s *snapshotv1alpha1.Snapshot, resources []*snapsh
 			return nil, fmt.Errorf("secret %s/%s: %w", r.Namespace, r.Name, err)
 		}
 		if es != nil {
-			out = append(out, es)
+			ess = append(ess, es)
 			remotes = append(remotes, remote)
 		}
 	}
-	if len(out) == 0 {
+	if len(ess) == 0 {
 		return nil, nil
 	}
 	// A template without .Namespace (or .Name) can give two Secrets one remote secret: one set of values for both.
@@ -164,32 +164,32 @@ func (x *ExternalSecrets) emit(s *snapshotv1alpha1.Snapshot, resources []*snapsh
 	}
 	sortRemotes(remotes)
 
-	paths, err := filePaths(out, externalSecretsDir)
+	paths, err := filePaths(ess, externalSecretsDir)
 	if err != nil {
 		return nil, err
 	}
 	var files []string
-	for i, r := range out {
+	for i, r := range ess {
 		path := filepath.Join(paths[i].bucket, paths[i].rel)
-		if _, err := writeManifest(filepath.Join(root, path), r); err != nil {
+		if _, err := out.writeManifest(path, r); err != nil {
 			return nil, err
 		}
-		rel, _ := filepath.Rel(externalSecretsDir, path)
+		rel, _ := filepath.Rel(externalSecretsDir, path) // path is under externalSecretsDir: cannot fail
 		files = append(files, filepath.ToSlash(rel))
 	}
 	sort.Strings(files)
-	if err := writeKustomization(filepath.Join(root, externalSecretsDir), files); err != nil {
+	if err := out.writeKustomization(externalSecretsDir, files); err != nil {
 		return nil, err
 	}
 	// The exact store for the source's cloud goes with the platform's files.
 	storeFile := ""
 	if x.Service != "" && strings.HasPrefix(platDir, awsDir) {
 		storeFile = filepath.ToSlash(filepath.Join(filepath.Dir(platDir), "secret-store.yaml"))
-		if err := writeFile(filepath.Join(root, storeFile), []byte(x.awsStore(region(s), ""))); err != nil {
+		if err := out.write(filepath.FromSlash(storeFile), []byte(x.awsStore(region(s), ""))); err != nil {
 			return nil, err
 		}
 	}
-	return remotes, writeFile(filepath.Join(root, externalSecretsDir, "README.md"), []byte(x.readme(s, remotes, storeFile)))
+	return remotes, out.write(filepath.Join(externalSecretsDir, "README.md"), []byte(x.readme(s, remotes, storeFile)))
 }
 
 // externalSecret builds the ExternalSecret for one redacted Secret: one remote secret per Kubernetes Secret, holding each key as a property.

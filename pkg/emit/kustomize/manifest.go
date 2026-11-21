@@ -8,6 +8,8 @@ package kustomize
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
+	"unicode"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
@@ -61,4 +63,22 @@ func labels(m map[string]any) map[string]string {
 // annotation returns one annotation of a decoded manifest.
 func annotation(m map[string]any, key string) string {
 	return str(m, "metadata", "annotations", key)
+}
+
+// comment makes s safe after "#" on a command line: control characters
+// (a newline would end the comment and start a command) become spaces.
+func comment(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, s)
+}
+
+// cell makes s safe inside a Markdown table cell, with or without
+// backticks: no "|" ends the cell, no backtick ends the code span, no line
+// break ends the row.
+func cell(s string) string {
+	return strings.NewReplacer("|", `\|`, "`", "'", "\n", " ", "\r", " ").Replace(s)
 }

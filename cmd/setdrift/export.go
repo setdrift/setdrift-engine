@@ -279,7 +279,8 @@ func (o *exportOptions) writeSnapshots(snap *snapshotv1alpha1.Snapshot, pb, js s
 		if err != nil {
 			return err
 		}
-		if err := os.MkdirAll(filepath.Dir(f.path), 0o755); err != nil {
+		// private, like the snapshots in it
+		if err := os.MkdirAll(filepath.Dir(f.path), 0o700); err != nil {
 			return err
 		}
 		if err := writePrivate(f.path, b); err != nil {
@@ -297,7 +298,7 @@ const gitignoreLine = "/" + snapshotsDir + "/"
 // creating it, unless it is there already.
 func ignoreSnapshots(out string) error {
 	path := filepath.Join(out, ".gitignore")
-	old, err := os.ReadFile(path)
+	old, err := os.ReadFile(path) //#nosec G304 -- the export's own .gitignore
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
@@ -310,10 +311,10 @@ func ignoreSnapshots(out string) error {
 	if len(old) > 0 && !strings.HasSuffix(string(old), "\n") {
 		add = "\n" + add
 	}
-	if err := os.MkdirAll(out, 0o755); err != nil {
+	if err := os.MkdirAll(out, 0o755); err != nil { //#nosec G301 -- the export's root, a Git repository
 		return err
 	}
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644) //#nosec G302,G304 -- the export's .gitignore, committed with it
 	if err != nil {
 		return err
 	}
@@ -367,7 +368,7 @@ func (o *exportOptions) open(cmd *cobra.Command) (*source, error) {
 		}
 		return src, nil
 	}
-	return openCluster(cmd.Context(), o.target())
+	return openCluster(cmd.Context(), o.target(), cmd.ErrOrStderr())
 }
 
 // target is the cluster the flags name.
@@ -400,13 +401,14 @@ type clusterTarget struct {
 
 // openCluster connects to the cluster t names, failing fast on a bad
 // kubeconfig, an unreachable cluster or bad AWS credentials.
-func openCluster(ctx context.Context, t clusterTarget) (*source, error) {
+func openCluster(ctx context.Context, t clusterTarget, stderr io.Writer) (*source, error) {
 	src := &source{plat: &platform.Stage{}, cluster: &snapshotv1alpha1.Cluster{Name: t.clusterName}}
 	c, kc, err := t.collector()
 	if err != nil {
 		return nil, err
 	}
 	src.collector, src.kc = c, kc
+	warnInsecure(stderr, kc)
 	applyContext(src.cluster, kc)
 	if t.aws {
 		// connect to AWS now, so bad credentials or a wrong cluster fail
@@ -540,13 +542,27 @@ func (t clusterTarget) connectAWS(ctx context.Context, kc *kubeContext) (*awsRea
 	return r, nil
 }
 
-// writePrivate writes a snapshot file only its owner can read (0o600); an
-// existing file gets that mode too.
-func writePrivate(path string, data []byte) error {
-	if err := os.WriteFile(path, data, 0o600); err != nil {
+// writePrivate writes a snapshot file only its owner can read (0o600),
+// replacing an existing one. It writes a new file, mode 0600 from the start, and renames it over path:
+// an existing file's looser mode never applies to the new contents, and a
+// failed write leaves the old file whole.
+func writePrivate(path string, data []byte) (err error) {
+	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*") // created 0600
+	if err != nil {
 		return err
 	}
-	return os.Chmod(path, 0o600)
+	defer func() {
+		if err != nil {
+			_ = os.Remove(f.Name()) // best effort: the error that matters is err
+		}
+	}()
+	if _, err := f.Write(data); err != nil {
+		return errors.Join(err, f.Close())
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(f.Name(), path)
 }
 
 // awsTarget is the EKS cluster name and region --aws reads: from the flags

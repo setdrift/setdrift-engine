@@ -90,7 +90,7 @@ func irsaSteps(q *playbook, roles []irsaRole, oldIssuer string) {
 		"the old issuer; to keep the source working too, add a statement instead.\n\n")
 	q.printf("| Service account | Role |\n|---|---|\n")
 	for _, r := range roles {
-		q.printf("| %s/%s | `%s` |\n", r.ns, r.sa, r.role)
+		q.printf("| %s/%s | `%s` |\n", cell(r.ns), cell(r.sa), cell(r.role))
 	}
 	q.printf("\n")
 	lines := []string{
@@ -145,7 +145,7 @@ func nonEKSRolesNote(p *playbook, roles []irsaRole) {
 		"Workload Identity, a Secret), or leave the annotation, which does nothing:\n\n")
 	p.printf("| Service account | Role |\n|---|---|\n")
 	for _, r := range roles {
-		p.printf("| %s/%s | `%s` |\n", r.ns, r.sa, r.role)
+		p.printf("| %s/%s | `%s` |\n", cell(r.ns), cell(r.sa), cell(r.role))
 	}
 	p.printf("\n")
 }
@@ -163,7 +163,7 @@ func (d *restoreData) awsIDsStep(p *playbook, ids []awsIDRef) {
 		"that differ before applying:\n\n")
 	q.printf("| ID | Where |\n|---|---|\n")
 	for _, id := range ids {
-		q.printf("| `%s` | %s |\n", id.id, id.where)
+		q.printf("| `%s` | %s |\n", cell(id.id), cell(id.where))
 	}
 	q.printf("\n")
 }

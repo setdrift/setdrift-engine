@@ -111,7 +111,7 @@ func (d *restoreData) helmSteps(p *playbook, releases map[string]*helmInstall) {
 		} else if r.version != "" {
 			chart += " " + r.version
 		}
-		p.printf("| %s | %s | %s | %d |\n", r.name, r.ns, chart, r.objects)
+		p.printf("| %s | %s | %s | %d |\n", cell(r.name), cell(r.ns), cell(chart), r.objects)
 	}
 	p.printf("\n")
 	lines, borrowed, noChart, unknown := d.helmInstallCommands(releases, keys)
@@ -137,8 +137,10 @@ func (d *restoreData) helmInstallCommands(releases map[string]*helmInstall, keys
 	gitops := gitopsChartRepos(d.s.GetResources(), &d.manifests)
 	for _, k := range keys {
 		r := releases[k]
-		chartName := cmp.Or(r.chart, "<chart>")
+		// the chart's name comes from a Helm release record or a label: quoted
+		chartName := text.ShellQuote(r.chart)
 		if r.chart == "" {
+			chartName = "<chart>"
 			noChart = append(noChart, r)
 		}
 		// helm install <release> <chart ref> [--repo <url>]
@@ -151,7 +153,7 @@ func (d *restoreData) helmInstallCommands(releases map[string]*helmInstall, keys
 		}
 		switch {
 		case strings.HasPrefix(repo, "oci://"):
-			chart = strings.TrimSuffix(repo, "/") + "/" + chartName
+			chart = text.ShellQuote(strings.TrimSuffix(repo, "/") + "/" + cmp.Or(r.chart, "<chart>"))
 		case repo != "":
 			chart = chartName + " --repo " + text.ShellQuote(repo)
 		default:

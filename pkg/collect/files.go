@@ -32,13 +32,20 @@ type FileSource struct {
 	Dir string
 }
 
-// Collect implements Collector.
-func (f FileSource) Collect(ctx context.Context) (*Result, error) {
+// manifestPaths lists the manifest files under f.Dir, refusing a
+// Kustomization that changes the files it lists.
+func (f FileSource) manifestPaths() ([]string, error) {
 	var paths []string
 	// standard tree traversal
 	err := filepath.WalkDir(f.Dir, func(path string, d fs.DirEntry, err error) error {
+
 		if err != nil {
 			return err
+		}
+		// A symlink is not followed: it could lead out of the directory
+		// read (WalkDir follows none to directories; this covers files).
+		if d.Type()&fs.ModeSymlink != 0 {
+			return nil
 		}
 		// Skip .git, .github and other dot-directories, so Dir can be a
 		// repository checkout.
@@ -75,6 +82,12 @@ func (f FileSource) Collect(ctx context.Context) (*Result, error) {
 		}
 		return nil
 	})
+	return paths, err
+}
+
+// Collect implements Collector.
+func (f FileSource) Collect(ctx context.Context) (*Result, error) {
+	paths, err := f.manifestPaths()
 	if err != nil {
 		return nil, err
 	}
@@ -141,7 +154,7 @@ func (e *KustomizeError) Error() string {
 // kustomization says why the Kustomization at path builds something other
 // than the files in the tree, or "" when it only lists them.
 func (f FileSource) kustomization(path string) (reason string, err error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //#nosec G304 -- a Kustomization in the directory the user named
 	if err != nil {
 		return "", err
 	}
@@ -190,18 +203,34 @@ func objectsWord(n int) string {
 	return "objects were"
 }
 
+// maxManifestFile caps the size of one manifest file: far above any real
+// one (Kubernetes caps an object at about 1.5 MiB), low enough that a stray
+// huge file can't exhaust memory.
+const maxManifestFile = 64 << 20
+
 // readFile reads the objects in a YAML or JSON file: each document, as an
 // object or a List of them.
 func readFile(path string) ([]*resource.Object, error) {
-	file, err := os.Open(path)
+	file, err := os.Open(path) //#nosec G304 -- a file in the directory the user named with --from-dir
 	if err != nil {
 		return nil, err
 	}
 	defer file.Close()
+	fi, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if fi.Size() > maxManifestFile {
+		return nil, fmt.Errorf("%d MiB, more than a manifest file can be (%d MiB)", fi.Size()>>20, maxManifestFile>>20)
+	}
+	return decodeManifests(io.LimitReader(file, maxManifestFile))
+}
 
+// decodeManifests decodes the objects in YAML or JSON documents.
+func decodeManifests(r io.Reader) ([]*resource.Object, error) {
 	var out []*resource.Object
 	// splits multi document files, --- delimiter
-	reader := utilyaml.NewYAMLReader(bufio.NewReader(file))
+	reader := utilyaml.NewYAMLReader(bufio.NewReader(r))
 	for n := 1; ; n++ {
 		// one document
 		doc, err := reader.Read()

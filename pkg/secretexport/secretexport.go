@@ -13,6 +13,9 @@
 // the user's own cloud credentials, and checks what the secret manager then
 // holds. Values are held in memory only, never written to disk or printed:
 // plans and reports show remote keys, property names and Secret names.
+// They are Go strings and byte slices from client-go and the AWS SDK, which
+// cannot be wiped: they stay in the process's memory until it exits (a run
+// is one short process), and a core dump of it would hold them.
 //
 // Remote secrets that already exist are skipped unless overwriting is asked
 // for; the plan says which.

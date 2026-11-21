@@ -122,7 +122,7 @@ func filledByController(o *resource.Object) {
 		strings.Join(tools, ", "), strings.Join(controllers, ", "))
 }
 
-const serviceAccountTokenType = "kubernetes.io/service-account-token"
+const serviceAccountTokenType = "kubernetes.io/service-account-token" //#nosec G101 -- a Secret type name, not a credential
 
 // redactMap replaces every value in o's field. Values are base64 in data.
 func redactMap(o *resource.Object, field string, encoded bool) {

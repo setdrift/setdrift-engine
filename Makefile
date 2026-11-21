@@ -13,9 +13,10 @@ LDFLAGS := -s -w \
 
 BUF_VERSION           := v1.75.0
 PROTOC_GEN_GO_VERSION := v1.36.12
+GOVULNCHECK_VERSION   := v1.10.0
 
 ## indicates target are command names not files
-.PHONY: build plugin helm-plugin test golden generate notices lint tools clean release-snapshot e2e-setup e2e-up e2e-ready e2e-populate e2e-restore e2e-status e2e-down
+.PHONY: build plugin helm-plugin test golden generate notices lint vulncheck tools clean release-snapshot e2e-setup e2e-up e2e-ready e2e-populate e2e-restore e2e-status e2e-down
 
 build: ## Build bin/setdrift
 	go build -ldflags "$(LDFLAGS)" -o $(BIN)/setdrift ./cmd/setdrift
@@ -45,7 +46,15 @@ lint: tools ## Lint Go and proto, and check license headers
 	$(BIN)/buf lint
 	bash scripts/check-license-headers.sh
 
+vulncheck: $(BIN)/govulncheck ## Scan the built CLI for known vulnerabilities in Go and its dependencies
+	go build -o $(BIN)/setdrift-vulncheck ./cmd/setdrift
+	@# binary mode: govulncheck's source mode can't yet load Go 1.27's standard library
+	$(BIN)/govulncheck -mode=binary $(BIN)/setdrift-vulncheck
+
 tools: $(BIN)/buf $(BIN)/protoc-gen-go
+
+$(BIN)/govulncheck:
+	GOBIN=$(BIN) go install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
 
 $(BIN)/buf:
 	GOBIN=$(BIN) go install github.com/bufbuild/buf/cmd/buf@$(BUF_VERSION)

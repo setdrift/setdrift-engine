@@ -33,7 +33,7 @@ type Repos struct {
 
 // LoadRepos reads and checks a --helm-repos file.
 func LoadRepos(path string) (*Repos, error) {
-	b, err := os.ReadFile(path)
+	b, err := os.ReadFile(path) //#nosec G304 -- the user's --helm-repos file
 	if err != nil {
 		return nil, err
 	}

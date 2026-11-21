@@ -128,7 +128,7 @@ func (c *Classification) Proto() *snapshotv1alpha1.Platform {
 	for _, e := range c.Evidence {
 		p.Evidence = append(p.Evidence, &snapshotv1alpha1.PlatformEvidence{
 			Source: e.Source, Detail: e.Detail, Distribution: string(e.Distribution),
-			Infrastructure: string(e.Infrastructure), Weight: int32(e.Weight),
+			Infrastructure: string(e.Infrastructure), Weight: int32(e.Weight), //#nosec G115 -- weights are small constants (2, 5, 10)
 		})
 	}
 	return p

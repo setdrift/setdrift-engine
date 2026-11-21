@@ -238,7 +238,10 @@ func TestForceReplacesClusterDir(t *testing.T) {
 	mine := filepath.Join(dir, "README.md")
 	other := filepath.Join(dir, "clusters", "other", "kustomization.yaml")
 	for _, f := range []string{mine, other} {
-		if err := writeFile(f, []byte("keep")); err != nil {
+		if err := os.MkdirAll(filepath.Dir(f), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(f, []byte("keep"), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -268,7 +271,10 @@ func TestFailedExportKeepsPrevious(t *testing.T) {
 		t.Fatal(err)
 	}
 	stale := filepath.Join(dir, "clusters", ".c.tmp-123")
-	if err := writeFile(filepath.Join(stale, "x.yaml"), []byte("left by a killed export")); err != nil {
+	if err := os.MkdirAll(stale, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stale, "x.yaml"), []byte("left by a killed export"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	bad := resource("ConfigMap", "shop", "b", false)
@@ -411,5 +417,49 @@ func TestAWSSecretStoreFile(t *testing.T) {
 	}
 	if !strings.Contains(string(b), "service: SecretsManager") || !strings.Contains(string(b), "region: us-east-2") {
 		t.Errorf("store:\n%s", b)
+	}
+}
+
+// A kind or group from the cluster or a manifest file can't make a path
+// that leaves the export: KindDir keeps it one directory name, and every
+// write goes through an os.Root on the export's directory.
+func TestPathsStayInsideExport(t *testing.T) {
+	for _, kind := range []string{"../../../../../../ESCAPED", "..", "a/b", `..\..\x`} {
+		if d := KindDir("v1", kind); strings.ContainsAny(d, `/\`) || strings.Trim(d, ".") == "" {
+			t.Errorf("KindDir(v1, %q) = %q, not one plain directory name", kind, d)
+		}
+	}
+	if d := KindDir("../../x/v1", "ConfigMap"); strings.ContainsAny(d, `/\`) {
+		t.Errorf("KindDir with a group of dots = %q", d)
+	}
+
+	parent := t.TempDir()
+	dir := filepath.Join(parent, "out")
+	r := resource("ConfigMap", "shop", "x", false)
+	r.Kind = "../../../../../../ESCAPED"
+	s := &snapshotv1alpha1.Snapshot{Cluster: &snapshotv1alpha1.Cluster{Name: "c"}, Resources: []*snapshotv1alpha1.Resource{r}}
+	if err := (Emitter{}).Emit(s, dir); err != nil {
+		t.Fatal(err)
+	}
+	err := filepath.WalkDir(parent, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if rel, _ := filepath.Rel(dir, p); p != parent && strings.HasPrefix(rel, "..") {
+			t.Errorf("written outside the export: %s", p)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := openOutDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer out.close()
+	if err := out.write(filepath.Join("..", "escaped.yaml"), []byte("x")); err == nil {
+		t.Error("outDir wrote a path above its directory")
 	}
 }

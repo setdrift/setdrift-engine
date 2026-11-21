@@ -72,6 +72,8 @@ the real values in the cluster with the placeholder.
 `
 
 // redactedReadme's Secrets line, with and without ExternalSecrets
+//
+// #nosec G101 -- README text, not credentials
 const (
 	readmeWithExternalSecrets = `- Secrets: ../external-secrets/ has an ExternalSecret for each, which reads
   the values from a secret manager instead; its README says how to set it up.`
@@ -202,7 +204,7 @@ func (e Emitter) Emit(s *snapshotv1alpha1.Snapshot, dir string) error {
 		return fmt.Errorf("output directory %s is not empty (use --force to replace %s)", dir, root)
 	}
 	parent, name := filepath.Dir(root), filepath.Base(root)
-	if err := os.MkdirAll(parent, 0o755); err != nil {
+	if err := os.MkdirAll(parent, 0o755); err != nil { //#nosec G301 -- an export is a Git repository, with no secret values
 		return err
 	}
 	// Left by an export that was killed before it could clean up: removed
@@ -216,11 +218,19 @@ func (e Emitter) Emit(s *snapshotv1alpha1.Snapshot, dir string) error {
 	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(tmp) // nothing left to remove once it has replaced root
-	if err := os.Chmod(tmp, 0o755); err != nil {
+	defer os.RemoveAll(tmp)                      // nothing left to remove once it has replaced root
+	if err := os.Chmod(tmp, 0o755); err != nil { //#nosec G302 -- an export directory, readable like any checkout
 		return err
 	}
-	if err := e.write(s, tmp, name); err != nil {
+	out, err := openOutDir(tmp)
+	if err != nil {
+		return err
+	}
+	err = e.write(s, out, name)
+	if cerr := out.close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
 		return err
 	}
 	return replaceDir(tmp, root)
@@ -253,7 +263,7 @@ func replaceDir(tmp, root string) error {
 
 // write writes the export into root; name is the cluster directory's final
 // name, for README.md.
-func (e Emitter) write(s *snapshotv1alpha1.Snapshot, root, name string) error {
+func (e Emitter) write(s *snapshotv1alpha1.Snapshot, out *outDir, name string) error {
 	cls, platDir := exportPlatform(s)
 	resources, bound := e.partition(s, platDir)
 	paths, err := filePaths(resources[:len(resources)-bound], "")
@@ -264,7 +274,7 @@ func (e Emitter) write(s *snapshotv1alpha1.Snapshot, root, name string) error {
 	if err != nil {
 		return err
 	}
-	written, buckets, err := writeManifests(root, resources, append(paths, boundPaths...))
+	written, buckets, err := writeManifests(out, resources, append(paths, boundPaths...))
 	if err != nil {
 		return err
 	}
@@ -280,30 +290,30 @@ func (e Emitter) write(s *snapshotv1alpha1.Snapshot, root, name string) error {
 		if settings != nil {
 			esText = readmeWithExternalSecrets
 		}
-		if err := writeFile(filepath.Join(root, redactedDir, "README.md"), []byte(fmt.Sprintf(redactedReadme, esText))); err != nil {
+		if err := out.write(filepath.Join(redactedDir, "README.md"), []byte(fmt.Sprintf(redactedReadme, esText))); err != nil {
 			return err
 		}
 		if settings != nil {
-			if remotes, err = settings.emit(s, resources, root, platDir); err != nil {
+			if remotes, err = settings.emit(s, resources, out, platDir); err != nil {
 				return err
 			}
 		}
 	}
-	if err := e.writeRestore(root, s, written, remotes, bound); err != nil {
+	if err := e.writeRestore(out, s, written, remotes, bound); err != nil {
 		return err
 	}
 	secretManager := ""
 	if settings != nil && referenceOnly {
 		secretManager = settings.ID
 	}
-	if err := writeExportInfo(root, s, secretManager); err != nil {
+	if err := writeExportInfo(out, s, secretManager); err != nil {
 		return err
 	}
 	_, hasCRDs := buckets[crdsDir]
-	if err := writeFile(filepath.Join(root, "README.md"), []byte(e.readme(s, name, hasCRDs, cls, platDir))); err != nil {
+	if err := out.write("README.md", []byte(e.readme(s, name, hasCRDs, cls, platDir))); err != nil {
 		return err
 	}
-	return writeBuckets(root, buckets, cls, platDir, bound)
+	return writeBuckets(out, buckets, cls, platDir, bound)
 }
 
 // partition returns the resources to write, the generic ones first, and how
@@ -329,16 +339,16 @@ func (e Emitter) partition(s *snapshotv1alpha1.Snapshot, platDir string) ([]*sna
 // writeManifests writes each resource at its path, and returns what it
 // wrote and, by bucket directory, the files each kustomization lists
 // (reference-only files are in none).
-func writeManifests(root string, resources []*snapshotv1alpha1.Resource, paths []filePath) ([]writtenFile, map[string][]string, error) {
+func writeManifests(out *outDir, resources []*snapshotv1alpha1.Resource, paths []filePath) ([]writtenFile, map[string][]string, error) {
 	buckets := map[string][]string{}
 	written := make([]writtenFile, len(resources))
 	for i, r := range resources {
 		bucket, rel := paths[i].bucket, paths[i].rel
-		out, err := writeManifest(filepath.Join(root, bucket, rel), r)
+		b, err := out.writeManifest(filepath.Join(bucket, rel), r)
 		if err != nil {
 			return nil, nil, err
 		}
-		written[i] = writtenFile{resource: r, path: filepath.ToSlash(filepath.Join(bucket, rel)), yaml: out, referenceOnly: paths[i].referenceOnly}
+		written[i] = writtenFile{resource: r, path: filepath.ToSlash(filepath.Join(bucket, rel)), yaml: b, referenceOnly: paths[i].referenceOnly}
 		if !paths[i].referenceOnly {
 			buckets[bucket] = append(buckets[bucket], filepath.ToSlash(rel))
 		}
@@ -375,10 +385,10 @@ func (e Emitter) readme(s *snapshotv1alpha1.Snapshot, name string, hasCRDs bool,
 // writeBuckets writes each bucket's kustomization.yaml, the platform set,
 // and the root kustomization.yaml listing the generic buckets: CRDs first,
 // then cluster-scoped objects (Namespaces), then namespaces.
-func writeBuckets(root string, buckets map[string][]string, cls *platform.Classification, platDir string, bound int) error {
+func writeBuckets(out *outDir, buckets map[string][]string, cls *platform.Classification, platDir string, bound int) error {
 	var bucketNames, platformBuckets []string
 	for b, files := range buckets {
-		if err := writeBucket(filepath.Join(root, b), files); err != nil {
+		if err := out.writeBucket(b, files); err != nil {
 			return err
 		}
 		if platDir != "" && strings.HasPrefix(filepath.ToSlash(b), platDir+"/") {
@@ -403,26 +413,26 @@ func writeBuckets(root string, buckets map[string][]string, cls *platform.Classi
 		return bucketNames[i] < bucketNames[j]
 	})
 	if platDir != "" {
-		if err := writePlatformSet(root, platDir, cls, bucketNames, platformBuckets, bound); err != nil {
+		if err := writePlatformSet(out, platDir, cls, bucketNames, platformBuckets, bound); err != nil {
 			return err
 		}
 	}
-	return writeKustomization(root, bucketNames)
+	return out.writeKustomization(".", bucketNames)
 }
 
 // writeBucket writes the kustomization.yaml of one bucket, listing its files.
-func writeBucket(dir string, files []string) error {
+func (out *outDir) writeBucket(dir string, files []string) error {
 	sort.Strings(files)
-	return writeKustomization(dir, files)
+	return out.writeKustomization(dir, files)
 }
 
-// writeManifest writes r as YAML and returns what it wrote.
-func writeManifest(path string, r *snapshotv1alpha1.Resource) ([]byte, error) {
-	out, err := yaml.JSONToYAML([]byte(r.ManifestJson))
+// writeManifest writes r as YAML at path and returns what it wrote.
+func (out *outDir) writeManifest(path string, r *snapshotv1alpha1.Resource) ([]byte, error) {
+	b, err := yaml.JSONToYAML([]byte(r.ManifestJson))
 	if err != nil {
 		return nil, fmt.Errorf("%s %s/%s: %w", r.Kind, r.Namespace, r.Name, err)
 	}
-	return out, writeFile(path, out)
+	return b, out.write(path, b)
 }
 
 // writtenFile is a resource as Emit wrote it.
@@ -546,11 +556,18 @@ func shortHash(s string) string {
 	return hex.EncodeToString(sum[:4])
 }
 
-// KindDir returns the directory for a kind, e.g. configmap or deployment.apps
+// KindDir returns the directory for a kind, e.g. configmap or
+// deployment.apps. The kind and group come from the cluster or a manifest
+// file, so they pass through SafeName: no "/" or other separator, and never
+// "." or "..".
 func KindDir(apiVersion, kind string) string {
-	k := strings.ToLower(kind)
+	k := SafeName(strings.ToLower(kind))
 	if g, _, ok := strings.Cut(apiVersion, "/"); ok {
-		return k + "." + g
+		k += "." + SafeName(g)
+	}
+	if strings.Trim(k, ".") == "" {
+		// "", "." or "..": no kind, or nothing but dots
+		return strings.Repeat("_", max(len(k), 1))
 	}
 	return k
 }
@@ -567,13 +584,13 @@ func SafeName(name string) string {
 	}, name)
 }
 
-// writeKustomization writes dir/kustomization.yaml listing resources
-func writeKustomization(dir string, resources []string) error {
+// writeKustomization writes dir/kustomization.yaml listing resources.
+func (out *outDir) writeKustomization(dir string, resources []string) error {
 	if resources == nil {
 		// "resources: null" makes Kustomize fail with "kustomization.yaml is empty"
 		resources = []string{}
 	}
-	out, err := yaml.Marshal(kustomization{
+	b, err := yaml.Marshal(kustomization{
 		APIVersion: "kustomize.config.k8s.io/v1beta1",
 		Kind:       "Kustomization",
 		Resources:  resources,
@@ -581,13 +598,39 @@ func writeKustomization(dir string, resources []string) error {
 	if err != nil {
 		return err
 	}
-	return writeFile(filepath.Join(dir, "kustomization.yaml"), out)
+	return out.write(filepath.Join(dir, "kustomization.yaml"), b)
 }
 
-// writeFile writes path, creating its directories
-func writeFile(path string, data []byte) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+// outDir is a directory an export or its ExternalSecrets are written to.
+// Every write goes through an os.Root opened on it, so no path, whatever a
+// cluster or a manifest put in it, can leave the directory: a path that
+// tries ("../x", or through a symlink) fails instead.
+type outDir struct {
+	root *os.Root
+}
+
+// openOutDir opens dir, creating it, for writing.
+func openOutDir(dir string) (*outDir, error) {
+	if err := os.MkdirAll(dir, 0o755); err != nil { //#nosec G301 -- an export is a Git repository, with no secret values
+		return nil, err
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return nil, err
+	}
+	return &outDir{root: root}, nil
+}
+
+// close releases the directory.
+func (out *outDir) close() error { return out.root.Close() }
+
+// write writes path, relative to the directory, creating its directories.
+// The export is a repository to commit, with placeholders for every secret
+// value, so its files are readable like any checkout's.
+func (out *outDir) write(path string, data []byte) error {
+	path = filepath.Clean(path)
+	if err := out.root.MkdirAll(filepath.Dir(path), 0o755); err != nil { //#nosec G301 -- see write's doc
 		return err
 	}
-	return os.WriteFile(path, data, 0o644)
+	return out.root.WriteFile(path, data, 0o644) //#nosec G306 -- see write's doc
 }

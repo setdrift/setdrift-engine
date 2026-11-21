@@ -66,23 +66,23 @@ func exportInfo(s *snapshotv1alpha1.Snapshot) ExportInfo {
 
 // writeExportInfo writes ExportInfoFile into root.
 // secretManager is the resolved --external-secrets, or "".
-func writeExportInfo(root string, s *snapshotv1alpha1.Snapshot, secretManager string) error {
+func writeExportInfo(out *outDir, s *snapshotv1alpha1.Snapshot, secretManager string) error {
 	info := exportInfo(s)
 	info.SecretManager = secretManager
 	if r, ok := regionOf(s); ok {
 		info.Region = r
 	}
-	out, err := yaml.Marshal(info)
+	b, err := yaml.Marshal(info)
 	if err != nil {
 		return err
 	}
-	return writeFile(filepath.Join(root, ExportInfoFile), append([]byte(exportInfoHeader), out...))
+	return out.write(ExportInfoFile, append([]byte(exportInfoHeader), b...))
 }
 
 // ReadExportInfo reads ExportInfoFile from a cluster's directory. It returns nil and no error when there is none
 // (an export from an earlier version).
 func ReadExportInfo(root string) (*ExportInfo, error) {
-	b, err := os.ReadFile(filepath.Join(root, ExportInfoFile))
+	b, err := os.ReadFile(filepath.Join(root, ExportInfoFile)) //#nosec G304 -- the export directory the user named
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}

@@ -341,3 +341,22 @@ func TestNotCheckedAndNamespaces(t *testing.T) {
 		t.Errorf("-n prod: %v %+v", err, report)
 	}
 }
+
+// An export that lists remote resources is refused before kustomize would
+// clone them.
+func TestLocalOnly(t *testing.T) {
+	for ref, remote := range map[string]bool{
+		"configmap/a.yaml": false, "../base": false,
+		"https://github.com/acme/x//deploy?ref=v1": true, "github.com/acme/x/deploy": true,
+		"git@github.com:acme/x.git": true, "ssh://git@host/x": true,
+	} {
+		root := t.TempDir()
+		k := "apiVersion: kustomize.config.k8s.io/v1beta1\nkind: Kustomization\nresources:\n- " + ref + "\n"
+		if err := os.WriteFile(filepath.Join(root, "kustomization.yaml"), []byte(k), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := localOnly(root); (err != nil) != remote {
+			t.Errorf("%s: err = %v, want refused %v", ref, err, remote)
+		}
+	}
+}

@@ -10,8 +10,10 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"maps"
 	"os"
 	"path/filepath"
@@ -290,20 +292,31 @@ func fileName(cluster string) string {
 }
 
 // writeVerifyReport writes the run as <dir>/<time>-<cluster>-report.md and
-// .json, and returns the Markdown file's path.
-func writeVerifyReport(dir string, d verifyDocument, at time.Time) (string, error) {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+// .json, and returns the Markdown file's path. Reports show live field
+// values (redacted as the export would be, but read from the cluster), so
+// they are private to their owner; with ignore (dir is the export's own
+// verify/), a .gitignore keeps them out of the export's Git repository.
+func writeVerifyReport(dir string, d verifyDocument, at time.Time, ignore bool) (string, error) {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
+	}
+	if ignore {
+		gi := filepath.Join(dir, ".gitignore")
+		if _, err := os.Stat(gi); errors.Is(err, fs.ErrNotExist) {
+			if err := os.WriteFile(gi, []byte("# setdrift verify's reports: they show live cluster values, kept out of Git\n*\n"), 0o600); err != nil {
+				return "", err
+			}
+		}
 	}
 	base := filepath.Join(dir, at.UTC().Format("2006-01-02T150405Z")+"-"+fileName(d.Cluster)+"-report")
 	js, err := json.MarshalIndent(d, "", "  ")
 	if err != nil {
 		return "", err
 	}
-	if err := os.WriteFile(base+".json", append(js, '\n'), 0o644); err != nil {
+	if err := os.WriteFile(base+".json", append(js, '\n'), 0o600); err != nil {
 		return "", err
 	}
-	if err := os.WriteFile(base+".md", verifyMarkdown(d), 0o644); err != nil {
+	if err := os.WriteFile(base+".md", verifyMarkdown(d), 0o600); err != nil {
 		return "", err
 	}
 	return base + ".md", nil

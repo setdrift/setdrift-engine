@@ -5,6 +5,8 @@ package helmsource
 
 import (
 	"bytes"
+	"errors"
+	"io"
 	"strings"
 	"testing"
 )
@@ -62,5 +64,15 @@ func TestAnnotateRefusesCredentials(t *testing.T) {
 		if err != nil && strings.Contains(err.Error(), "token") || out.Len() > 0 {
 			t.Errorf("%s: error repeats the credentials or output was written", repo)
 		}
+	}
+}
+
+// Annotate stops reading past its limit.
+func TestCappedReader(t *testing.T) {
+	if b, err := io.ReadAll(&cappedReader{r: strings.NewReader("abcd"), n: 5}); err != nil || string(b) != "abcd" {
+		t.Errorf("under the limit: %q, %v", b, err)
+	}
+	if _, err := io.ReadAll(&cappedReader{r: strings.NewReader("abcdef"), n: 5}); !errors.Is(err, errTooLarge) {
+		t.Errorf("over the limit: %v", err)
 	}
 }

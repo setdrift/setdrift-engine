@@ -122,3 +122,32 @@ func TestValues(t *testing.T) {
 		t.Errorf("%v %v", got, paths)
 	}
 }
+
+// A live field's value is shown only after the same detection as manifests:
+// by pattern, by the field's name, or by the name of the list item it is in.
+func TestFieldValue(t *testing.T) {
+	for _, c := range []struct {
+		path string
+		v    any
+		want any
+	}{
+		{"data.password", "hunter22", redact.Placeholder},
+		{"spec.template.spec.containers[web].env[DB_TOKEN].value", "s3cr3tvalue", redact.Placeholder},
+		{"data.config", "url: postgres://app:hunter22@db/app", redact.Placeholder},
+		{"spec.replicas", float64(3), float64(3)},
+		{"data.mode", "debug", "debug"},
+		{"data.password", "true", "true"},
+	} {
+		if got := redact.FieldValue(c.path, c.v); got != c.want {
+			t.Errorf("redact.FieldValue(%s, %v) = %v, want %v", c.path, c.v, got, c.want)
+		}
+	}
+	in := map[string]any{"apiKey": "abcd1234efgh", "region": "eu"}
+	out, ok := redact.FieldValue("spec.config", in).(map[string]any)
+	if !ok || out["apiKey"] != redact.Placeholder || out["region"] != "eu" {
+		t.Errorf("a map: %v", out)
+	}
+	if in["apiKey"] != "abcd1234efgh" {
+		t.Error("FieldValue changed its input")
+	}
+}

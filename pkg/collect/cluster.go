@@ -264,12 +264,31 @@ func (c *ClusterCollector) discover(res *Result) ([]*typeInfo, map[schema.GroupK
 			if strings.Contains(r.Name, "/") || !slices.Contains(r.Verbs, "list") || !slices.Contains(r.Verbs, "get") {
 				continue // subresource, or not listable e.g. SubjectAccessReview
 			}
+			if !plainKind(r.Kind) {
+				// kinds name files of the export: an aggregated API server can serve any text
+				res.warn("DISCOVERY_BAD_KIND", fmt.Sprintf("%s: resource %s has kind %q, not a plain name: not read", list.GroupVersion, r.Name, r.Kind))
+				continue
+			}
 			info := &typeInfo{gvr: gv.WithResource(r.Name), kind: r.Kind, namespaced: r.Namespaced}
 			kinds[schema.GroupKind{Group: gv.Group, Kind: r.Kind}] = info
 			discovered = append(discovered, info)
 		}
 	}
 	return discovered, kinds, nil
+}
+
+// plainKind reports whether kind is an ASCII letter followed by letters and
+// digits, as every Kubernetes kind is.
+func plainKind(kind string) bool {
+	for i, r := range kind {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z':
+		case i > 0 && r >= '0' && r <= '9':
+		default:
+			return false
+		}
+	}
+	return kind != ""
 }
 
 // tasks returns the types to list, in a stable order: discovery order

@@ -277,6 +277,10 @@ func (o *secretsExportOptions) checkInputs(run *secretsRun, manager secretexport
 	switch {
 	case err == nil && len(entries) > 0 && !o.force:
 		ok = run.add("inputs", statusFailed, "--external-secrets-out %s is not empty: pass --force to replace what is in it, or name a new directory", o.out)
+	case err == nil && len(entries) > 0:
+		if err := replaceableOutput(o.out); err != nil {
+			ok = run.add("inputs", statusFailed, "--external-secrets-out %s with --force: %v", o.out, err)
+		}
 	case err != nil && !errors.Is(err, os.ErrNotExist):
 		ok = run.add("inputs", statusFailed, "--external-secrets-out %s: %v", o.out, err)
 	}
@@ -327,6 +331,7 @@ func (o *secretsExportOptions) checkSourceCluster(ctx context.Context, run *secr
 	var dyn dynamic.Interface
 	kc, err := loadConfig(o.kubeconfig, o.context)
 	if err == nil {
+		warnInsecure(run.w, kc)
 		err = checkReachable(ctx, kc)
 	}
 	if err == nil {
@@ -525,6 +530,10 @@ func (o *secretsExportOptions) writeExternalSecrets(w io.Writer, run *secretsRun
 			Labels: src.Labels, Annotations: src.Annotations, Keys: src.Keys, RemoteKey: it.Key, Merge: it.Merge, Binary: it.Binary})
 	}
 	if o.force {
+		// checked before anything was read; checked again, as the directory may have changed since
+		if err := replaceableOutput(o.out); err != nil {
+			return fmt.Errorf("--external-secrets-out %s: %w", o.out, err)
+		}
 		if err := os.RemoveAll(o.out); err != nil {
 			return err
 		}
@@ -534,6 +543,44 @@ func (o *secretsExportOptions) writeExternalSecrets(w io.Writer, run *secretsRun
 	}
 	fmt.Fprintf(w, "\nWrote %s and their store to %s. In the new cluster, with External Secrets Operator installed and given access to %s: "+
 		"kubectl apply -k %s\n", text.Plural(len(out), "ExternalSecret", "ExternalSecrets"), o.out, prov.Name(), o.out)
+	return nil
+}
+
+// replaceableOutput checks that --force may replace dir: it is absent,
+// empty, or holds only what this command writes (an earlier run's
+// ExternalSecrets), and is not the home, root or current directory. --force
+// replaces an earlier run's output, never a directory of other files.
+func replaceableOutput(dir string) error {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return err
+	}
+	home, _ := os.UserHomeDir() // "" when unknown: then nothing matches it
+	wd, _ := os.Getwd()
+	if filepath.Dir(abs) == abs || abs == filepath.Clean(home) || abs == filepath.Clean(wd) {
+		return fmt.Errorf("refusing to replace %s, the root, home or current directory: name a directory of its own", abs)
+	}
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var other []string
+	for _, e := range entries {
+		name := e.Name()
+		switch {
+		case name == "namespaces" && e.IsDir(),
+			!e.IsDir() && (name == "kustomization.yaml" || name == "README.md" ||
+				(strings.HasPrefix(name, "secret-store") && strings.HasSuffix(name, ".yaml"))):
+		default:
+			other = append(other, name)
+		}
+	}
+	if len(other) > 0 {
+		return fmt.Errorf("it holds files this command did not write (%s): --force replaces only an earlier run's output; name a new directory", strings.Join(other, ", "))
+	}
 	return nil
 }
 
