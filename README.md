@@ -48,9 +48,10 @@ For other install environments, see [Install](https://setdrift.io/docs/cli/insta
   it is read, before anything else sees it; only the key names are kept. A
   password sitting in another manifest, like a connection string in an env
   var, is replaced the same way as soon as it is recognized. Secrets are
-  written for reference only, outside every kustomization, with an
-  ExternalSecret for each so External Secrets Operator can restore it from
-  your secret manager, where you put the values yourself.
+  saved with their values removed and are never applied. For each one, the
+  export writes an ExternalSecret, so External Secrets Operator can rebuild
+  it in the new cluster from your secret manager, where you store the values
+  yourself.
 - **Proof it matches** - `setdrift verify` dry-runs the export against the
   cluster and reports how much would change: nothing, if the export is
   right. Differences are grouped by cause, with the cluster's and the
