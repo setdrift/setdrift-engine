@@ -7,16 +7,15 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 	"path/filepath"
 	"regexp"
 	"slices"
 	"sort"
 	"strings"
-	"text/template"
 
 	yamlv3 "go.yaml.in/yaml/v3"
 
+	"setdrift.io/setdrift-engine/internal/text"
 	"setdrift.io/setdrift-engine/pkg/platform"
 	snapshotv1alpha1 "setdrift.io/setdrift-engine/pkg/snapshot/v1alpha1"
 )
@@ -110,16 +109,9 @@ func (x *ExternalSecrets) Validate() error {
 	return err
 }
 
-// keyTemplate parses KeyTemplate and runs it once on sample values, which catches unknown fields (e.g. {{.Namespce}}) as well as syntax errors.
-func (x *ExternalSecrets) keyTemplate() (*template.Template, error) {
-	tmpl, err := template.New("key").Option("missingkey=error").Parse(x.KeyTemplate)
-	if err == nil {
-		err = tmpl.Execute(io.Discard, map[string]string{"Cluster": "c", "Namespace": "ns", "Name": "n"})
-	}
-	if err != nil {
-		return nil, err
-	}
-	return tmpl, nil
+// keyTemplate parses KeyTemplate, refusing syntax errors and unknown fields (e.g. {{.Namespce}}).
+func (x *ExternalSecrets) keyTemplate() (*text.KeyTemplate, error) {
+	return text.ParseKeyTemplate(x.KeyTemplate)
 }
 
 // remoteSecret is one secret to create in the secret manager.
@@ -193,7 +185,7 @@ func (x *ExternalSecrets) emit(s *snapshotv1alpha1.Snapshot, resources []*snapsh
 }
 
 // externalSecret builds the ExternalSecret for one redacted Secret: one remote secret per Kubernetes Secret, holding each key as a property.
-func (x *ExternalSecrets) externalSecret(cluster string, r *snapshotv1alpha1.Resource, tmpl *template.Template) (*snapshotv1alpha1.Resource, remoteSecret, error) {
+func (x *ExternalSecrets) externalSecret(cluster string, r *snapshotv1alpha1.Resource, tmpl *text.KeyTemplate) (*snapshotv1alpha1.Resource, remoteSecret, error) {
 	var secret struct {
 		Metadata struct {
 			Labels      map[string]string `json:"labels"`
@@ -222,11 +214,7 @@ func (x *ExternalSecrets) externalSecret(cluster string, r *snapshotv1alpha1.Res
 	}
 	sort.Strings(keys)
 
-	var b bytes.Buffer
-	if err := tmpl.Execute(&b, map[string]string{"Cluster": cluster, "Namespace": r.Namespace, "Name": r.Name}); err != nil {
-		return nil, remoteSecret{}, fmt.Errorf("secret key template: %w", err)
-	}
-	remoteKey := b.String()
+	remoteKey := tmpl.Execute(cluster, r.Namespace, r.Name)
 
 	manifest := x.manifest(SecretSource{Namespace: r.Namespace, Name: r.Name, Type: secret.Type,
 		Labels: secret.Metadata.Labels, Annotations: secret.Metadata.Annotations, Keys: keys, RemoteKey: remoteKey,

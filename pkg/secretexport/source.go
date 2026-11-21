@@ -4,7 +4,6 @@
 package secretexport
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -13,9 +12,10 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-	"text/template"
 
 	"sigs.k8s.io/yaml"
+
+	"setdrift.io/setdrift-engine/internal/text"
 )
 
 // RedactedExt is the extension of the reference-only files an export writes
@@ -154,22 +154,18 @@ var (
 // .Cluster, .Namespace and .Name) and checks every name is one the manager
 // accepts and no two Secrets share one. The keys are in the order of secrets.
 func RemoteKeys(m Manager, tmpl, cluster string, secrets []Source) ([]string, error) {
-	t, err := template.New("key").Option("missingkey=error").Parse(tmpl)
+	t, err := text.ParseKeyTemplate(tmpl)
 	if err != nil {
 		return nil, fmt.Errorf("--secret-key-template: %w", err)
 	}
-	if !strings.Contains(tmpl, ".Namespace") || !strings.Contains(tmpl, ".Name") {
+	if !t.Uses("Namespace") || !t.Uses("Name") {
 		return nil, errors.New("--secret-key-template must include {{.Namespace}} and {{.Name}}, so each Secret gets a remote secret of its own")
 	}
 	keys := make([]string, len(secrets))
 	byKey := map[string]string{}
 	var bad []string
 	for i, s := range secrets {
-		var b bytes.Buffer
-		if err := t.Execute(&b, map[string]string{"Cluster": cluster, "Namespace": s.Namespace, "Name": s.Name}); err != nil {
-			return nil, fmt.Errorf("--secret-key-template: %w", err)
-		}
-		k := b.String()
+		k := t.Execute(cluster, s.Namespace, s.Name)
 		keys[i] = k
 		if other, ok := byKey[k]; ok {
 			return nil, fmt.Errorf("--secret-key-template gives %s/%s and %s the same remote secret %q", s.Namespace, s.Name, other, k)

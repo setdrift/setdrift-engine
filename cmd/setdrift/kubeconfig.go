@@ -23,11 +23,11 @@ import (
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 
+	"setdrift.io/setdrift-engine/internal/discover"
 	"setdrift.io/setdrift-engine/internal/text"
 	"setdrift.io/setdrift-engine/internal/version"
 	"setdrift.io/setdrift-engine/pkg/platform"
@@ -144,7 +144,7 @@ func warnInsecure(w io.Writer, kc *kubeContext) {
 func checkReachable(ctx context.Context, kc *kubeContext) error {
 	cfg := rest.CopyConfig(kc.config)
 	cfg.Timeout = reachTimeout
-	dc, err := discovery.NewDiscoveryClientForConfig(cfg)
+	dc, err := discover.New(cfg)
 	if err != nil {
 		return err
 	}

@@ -17,11 +17,9 @@ import (
 	"github.com/spf13/cobra"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/client-go/discovery"
-	"k8s.io/client-go/discovery/cached/memory"
 	"k8s.io/client-go/dynamic"
-	"k8s.io/client-go/restmapper"
 
+	"setdrift.io/setdrift-engine/internal/discover"
 	"setdrift.io/setdrift-engine/internal/text"
 	"setdrift.io/setdrift-engine/pkg/collect"
 	"setdrift.io/setdrift-engine/pkg/emit/kustomize"
@@ -93,6 +91,28 @@ is applied to a new cluster.`,
 // run checks the export in dir against the cluster, prints the result and
 // writes the report. DIR is checked before the kubeconfig, so a wrong DIR is
 // reported as such.
+// connect loads the kubeconfig and checks the cluster answers, returning
+// its discovery and dynamic clients.
+func (o *verifyOptions) connect(cmd *cobra.Command) (*kubeContext, *discover.Client, dynamic.Interface, error) {
+	kc, err := loadConfig(o.kubeconfig, o.context)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	warnInsecure(cmd.ErrOrStderr(), kc)
+	if err := checkReachable(cmd.Context(), kc); err != nil {
+		return nil, nil, nil, err
+	}
+	dc, err := discover.New(kc.config)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	dyn, err := dynamic.NewForConfig(kc.config)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return kc, dc, dyn, nil
+}
+
 func (o *verifyOptions) run(cmd *cobra.Command, dir string) error {
 	if o.threshold < 0 || o.threshold > 100 {
 		return fmt.Errorf("--threshold %d: give a percent from 0 to 100", o.threshold)
@@ -108,20 +128,7 @@ func (o *verifyOptions) run(cmd *cobra.Command, dir string) error {
 	if err != nil {
 		return err
 	}
-	kc, err := loadConfig(o.kubeconfig, o.context)
-	if err != nil {
-		return err
-	}
-	warnInsecure(cmd.ErrOrStderr(), kc)
-	if err := checkReachable(cmd.Context(), kc); err != nil {
-		return err
-	}
-	cfg := kc.config
-	dc, err := discovery.NewDiscoveryClientForConfig(cfg)
-	if err != nil {
-		return err
-	}
-	dyn, err := dynamic.NewForConfig(cfg)
+	kc, dc, dyn, err := o.connect(cmd)
 	if err != nil {
 		return err
 	}
@@ -132,9 +139,13 @@ func (o *verifyOptions) run(cmd *cobra.Command, dir string) error {
 			return err
 		}
 	}
+	mapper, err := discover.RESTMapper(cmd.Context(), dc)
+	if err != nil {
+		return err
+	}
 	v := verify.DryRunVerifier{
 		Cluster:    verify.DynamicCluster{Client: dyn},
-		Mapper:     restmapper.NewDeferredDiscoveryRESTMapper(memory.NewMemCacheClient(dc)),
+		Mapper:     mapper,
 		Threshold:  o.threshold,
 		Namespaces: o.namespaces,
 	}
@@ -222,7 +233,7 @@ var namespacesGVR = schema.GroupVersionResource{Version: "v1", Resource: "namesp
 // platform set when the target is classified as the export's platform (the
 // same directory, platform/aws/eks), else the generic set, which applies to
 // any cluster.
-func (o *verifyOptions) chooseSet(ctx context.Context, info *kustomize.ExportInfo, kc *kubeContext, dc discovery.DiscoveryInterface, dyn dynamic.Interface) (set, why string, err error) {
+func (o *verifyOptions) chooseSet(ctx context.Context, info *kustomize.ExportInfo, kc *kubeContext, dc discover.Interface, dyn dynamic.Interface) (set, why string, err error) {
 	platDir := ""
 	if info != nil {
 		platDir = info.PlatformDir

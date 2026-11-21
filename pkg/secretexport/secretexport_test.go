@@ -110,7 +110,8 @@ func TestRemoteKeys(t *testing.T) {
 		wantErr string
 	}{
 		{SecretsManagerID, "{{.Cluster}}/{{.Name}}", "must include {{.Namespace}} and {{.Name}}"},
-		{SecretsManagerID, "{{.Cluster}}/{{.Namespce}}/{{.Name}}", "must include"},
+		{SecretsManagerID, "{{.Cluster}}/{{.Namespce}}/{{.Name}}", "unknown field .Namespce"},
+		{SecretsManagerID, "{{.Cluster}}/{{.Name}}", "must include"},
 		{SecretsManagerID, "{{.Cluster}} {{.Namespace}}/{{.Name}}", "Secrets Manager allows"},
 		{ParameterStoreID, "{{.Cluster}}/{{.Namespace}}/{{.Name}}", "needs a leading /"},
 		{ParameterStoreID, "/aws/{{.Namespace}}/{{.Name}}", "not under /aws"},

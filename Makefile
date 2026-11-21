@@ -14,9 +14,11 @@ LDFLAGS := -s -w \
 BUF_VERSION           := v1.75.0
 PROTOC_GEN_GO_VERSION := v1.36.12
 GOVULNCHECK_VERSION   := v1.10.0
+# release binaries may not grow past this (MiB): see `make size`
+MAX_SIZE_MIB          := 28
 
 ## indicates target are command names not files
-.PHONY: build plugin helm-plugin test golden generate notices lint vulncheck tools clean release-snapshot e2e-setup e2e-up e2e-ready e2e-populate e2e-restore e2e-status e2e-down
+.PHONY: build plugin helm-plugin test golden generate notices lint vulncheck size tools clean release-snapshot e2e-setup e2e-up e2e-ready e2e-populate e2e-restore e2e-status e2e-down
 
 build: ## Build bin/setdrift
 	go build -ldflags "$(LDFLAGS)" -o $(BIN)/setdrift ./cmd/setdrift
@@ -50,6 +52,18 @@ vulncheck: $(BIN)/govulncheck ## Scan the built CLI for known vulnerabilities in
 	go build -o $(BIN)/setdrift-vulncheck ./cmd/setdrift
 	@# binary mode: govulncheck's source mode can't yet load Go 1.27's standard library
 	$(BIN)/govulncheck -mode=binary $(BIN)/setdrift-vulncheck
+
+size: ## Check every release binary is under MAX_SIZE_MIB, built as goreleaser builds it
+	@# A call that makes Go's linker keep every exported method (such as running a
+	@# text/template) about doubles the binary; this catches it in the change that adds it.
+	@set -e; for p in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do \
+		GOOS=$${p%/*} GOARCH=$${p#*/} CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o $(BIN)/setdrift-size ./cmd/setdrift; \
+		size=$$(wc -c < $(BIN)/setdrift-size); mib=$$((size / 1048576)); \
+		echo "$$p: $$mib MiB"; \
+		if [ $$size -gt $$(( $(MAX_SIZE_MIB) * 1048576 )) ]; then \
+			echo "$$p is $$mib MiB, over the $(MAX_SIZE_MIB) MiB budget: see what grew with go tool nm -size -sort size" >&2; exit 1; \
+		fi; \
+	done; rm -f $(BIN)/setdrift-size
 
 tools: $(BIN)/buf $(BIN)/protoc-gen-go
 

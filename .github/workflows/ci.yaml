@@ -66,6 +66,9 @@ jobs:
           for p in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do
             GOOS=${p%/*} GOARCH=${p#*/} CGO_ENABLED=0 go build -o /dev/null ./cmd/setdrift
           done
+      # The release binaries stay under the size budget (Makefile MAX_SIZE_MIB).
+      - name: Binary size
+        run: make size
 
   # The release archives, built as a release would build them but published
   # nowhere, for the install jobs below.

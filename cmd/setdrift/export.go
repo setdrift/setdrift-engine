@@ -25,10 +25,10 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/iam"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
-	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/metadata"
 
+	"setdrift.io/setdrift-engine/internal/discover"
 	"setdrift.io/setdrift-engine/internal/text"
 	"setdrift.io/setdrift-engine/internal/version"
 	"setdrift.io/setdrift-engine/pkg/awsinventory"
@@ -683,7 +683,7 @@ func (t clusterTarget) collector() (*collect.ClusterCollector, *kubeContext, err
 	cfg := kc.config
 
 	// types of resources on cluster
-	dc, err := discovery.NewDiscoveryClientForConfig(cfg)
+	dc, err := discover.New(cfg)
 	if err != nil {
 		return nil, nil, err
 	}

@@ -11,9 +11,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/dynamic"
 
+	"setdrift.io/setdrift-engine/internal/discover"
 	"setdrift.io/setdrift-engine/pkg/resource"
 	snapshotv1alpha1 "setdrift.io/setdrift-engine/pkg/snapshot/v1alpha1"
 )
@@ -27,13 +27,13 @@ var nodesGVR = schema.GroupVersionResource{Version: "v1", Resource: "nodes"}
 // Probe reads the API server's version and groups and a few nodes: the
 // second pass. Nodes need cluster-wide list permission; without it the
 // signals are fewer and the result less certain, and notes says so.
-func Probe(ctx context.Context, d discovery.DiscoveryInterface, dyn dynamic.Interface) (signals []Signal, notes []string) {
+func Probe(ctx context.Context, d discover.Interface, dyn dynamic.Interface) (signals []Signal, notes []string) {
 	gitVersion := ""
-	if v, err := d.ServerVersion(); err == nil {
+	if v, err := d.ServerVersionWithContext(ctx); err == nil {
 		gitVersion = v.GitVersion
 	}
 	var groups []string
-	if gl, err := d.ServerGroups(); err == nil {
+	if gl, err := d.ServerGroupsWithContext(ctx); err == nil {
 		for _, g := range gl.Groups {
 			groups = append(groups, g.Name)
 		}

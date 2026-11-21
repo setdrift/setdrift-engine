@@ -21,11 +21,11 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/metadata"
 	"k8s.io/client-go/tools/pager"
 
+	"setdrift.io/setdrift-engine/internal/discover"
 	"setdrift.io/setdrift-engine/internal/kube"
 	"setdrift.io/setdrift-engine/internal/text"
 	"setdrift.io/setdrift-engine/pkg/ownership"
@@ -116,7 +116,7 @@ func DefaultMetadataOnly(gr schema.GroupResource) bool { return metadataOnlyType
 // ClusterCollector lists every listable resource in a cluster.
 type ClusterCollector struct {
 	// discovery finds types
-	Discovery discovery.DiscoveryInterface
+	Discovery discover.Interface
 	// dynamic client reads any type as Unstructured
 	Dynamic dynamic.Interface
 	// enables metadata-only listing for MetadataOnly types
@@ -199,12 +199,12 @@ const (
 func (c *ClusterCollector) Collect(ctx context.Context) (*Result, error) {
 	res := &Result{}
 	// an unknown version is a warning, not a failure
-	if v, err := c.Discovery.ServerVersion(); err != nil {
+	if v, err := c.Discovery.ServerVersionWithContext(ctx); err != nil {
 		res.warn("SERVER_VERSION_UNKNOWN", err.Error())
 	} else {
 		res.KubernetesVersion = v.GitVersion
 	}
-	discovered, kinds, err := c.discover(res)
+	discovered, kinds, err := c.discover(ctx, res)
 	if err != nil {
 		return nil, err
 	}
@@ -242,10 +242,10 @@ func (c *ClusterCollector) Collect(ctx context.Context) (*Result, error) {
 // discover returns every listable type the server serves, one version per
 // API group, and the same by group and kind, for resolveOwners: owner
 // references name a kind, not a resource.
-func (c *ClusterCollector) discover(res *Result) ([]*typeInfo, map[schema.GroupKind]*typeInfo, error) {
-	lists, err := discovery.ServerPreferredResources(c.Discovery)
+func (c *ClusterCollector) discover(ctx context.Context, res *Result) ([]*typeInfo, map[schema.GroupKind]*typeInfo, error) {
+	lists, err := discover.PreferredResources(ctx, c.Discovery)
 	if err != nil {
-		if !discovery.IsGroupDiscoveryFailedError(err) || len(lists) == 0 {
+		if !discover.IsPartial(err) || len(lists) == 0 {
 			return nil, nil, fmt.Errorf("discovering API resources: %w", err)
 		}
 		// An aggregated API (e.g. metrics-server) may be registered but
