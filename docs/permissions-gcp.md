@@ -1,11 +1,6 @@
 # Google Cloud Permissions
 
-SetDrift calls no Google Cloud API: on GKE it reads the cluster through the
-Kubernetes API only, with the kubeconfig you give it. What it needs on
-Google Cloud is a way to get that kubeconfig, and the
-[Kubernetes permissions](permissions-kubernetes.md), which GKE grants
-through Kubernetes RBAC, IAM, or both: a request is allowed when either
-allows it.
+SetDrift calls no Google Cloud API: on GKE it reads the cluster through the Kubernetes API only, with the kubeconfig you give it. What it needs on Google Cloud is a way to get that kubeconfig, and the [Kubernetes permissions](permissions-kubernetes.md), which GKE grants through Kubernetes RBAC, IAM, or both: a request is allowed when either allows it.
 
 ## Getting a kubeconfig
 
@@ -15,20 +10,12 @@ allows it.
 |---|---|
 | `container.clusters.get` | the cluster's endpoint and certificate for the kubeconfig |
 
-The predefined role **Kubernetes Engine Cluster Viewer**
-(`roles/container.clusterViewer`) has it, and nothing inside the cluster.
+The predefined role **Kubernetes Engine Cluster Viewer** (`roles/container.clusterViewer`) has it, and nothing inside the cluster.
 
 ## Kubernetes access on GKE
 
-- **With Kubernetes RBAC** (the narrowest): give the account only
-  `roles/container.clusterViewer` in IAM, and bind it to `setdrift-export` or
-  `setdrift-verify` from the [Kubernetes page](permissions-kubernetes.md)
-  with a ClusterRoleBinding (the subject is the account's email, or a Google
-  Group with Google Groups for RBAC).
-- **With IAM**: GKE turns each Kubernetes request into an IAM permission
-  named `container.<resource>.<verb>`. A `get` of one object needs
-  `.get`, a `list` needs `.list`, and a `patch` needs `.update`. For what
-  SetDrift uses:
+- **With Kubernetes RBAC (the narrowest) -** give the account only `roles/container.clusterViewer` in IAM, and bind it to `setdrift-export` or `setdrift-verify` from the [Kubernetes page](permissions-kubernetes.md) with a ClusterRoleBinding (the subject is the account's email, or a Google Group with Google Groups for RBAC).
+- **With IAM -** GKE turns each Kubernetes request into an IAM permission named `container.<resource>.<verb>`. A `get` of one object needs `.get`, a `list` needs `.list`, and a `patch` needs `.update`. For what SetDrift uses:
 
 | Permission | Kubernetes request | For |
 |---|---|---|
@@ -43,17 +30,12 @@ The predefined role **Kubernetes Engine Cluster Viewer**
 
 The predefined roles cover most of it:
 
-- **Kubernetes Engine Viewer** (`roles/container.viewer`) covers `export`
-  and `diff` except Secrets, which it does not include: they are skipped and
-  named. Add `container.secrets.list` with a custom role to read them.
-- **Kubernetes Engine Developer** (`roles/container.developer`) covers
-  `verify`. It also allows real changes, so for a read-mostly account use
-  Kubernetes RBAC as above.
+- **Kubernetes Engine Viewer** (`roles/container.viewer`) covers `export` and `diff` except Secrets, which it does not include: they are skipped and named. Add `container.secrets.list` with a custom role to read them.
+- **Kubernetes Engine Developer** (`roles/container.developer`) covers `verify`. It also allows real changes, so for a read-mostly account use Kubernetes RBAC as above.
 
 ## Templates
 
-Custom role files for `gcloud iam roles create`, in
-[deploy/permissions/gcp/](https://github.com/setdrift/setdrift-engine/blob/main/deploy/permissions/gcp):
+Custom role files for `gcloud iam roles create`, in [deploy/permissions/gcp/](https://github.com/setdrift/setdrift-engine/blob/main/deploy/permissions/gcp):
 
 | Template | Holds | For |
 |---|---|---|
