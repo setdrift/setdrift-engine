@@ -1,0 +1,86 @@
+# THIRD_PARTY_NOTICES for Dependabot's Go updates. A dependency update
+# changes the notices, and CI fails until they are regenerated, so this
+# regenerates them on the pull request's branch and commits the result.
+#
+# It runs only for Dependabot's Go module pull requests from this repo, and
+# stops if one changes anything but go.mod and go.sum. The notices script
+# only lists modules and reads their license files (scripts/
+# third-party-notices.sh): no dependency code runs while it holds a token
+# that can push.
+#
+# A commit pushed with the workflow's own token starts no workflows, so it
+# starts CI and vulncheck on the new commit itself: workflow_dispatch is the
+# one way that token may. Their checks then count for the pull request.
+
+name: dependabot-notices
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  notices:
+    if: >-
+      github.actor == 'dependabot[bot]' &&
+      startsWith(github.head_ref, 'dependabot/go_modules/') &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      # push the notices to Dependabot's branch
+      contents: write
+      # start ci.yaml and vulncheck.yaml on the new commit
+      actions: write
+    steps:
+      # Actions are pinned to a commit, as in ci.yaml.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # the branch itself, not the merge commit, so the result can be pushed
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      # Downloaded modules from main's cache (ci.yaml), read only.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/go/pkg/mod
+          key: go-test-${{ hashFiles('go.sum') }}
+          restore-keys: go-test-
+      - name: Only go.mod and go.sum changed
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          other=$(git diff --name-only "$BASE...HEAD" | grep -vxE 'go\.mod|go\.sum|THIRD_PARTY_NOTICES' || true)
+          if [ -n "$other" ]; then
+            echo "error: this pull request changes more than go.mod and go.sum, so the notices are left to a person:" >&2
+            echo "$other" >&2
+            exit 1
+          fi
+      - name: Regenerate and commit
+        id: commit
+        run: |
+          make notices
+          if git diff --quiet; then
+            echo "THIRD_PARTY_NOTICES is already current"
+            echo "pushed=false" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -am "Updated notices"
+          git push origin "HEAD:$GITHUB_HEAD_REF"
+          echo "pushed=true" >>"$GITHUB_OUTPUT"
+      - name: Start CI on the new commit
+        if: steps.commit.outputs.pushed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run ci.yaml --ref "$GITHUB_HEAD_REF"
+          gh workflow run vulncheck.yaml --ref "$GITHUB_HEAD_REF"
+
+# Copyright The SetDrift Authors
+# SPDX-License-Identifier: Apache-2.0
