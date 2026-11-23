@@ -1,7 +1,7 @@
 # Which comparison?
 
 A difference comes from time (a cluster changed) or
-from place (two clusters are set up differently); each comparison holds one
+from location (two clusters are set up differently); each comparison holds one
 fixed, so you can tell which:
 
 | Command | Answers |

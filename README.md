@@ -36,7 +36,7 @@ For other install environments, see [Install](https://setdrift.io/docs/cli/insta
 
 ## Key Features:
 
-- **Cluster Diff** - `setdrift diff` compares across place or across time:
+- **Cluster Diff** - `setdrift diff` compares across locations or across time:
   two clusters now (`setdrift diff east west`: how do they differ?), or
   one cluster with its own earlier snapshot (what changed since Monday, and
   who changed it?). It reads both clusters directly, with nothing to export
