@@ -87,6 +87,14 @@ normalized as export reads them, so server defaults, status and secret values ne
 differences: Secrets compare by their keys. Each platform's own objects
 (EKS's, kind's) are not compared.
 
+A value that differs only in each cluster's own name, region or account
+is shown apart and not counted as a difference (--exit-code too): an ECR
+image in each region, an ARN, a hostname with the cluster's name in it.
+So 111111111111.dkr.ecr.us-east-1.amazonaws.com/app:v1.4.2 and
+222222222222.dkr.ecr.us-west-2.amazonaws.com/app:v1.4.2 match, while a
+different tag, app:v1.4.3, always counts. The region comes from the
+cluster's nodes on any platform, the account from EKS.
+
 Volumes compare as bound, so a claim that names no storage class shows
 each cluster's default class. Replicas a HorizontalPodAutoscaler sets are
 left out. The nodes' shape (count, instance types, zones, capacity) is

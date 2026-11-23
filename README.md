@@ -13,9 +13,10 @@ for other managed Kubernetes platforms in the future. If anyone has cloud credit
 
 ## Quick Start
 
-Get started with three commands:
+Get started with a few commands:
 ```sh
 brew install setdrift/tap/setdrift
+setdrift diff east west           # what differs between two clusters (kubeconfig contexts), nothing to set up
 setdrift export                   # the current kubeconfig context, into ./setdrift-export
 setdrift verify setdrift-export   # dry-run the export against the cluster
 ```
@@ -35,6 +36,17 @@ For other install environments, see [Install](https://setdrift.io/docs/cli/insta
 
 ## Key Features:
 
+- **Cluster Diff** - `setdrift diff` compares across place or across time:
+  two clusters now (`setdrift diff east west`: how do they differ?), or
+  one cluster with its own earlier snapshot (what changed since Monday, and
+  who changed it?). It reads both clusters directly, with nothing to export
+  or configure first, and shows only meaningful differences: server
+  defaults, status, controller state, replicas an autoscaler sets and
+  secret values never show up. A value that differs only in each cluster's
+  name, region or account is set apart, so the same ECR image in us-east-1
+  and us-west-2 matches, while `app:v1.4.2` against `app:v1.4.3` is
+  flagged. Field by field, with who manages each resource on each side and
+  the Helm chart versions.
 - **What isn't in Git** - Every object is classified by who manages it: Argo
   CD, Flux, Helm, an operator, the platform, or nobody. The summary and the
   export's README list what was applied by hand, namespace by namespace:
@@ -57,12 +69,6 @@ For other install environments, see [Install](https://setdrift.io/docs/cli/insta
   right. Differences are grouped by cause, with the cluster's and the
   export's values and who set them (`kubectl edit`, a scale, a deploy), and
   each run writes a report to `setdrift-export/verify/`.
-- **Cluster Diff** - `setdrift diff` compares across place or across time:
-  two clusters now (`setdrift diff staging prod`: how do they differ?), or
-  one cluster with its own earlier snapshot (what changed since Monday, and
-  who changed it?). Field by field, with who manages each resource on each
-  side, the Helm chart versions, and the differences that are only each
-  cluster's name, region or account set apart.
 - **A restore playbook** - RESTORE.md is the checklist for recreating the
   cluster elsewhere, with the commands filled in: CRDs to create first, Helm
   releases to install with their chart versions, webhooks to wait for,
