@@ -103,19 +103,24 @@ func profileReadme(s *snapshotv1alpha1.Snapshot) string {
 
 	n := p.GetNetwork()
 	section(&b, "Network")
-	row(&b, "Pod network", strings.Join(n.GetPodCidrs(), ", "))
+	dist := knownDistribution(c.GetClassification())
+	row(&b, "Pod network", orDefault(strings.Join(n.GetPodCidrs(), ", "), dist, "pod network"))
 	// checking if the node pod range is known
 	if n.GetNodePodPrefix() > 0 {
 		row(&b, "Each node's pod range", "/"+strconv.Itoa(int(n.GetNodePodPrefix())))
 	}
 	row(&b, "Most pods per node", positive(n.GetMaxPodsPerNode()))
-	row(&b, "Service network", strings.Join(n.GetServiceCidrs(), ", "))
+	row(&b, "Service network", orDefault(strings.Join(n.GetServiceCidrs(), ", "), dist, "service network"))
 	row(&b, "IP families", strings.Join(n.GetIpFamilies(), ", "))
 	row(&b, "Node addresses", ranges(n.GetNodeRanges()))
 	row(&b, "Network plugin (CNI)", n.GetCni())
 	row(&b, "CNI settings", strings.Join(n.GetCniSettings(), ", "))
 	row(&b, "kube-proxy mode", n.GetKubeProxyMode())
 	row(&b, "VPC / network", n.GetVpcId())
+	// checking if the VPC's ranges were read, only with --aws
+	if len(n.GetVpcCidrs()) > 0 {
+		row(&b, "VPC ranges", strings.Join(n.GetVpcCidrs(), ", "))
+	}
 	row(&b, "Security groups", strings.Join(n.GetSecurityGroups(), ", "))
 	row(&b, "API endpoint", n.GetApiEndpointAccess())
 	// checking if the public endpoint has ranges allowed to reach it
@@ -124,17 +129,21 @@ func profileReadme(s *snapshotv1alpha1.Snapshot) string {
 	}
 	// checking if any subnets were found, if so they get a table of their own
 	if len(n.GetSubnets()) > 0 {
-		b.WriteString("\n| Subnet | Range | Zone | Holds |\n|---|---|---|---|\n")
+		b.WriteString("\n| Subnet | Range | Zone | Holds | Free addresses |\n|---|---|---|---|---|\n")
 		// going through the subnets
 		for _, sn := range n.GetSubnets() {
-			fmt.Fprintf(&b, "| %s | %s | %s | %s |\n", cmp.Or(sn.GetId(), "-"), cmp.Or(sn.GetCidr(), "-"), cmp.Or(sn.GetZone(), "-"), sn.GetUse())
+			fmt.Fprintf(&b, "| %s | %s | %s | %s | %s |\n", cmp.Or(sn.GetId(), "-"), cmp.Or(sn.GetCidr(), "-"), cmp.Or(sn.GetZone(), "-"), sn.GetUse(), cmp.Or(positive(sn.GetAvailableIps()), "-"))
+		}
+		// checking if any subnet still lacks its range, if so the README says how to get it
+		if slices.ContainsFunc(n.GetSubnets(), func(sn *snapshotv1alpha1.ProfileSubnet) bool { return sn.GetCidr() == "" }) {
+			b.WriteString("\nA subnet's range is held by the cloud, not the cluster. On EKS, export\n`--aws` reads it from EC2.\n")
 		}
 	}
 
 	d := p.GetDns()
 	section(&b, "DNS")
-	row(&b, "Cluster domain", d.GetClusterDomain())
-	row(&b, "Cluster DNS address", d.GetClusterDnsIp())
+	row(&b, "Cluster domain", orDefault(d.GetClusterDomain(), dist, "cluster domain"))
+	row(&b, "Cluster DNS address", orDefault(d.GetClusterDnsIp(), dist, "cluster DNS address"))
 	row(&b, "Upstreams", strings.Join(d.GetUpstreams(), ", "))
 	row(&b, "Managed domains (external-dns)", strings.Join(d.GetManagedDomains(), ", "))
 	row(&b, "Host names served", hostnames(d.GetHostnames()))
@@ -175,6 +184,77 @@ func profileReadme(s *snapshotv1alpha1.Snapshot) string {
 		fmt.Fprintf(&b, "| %s | %s |\n", escapeCell(e.GetValue()), escapeCell(e.GetSource()))
 	}
 	return b.String()
+}
+
+// platformDefaults are each platform's defaults for the values the cluster doesnt always say, shown only for a value not found and only as that platform's default
+// theyre never written to profile.json, which holds only what was read
+var platformDefaults = map[string]map[string]string{
+	"eks": {
+		"pod network":         "the VPC subnets: with the VPC CNI pods take node subnet addresses",
+		"service network":     "10.100.0.0/16 or 172.20.0.0/16, whichever does not overlap the VPC",
+		"cluster DNS address": "10.100.0.10 or 172.20.0.10, the tenth address of the service network",
+		"cluster domain":      "cluster.local",
+	},
+	"aks": {
+		"pod network":         "10.244.0.0/16 (Azure CNI Overlay)",
+		"service network":     "10.0.0.0/16",
+		"cluster DNS address": "10.0.0.10",
+		"cluster domain":      "cluster.local",
+	},
+	"gke": {
+		"pod network":     "a secondary range of the node subnet, a /24 per node",
+		"service network": "a secondary range GKE picks",
+		"cluster domain":  "cluster.local",
+	},
+	"kind": {
+		"pod network":         "10.244.0.0/16",
+		"service network":     "10.96.0.0/16",
+		"cluster DNS address": "10.96.0.10",
+		"cluster domain":      "cluster.local",
+	},
+	"kubeadm": {
+		"pod network":         "none, the network plugin sets it",
+		"service network":     "10.96.0.0/12",
+		"cluster DNS address": "10.96.0.10",
+		"cluster domain":      "cluster.local",
+	},
+	"minikube": {
+		"pod network":         "10.244.0.0/16",
+		"service network":     "10.96.0.0/12",
+		"cluster DNS address": "10.96.0.10",
+		"cluster domain":      "cluster.local",
+	},
+	"k3s": {
+		"pod network":         "10.42.0.0/16",
+		"service network":     "10.43.0.0/16",
+		"cluster DNS address": "10.43.0.10",
+		"cluster domain":      "cluster.local",
+	},
+	"rke2": {
+		"pod network":         "10.42.0.0/16",
+		"service network":     "10.43.0.0/16",
+		"cluster DNS address": "10.43.0.10",
+		"cluster domain":      "cluster.local",
+	},
+}
+
+// knownDistribution gives back the platform the classification found when its sure enough to act on, medium or high confidence, else ""
+func knownDistribution(c *snapshotv1alpha1.Platform) string {
+	// checking the confidence, a low one is a guess and its defaults would be too
+	if c.GetConfidence() != "high" && c.GetConfidence() != "medium" {
+		return ""
+	}
+	return c.GetDistribution()
+}
+
+// orDefault gives back a value, or when theres none and the platform has a default for it, notFound with that default named as the platform's, not read from the cluster
+func orDefault(value, dist, what string) string {
+	// checking if theres a value, or no default to name
+	def := platformDefaults[dist][what]
+	if value != "" || def == "" {
+		return value
+	}
+	return notFound + " (the " + dist + " default is " + def + "; not read from this cluster)"
 }
 
 // section starts a section of the README, rows of a two-column table follow it unless it writes its own

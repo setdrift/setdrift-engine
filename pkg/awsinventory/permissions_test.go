@@ -47,7 +47,8 @@ func TestPermissionsDocMatchesCalls(t *testing.T) {
 	}
 	var policy struct {
 		Statement []struct {
-			Action json.RawMessage
+			Action   json.RawMessage
+			Resource json.RawMessage
 		}
 	}
 	if err := json.Unmarshal([]byte(m[1]), &policy); err != nil {
@@ -64,13 +65,14 @@ func TestPermissionsDocMatchesCalls(t *testing.T) {
 			t.Fatal(err)
 		}
 		inPolicy = append(inPolicy, many...)
+		// EC2's Describe calls take no resource, so only a statement of those may allow every resource
+		if strings.Contains(string(st.Resource), `"*"`) && slices.ContainsFunc(many, func(a string) bool { return !strings.HasPrefix(a, "ec2:Describe") }) {
+			t.Errorf("only ec2:Describe actions may have Resource *, not %v", many)
+		}
 	}
 	slices.Sort(inPolicy)
 	if !slices.Equal(inPolicy, calls) {
 		t.Errorf("the example policy allows %v, the code calls %v", inPolicy, calls)
-	}
-	if strings.Contains(m[1], `"*"`) && !strings.Contains(m[1], `"ec2:DescribeVolumes"`) {
-		t.Error("only ec2:DescribeVolumes may have Resource *")
 	}
 }
 

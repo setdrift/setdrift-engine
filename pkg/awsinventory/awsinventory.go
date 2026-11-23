@@ -41,9 +41,11 @@ type IAM interface {
 	GetRole(context.Context, *iam.GetRoleInput, ...func(*iam.Options)) (*iam.GetRoleOutput, error)
 }
 
-// EC2 is the part of the EC2 client Collect uses, only DescribeVolumes for the EBS details
+// EC2 is the part of the EC2 client Collect uses, DescribeVolumes for the EBS details and DescribeSubnets and DescribeVpcs for the profile's network ranges
 type EC2 interface {
 	DescribeVolumes(context.Context, *ec2.DescribeVolumesInput, ...func(*ec2.Options)) (*ec2.DescribeVolumesOutput, error)
+	DescribeSubnets(context.Context, *ec2.DescribeSubnetsInput, ...func(*ec2.Options)) (*ec2.DescribeSubnetsOutput, error)
+	DescribeVpcs(context.Context, *ec2.DescribeVpcsInput, ...func(*ec2.Options)) (*ec2.DescribeVpcsOutput, error)
 }
 
 // Clients are the AWS clients Collect calls, bundled so the cli can build them once and pass them in
@@ -118,6 +120,8 @@ func Collect(ctx context.Context, c Clients, cluster, region string, snap *snaps
 	accessEntries(ctx, c.EKS, cluster, inv, fail)
 	addons(ctx, c.EKS, cluster, inv, fail)
 	volumes(ctx, c.EC2, snap.Inventory.Volumes, fail)
+	// invoking network to read the ranges of the subnets and the VPC the profile names, its defined below
+	network(ctx, c.EC2, snap.Inventory, fail)
 	// after a ctrl-c every call fails at once, so the export stops rather than write an inventory of "context canceled"
 	return ctx.Err()
 }
@@ -398,6 +402,12 @@ func volumes(ctx context.Context, c EC2, vols []*snapshotv1alpha1.Volume, fail f
 	}
 }
 
+// subnetNotFound tells if err is EC2's error for a subnet that doesnt exist
+func subnetNotFound(err error) bool {
+	var api smithy.APIError
+	return errors.As(err, &api) && api.ErrorCode() == "InvalidSubnetID.NotFound"
+}
+
 // notFound tells if err is EC2's error for a volume that doesnt exist
 func notFound(err error) bool {
 	var api smithy.APIError
@@ -488,6 +498,64 @@ func eksNetwork(ec *ekstypes.Cluster, account, region string) profile.EKS {
 		e.IPFamily = string(k.IpFamily)
 	}
 	return e
+}
+
+// network takes the inventory and reads from EC2 the range, zone and free addresses of each subnet the profile names, and the VPC's ranges
+// a refused or failed call is recorded and the profile keeps what the cluster said
+func network(ctx context.Context, c EC2, inv *snapshotv1alpha1.Inventory, fail func(string, error)) {
+	// invoking profile.SubnetIDs for the subnets to read, its defined in pkg/profile/nodes.go
+	ids := profile.SubnetIDs(inv.Profile)
+	// checking if there are any, if so they are read in one call
+	if len(ids) > 0 {
+		out, err := c.DescribeSubnets(ctx, &ec2.DescribeSubnetsInput{SubnetIds: ids})
+		// checking if the call failed for anything but an unknown subnet, like access denied, which would fail every id too, so its recorded once
+		// invoking subnetNotFound for that, its defined below
+		if err != nil && !subnetNotFound(err) {
+			fail(fmt.Sprintf("ec2:DescribeSubnets (%d subnets)", len(ids)), err)
+			out = &ec2.DescribeSubnetsOutput{}
+		} else if err != nil {
+			// one unknown id fails the call for all of them, so then each is read on its own
+			out = &ec2.DescribeSubnetsOutput{}
+			// going through the ids one at a time
+			for _, id := range ids {
+				one, err := c.DescribeSubnets(ctx, &ec2.DescribeSubnetsInput{SubnetIds: []string{id}})
+				if err != nil {
+					fail("ec2:DescribeSubnets "+id, err)
+					continue
+				}
+				out.Subnets = append(out.Subnets, one.Subnets...)
+			}
+		}
+		// going through the subnets EC2 described
+		for _, sn := range out.Subnets {
+			// invoking profile.AddSubnetDetails to fill in the subnet everywhere the profile lists it, its defined in pkg/profile/nodes.go
+			inv.Profile = profile.AddSubnetDetails(inv.Profile, aws.ToString(sn.SubnetId), aws.ToString(sn.CidrBlock), aws.ToString(sn.AvailabilityZone), aws.ToInt32(sn.AvailableIpAddressCount))
+		}
+	}
+	vpc := inv.Profile.GetNetwork().GetVpcId()
+	// checking if the profile names a VPC, if so its ranges are read
+	if vpc == "" {
+		return
+	}
+	out, err := c.DescribeVpcs(ctx, &ec2.DescribeVpcsInput{VpcIds: []string{vpc}})
+	if err != nil {
+		fail("ec2:DescribeVpcs "+vpc, err)
+		return
+	}
+	// going through what EC2 gave back, the VPC asked for
+	for _, v := range out.Vpcs {
+		var cidrs []string
+		// going through its IPv4 ranges, the first one and any added later
+		for _, a := range v.CidrBlockAssociationSet {
+			cidrs = append(cidrs, aws.ToString(a.CidrBlock))
+		}
+		// going through its IPv6 ranges
+		for _, a := range v.Ipv6CidrBlockAssociationSet {
+			cidrs = append(cidrs, aws.ToString(a.Ipv6CidrBlock))
+		}
+		// invoking profile.AddVpcCidrs to add them, its defined in pkg/profile/nodes.go
+		inv.Profile = profile.AddVpcCidrs(inv.Profile, aws.ToString(v.VpcId), cidrs)
+	}
 }
 
 // Copyright The SetDrift Authors
