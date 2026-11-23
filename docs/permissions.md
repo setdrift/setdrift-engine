@@ -41,8 +41,8 @@ StorageClasses), except the Namespace objects of the namespaces read.
   `eks:DescribeCluster`, `eks:ListPodIdentityAssociations`,
   `eks:DescribePodIdentityAssociation`, `eks:ListAccessEntries`,
   `eks:DescribeAccessEntry`, `eks:ListAssociatedAccessPolicies`,
-  `eks:ListAddons`, `eks:DescribeAddon`, `iam:GetRole` and
-  `ec2:DescribeVolumes`. `eks:DescribeCluster` is checked first: without it,
+  `eks:ListAddons`, `eks:DescribeAddon`, `iam:GetRole`,
+  `ec2:DescribeVolumes`, `ec2:DescribeSubnets` and `ec2:DescribeVpcs`. `eks:DescribeCluster` is checked first: without it,
   or with the wrong cluster name or region, the export stops before reading
   the cluster. Any other refused call is recorded and listed in RESTORE.md's
   AWS settings, and the export goes on without that part. `iam:GetRole` is
@@ -114,6 +114,8 @@ Only `export --aws` calls AWS; no other command or flag does.
 | `eks:DescribeAddon` | each add-on | its version, its role, and whether it has configuration (the values are never kept) |
 | `iam:GetRole` | roles in the cluster's own account | the trust policy of each role an IRSA annotation or Pod Identity association names, for RESTORE.md |
 | `ec2:DescribeVolumes` | `*` (this action takes no resource) | the type, size, IOPS, encryption and zone of each EBS volume behind a PersistentVolume |
+| `ec2:DescribeSubnets` | `*` (this action takes no resource) | the range, zone and free addresses of each subnet the cluster profile names (the cluster's own, its nodes', pods' and load balancers') |
+| `ec2:DescribeVpcs` | `*` (this action takes no resource) | the address ranges of the cluster's VPC, for the cluster profile |
 
 A policy with only those, for one cluster (replace `REGION`, `ACCOUNT` and
 `CLUSTER`):
@@ -145,9 +147,9 @@ A policy with only those, for one cluster (replace `REGION`, `ACCOUNT` and
       "Resource": "arn:aws:iam::ACCOUNT:role/*"
     },
     {
-      "Sid": "Volumes",
+      "Sid": "Describe",
       "Effect": "Allow",
-      "Action": "ec2:DescribeVolumes",
+      "Action": ["ec2:DescribeSubnets", "ec2:DescribeVolumes", "ec2:DescribeVpcs"],
       "Resource": "*"
     }
   ]

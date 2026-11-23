@@ -31,6 +31,9 @@ func (fakeEKS) DescribeCluster(context.Context, *eks.DescribeClusterInput, ...fu
 	return &eks.DescribeClusterOutput{Cluster: &ekstypes.Cluster{
 		Arn: aws.String("arn:aws:eks:us-east-2:111122223333:cluster/prod"), Version: aws.String("1.37"),
 		Identity: &ekstypes.Identity{Oidc: &ekstypes.OIDC{Issuer: aws.String("https://oidc.eks.us-east-2.amazonaws.com/id/OLD")}},
+		ResourcesVpcConfig: &ekstypes.VpcConfigResponse{VpcId: aws.String("vpc-0abc"), SubnetIds: []string{"subnet-0a", "subnet-0gone"},
+			ClusterSecurityGroupId: aws.String("sg-0cluster"), EndpointPublicAccess: true},
+		KubernetesNetworkConfig: &ekstypes.KubernetesNetworkConfigResponse{ServiceIpv4Cidr: aws.String("172.20.0.0/16"), IpFamily: ekstypes.IpFamilyIpv4},
 	}}, nil
 }
 
@@ -111,6 +114,43 @@ func (fakeEC2) DescribeVolumes(_ context.Context, in *ec2.DescribeVolumesInput, 
 		Size: aws.Int32(10), Iops: aws.Int32(3000), Throughput: aws.Int32(125), Encrypted: aws.Bool(true), AvailabilityZone: aws.String("us-east-2a")}}}, nil
 }
 
+// DescribeSubnets fails like EC2 when any subnet asked for is unknown, and describes subnet-0a
+func (fakeEC2) DescribeSubnets(_ context.Context, in *ec2.DescribeSubnetsInput, _ ...func(*ec2.Options)) (*ec2.DescribeSubnetsOutput, error) {
+	if len(in.SubnetIds) != 1 || in.SubnetIds[0] != "subnet-0a" {
+		return nil, &smithy.GenericAPIError{Code: "InvalidSubnetID.NotFound", Message: "not found"}
+	}
+	return &ec2.DescribeSubnetsOutput{Subnets: []ec2types.Subnet{{SubnetId: aws.String("subnet-0a"), CidrBlock: aws.String("10.0.0.0/19"),
+		AvailabilityZone: aws.String("us-east-2a"), AvailableIpAddressCount: aws.Int32(8000)}}}, nil
+}
+
+// DescribeVpcs describes vpc-0abc with two IPv4 ranges
+func (fakeEC2) DescribeVpcs(context.Context, *ec2.DescribeVpcsInput, ...func(*ec2.Options)) (*ec2.DescribeVpcsOutput, error) {
+	return &ec2.DescribeVpcsOutput{Vpcs: []ec2types.Vpc{{VpcId: aws.String("vpc-0abc"), CidrBlockAssociationSet: []ec2types.VpcCidrBlockAssociation{
+		{CidrBlock: aws.String("10.0.0.0/16")}, {CidrBlock: aws.String("100.64.0.0/16")}}}}}, nil
+}
+
+// check that the profile gets the cluster's VPC, its ranges and each subnet's range from EC2, and that an unknown subnet is recorded without losing the others
+func TestCollectNetwork(t *testing.T) {
+	snap := &snapshotv1alpha1.Snapshot{Cluster: &snapshotv1alpha1.Cluster{Name: "prod"}}
+	if err := Collect(context.Background(), Clients{EKS: fakeEKS{}, IAM: fakeIAM{}, EC2: fakeEC2{}}, "prod", "us-east-2", snap); err != nil {
+		t.Fatal(err)
+	}
+	n := snap.Inventory.Profile.Network
+	if n.VpcId != "vpc-0abc" || strings.Join(n.VpcCidrs, ",") != "10.0.0.0/16,100.64.0.0/16" || strings.Join(n.ServiceCidrs, ",") != "172.20.0.0/16" {
+		t.Errorf("vpc %q %v service %v", n.VpcId, n.VpcCidrs, n.ServiceCidrs)
+	}
+	byID := map[string]*snapshotv1alpha1.ProfileSubnet{}
+	for _, sn := range n.Subnets {
+		byID[sn.Id] = sn
+	}
+	if a, gone := byID["subnet-0a"], byID["subnet-0gone"]; len(n.Subnets) != 2 || a == nil || a.Cidr != "10.0.0.0/19" || a.Zone != "us-east-2a" || a.AvailableIps != 8000 || gone == nil || gone.Cidr != "" {
+		t.Errorf("subnets %v", n.Subnets)
+	}
+	if !slices.ContainsFunc(snap.Inventory.Aws.Errors, func(e string) bool { return strings.HasPrefix(e, "ec2:DescribeSubnets subnet-0gone") }) {
+		t.Errorf("the unknown subnet is not recorded: %v", snap.Inventory.Aws.Errors)
+	}
+}
+
 // check that Collect reads the cluster, Pod Identity, IRSA and Pod Identity roles, add-ons without their values and volumes, and records the failed calls
 func TestCollect(t *testing.T) {
 	snap := &snapshotv1alpha1.Snapshot{
@@ -143,8 +183,8 @@ func TestCollect(t *testing.T) {
 	if a := snap.Inventory.Volumes[0].Aws; a == nil || a.VolumeType != "gp3" || a.Iops != 3000 || !a.Encrypted {
 		t.Errorf("volume %v", a)
 	}
-	// one error for the access entries, one for the missing volume
-	if len(inv.Errors) != 2 {
+	// one error for the access entries, one for the missing volume, one for the missing subnet
+	if len(inv.Errors) != 3 {
 		t.Errorf("errors %v", inv.Errors)
 	}
 }
@@ -161,13 +201,46 @@ func TestAccessPoliciesPaged(t *testing.T) {
 	}
 }
 
-// deniedEC2 refuses every DescribeVolumes call and counts them
-type deniedEC2 struct{ calls *int }
+// deniedEC2 refuses every call, counting the DescribeVolumes and DescribeSubnets calls apart
+type deniedEC2 struct{ calls, subnetCalls *int }
 
 // DescribeVolumes counts the call and fails with UnauthorizedOperation
 func (d deniedEC2) DescribeVolumes(context.Context, *ec2.DescribeVolumesInput, ...func(*ec2.Options)) (*ec2.DescribeVolumesOutput, error) {
-	*d.calls++
+	if d.calls != nil {
+		*d.calls++
+	}
 	return nil, &smithy.GenericAPIError{Code: "UnauthorizedOperation", Message: "denied"}
+}
+
+// DescribeSubnets counts the call and fails with UnauthorizedOperation
+func (d deniedEC2) DescribeSubnets(context.Context, *ec2.DescribeSubnetsInput, ...func(*ec2.Options)) (*ec2.DescribeSubnetsOutput, error) {
+	if d.subnetCalls != nil {
+		*d.subnetCalls++
+	}
+	return nil, &smithy.GenericAPIError{Code: "UnauthorizedOperation", Message: "denied"}
+}
+
+// DescribeVpcs fails with UnauthorizedOperation
+func (d deniedEC2) DescribeVpcs(context.Context, *ec2.DescribeVpcsInput, ...func(*ec2.Options)) (*ec2.DescribeVpcsOutput, error) {
+	return nil, &smithy.GenericAPIError{Code: "UnauthorizedOperation", Message: "denied"}
+}
+
+// check that without the permission to describe subnets theres one call and one error, not one per subnet
+func TestSubnetsDeniedOnce(t *testing.T) {
+	calls := 0
+	snap := &snapshotv1alpha1.Snapshot{}
+	if err := Collect(context.Background(), Clients{EKS: fakeEKS{}, IAM: fakeIAM{}, EC2: deniedEC2{subnetCalls: &calls}}, "prod", "us-east-2", snap); err != nil {
+		t.Fatal(err)
+	}
+	var subnetErrors []string
+	for _, e := range snap.Inventory.Aws.Errors {
+		if strings.HasPrefix(e, "ec2:DescribeSubnets") {
+			subnetErrors = append(subnetErrors, e)
+		}
+	}
+	if calls != 1 || len(subnetErrors) != 1 {
+		t.Errorf("%d calls, errors %v; want one of each", calls, subnetErrors)
+	}
 }
 
 // check that without the permission to describe volumes theres one call and one error, not one per volume
@@ -175,7 +248,7 @@ func TestVolumesDeniedOnce(t *testing.T) {
 	calls := 0
 	snap := &snapshotv1alpha1.Snapshot{Inventory: &snapshotv1alpha1.Inventory{Volumes: []*snapshotv1alpha1.Volume{
 		{VolumeHandle: "vol-1"}, {VolumeHandle: "vol-2"}, {VolumeHandle: "vol-3"}}}}
-	if err := Collect(context.Background(), Clients{EKS: fakeEKS{}, IAM: fakeIAM{}, EC2: deniedEC2{&calls}}, "prod", "us-east-2", snap); err != nil {
+	if err := Collect(context.Background(), Clients{EKS: fakeEKS{}, IAM: fakeIAM{}, EC2: deniedEC2{calls: &calls}}, "prod", "us-east-2", snap); err != nil {
 		t.Fatal(err)
 	}
 	var volumeErrors []string

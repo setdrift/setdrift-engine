@@ -98,7 +98,7 @@ check_least_privilege() {
   for p in $(aws eks list-addons --region "$region" --cluster-name "$source_cluster" --query 'addons[]' --output text); do
     pairs+=("eks:DescribeAddon $(aws eks describe-addon --region "$region" --cluster-name "$source_cluster" --addon-name "$p" --query addon.addonArn --output text)")
   done
-  pairs+=("ec2:DescribeVolumes *")
+  pairs+=("ec2:DescribeVolumes *" "ec2:DescribeSubnets *" "ec2:DescribeVpcs *")
   for p in "${pairs[@]}"; do
     action=${p%% *} resource=${p#* }
     decision=$(aws iam simulate-custom-policy --policy-input-list "$policy" --action-names "$action" --resource-arns "$resource" \

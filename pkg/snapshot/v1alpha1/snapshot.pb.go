@@ -1401,8 +1401,10 @@ type ProfileNetwork struct {
 	ApiPublicAccessCidrs []string `protobuf:"bytes,13,rep,name=api_public_access_cidrs,json=apiPublicAccessCidrs,proto3" json:"api_public_access_cidrs,omitempty"`
 	// the most pods one node takes (its allocatable pods)
 	MaxPodsPerNode int32 `protobuf:"varint,14,opt,name=max_pods_per_node,json=maxPodsPerNode,proto3" json:"max_pods_per_node,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// the cloud network's address ranges, with export --aws from EC2
+	VpcCidrs      []string `protobuf:"bytes,15,rep,name=vpc_cidrs,json=vpcCidrs,proto3" json:"vpc_cidrs,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ProfileNetwork) Reset() {
@@ -1533,13 +1535,22 @@ func (x *ProfileNetwork) GetMaxPodsPerNode() int32 {
 	return 0
 }
 
+func (x *ProfileNetwork) GetVpcCidrs() []string {
+	if x != nil {
+		return x.VpcCidrs
+	}
+	return nil
+}
+
 type ProfileSubnet struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Id    string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
 	Cidr  string                 `protobuf:"bytes,2,opt,name=cidr,proto3" json:"cidr,omitempty"`
 	Zone  string                 `protobuf:"bytes,3,opt,name=zone,proto3" json:"zone,omitempty"`
 	// what it was found holding: nodes, pods, load-balancers, control-plane
-	Use           string `protobuf:"bytes,4,opt,name=use,proto3" json:"use,omitempty"`
+	Use string `protobuf:"bytes,4,opt,name=use,proto3" json:"use,omitempty"`
+	// the addresses still free in it, with export --aws from EC2
+	AvailableIps  int32 `protobuf:"varint,5,opt,name=available_ips,json=availableIps,proto3" json:"available_ips,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1600,6 +1611,13 @@ func (x *ProfileSubnet) GetUse() string {
 		return x.Use
 	}
 	return ""
+}
+
+func (x *ProfileSubnet) GetAvailableIps() int32 {
+	if x != nil {
+		return x.AvailableIps
+	}
+	return 0
 }
 
 type ProfileDns struct {
@@ -3053,7 +3071,7 @@ const file_setdrift_snapshot_v1alpha1_snapshot_proto_rawDesc = "" +
 	"\aaccount\x18\x02 \x01(\tR\aaccount\x12\x16\n" +
 	"\x06region\x18\x03 \x01(\tR\x06region\x12\x14\n" +
 	"\x05zones\x18\x04 \x03(\tR\x05zones\x12%\n" +
-	"\x0eresource_group\x18\x05 \x01(\tR\rresourceGroup\"\xdb\x04\n" +
+	"\x0eresource_group\x18\x05 \x01(\tR\rresourceGroup\"\xf8\x04\n" +
 	"\x0eProfileNetwork\x12\x1b\n" +
 	"\tpod_cidrs\x18\x01 \x03(\tR\bpodCidrs\x12&\n" +
 	"\x0fnode_pod_prefix\x18\x02 \x01(\x05R\rnodePodPrefix\x12#\n" +
@@ -3071,12 +3089,14 @@ const file_setdrift_snapshot_v1alpha1_snapshot_proto_rawDesc = "" +
 	"\x0fsecurity_groups\x18\v \x03(\tR\x0esecurityGroups\x12.\n" +
 	"\x13api_endpoint_access\x18\f \x01(\tR\x11apiEndpointAccess\x125\n" +
 	"\x17api_public_access_cidrs\x18\r \x03(\tR\x14apiPublicAccessCidrs\x12)\n" +
-	"\x11max_pods_per_node\x18\x0e \x01(\x05R\x0emaxPodsPerNode\"Y\n" +
+	"\x11max_pods_per_node\x18\x0e \x01(\x05R\x0emaxPodsPerNode\x12\x1b\n" +
+	"\tvpc_cidrs\x18\x0f \x03(\tR\bvpcCidrs\"~\n" +
 	"\rProfileSubnet\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04cidr\x18\x02 \x01(\tR\x04cidr\x12\x12\n" +
 	"\x04zone\x18\x03 \x01(\tR\x04zone\x12\x10\n" +
-	"\x03use\x18\x04 \x01(\tR\x03use\"\xbe\x01\n" +
+	"\x03use\x18\x04 \x01(\tR\x03use\x12#\n" +
+	"\ravailable_ips\x18\x05 \x01(\x05R\favailableIps\"\xbe\x01\n" +
 	"\n" +
 	"ProfileDns\x12%\n" +
 	"\x0ecluster_domain\x18\x01 \x01(\tR\rclusterDomain\x12$\n" +

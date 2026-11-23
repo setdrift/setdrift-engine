@@ -3,6 +3,7 @@
 package profile
 
 import (
+	"cmp"
 	"net/netip"
 	"slices"
 	"strconv"
@@ -195,6 +196,57 @@ func AddEKS(p *snapshotv1alpha1.Profile, e EKS) *snapshotv1alpha1.Profile {
 		for _, c := range e.PublicAccessCIDRs {
 			b.add(&b.p.Network.ApiPublicAccessCidrs, c, "API public access from", src)
 		}
+	}
+	b.sort()
+	return b.p
+}
+
+// SubnetIDs gives back the ids of the cloud subnets the profile names, AWS ones (subnet-...) once each, for reading their ranges from EC2
+// a load balancer annotation can name a subnet by its Name tag instead, those arent ids and are left out
+func SubnetIDs(p *snapshotv1alpha1.Profile) []string {
+	var ids []string
+	// going through the subnets the profile lists
+	for _, s := range p.GetNetwork().GetSubnets() {
+		// checking if its an AWS subnet id not yet listed
+		if strings.HasPrefix(s.Id, "subnet-") && !slices.Contains(ids, s.Id) {
+			ids = append(ids, s.Id)
+		}
+	}
+	slices.Sort(ids)
+	return ids
+}
+
+// AddSubnetDetails takes a profile and what EC2 says about one subnet and fills in its range, zone and free addresses everywhere the profile lists it
+// it gives back the profile, a new one when p is nil
+func AddSubnetDetails(p *snapshotv1alpha1.Profile, id, cidr, zone string, availableIPs int32) *snapshotv1alpha1.Profile {
+	b := newBuilder(p)
+	const src = "EC2 (DescribeSubnets)"
+	// going through the subnets the profile lists, one subnet can be listed for more than one use
+	for _, s := range b.p.Network.Subnets {
+		// checking if its this subnet
+		if s.Id != id {
+			continue
+		}
+		s.Cidr = cmp.Or(cidr, s.Cidr)
+		s.Zone = cmp.Or(zone, s.Zone)
+		s.AvailableIps = availableIPs
+	}
+	b.found("subnet "+id+" "+cidr+zoneSuffix(zone)+", "+strconv.Itoa(int(availableIPs))+" addresses free", src)
+	b.sort()
+	return b.p
+}
+
+// AddVpcCidrs takes a profile, a VPC id and its address ranges as EC2 gives them, and adds the ranges when its the profile's VPC
+// it gives back the profile, a new one when p is nil
+func AddVpcCidrs(p *snapshotv1alpha1.Profile, vpcID string, cidrs []string) *snapshotv1alpha1.Profile {
+	b := newBuilder(p)
+	// checking if its the VPC the profile names, another one is left out
+	if vpcID == "" || vpcID != b.p.Network.VpcId {
+		return b.p
+	}
+	// going through the VPC's ranges, IPv4 and IPv6
+	for _, c := range cidrs {
+		b.add(&b.p.Network.VpcCidrs, c, "VPC "+vpcID+" range", "EC2 (DescribeVpcs)")
 	}
 	b.sort()
 	return b.p

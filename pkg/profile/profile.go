@@ -171,6 +171,7 @@ func (b *builder) sort() {
 	slices.Sort(n.IpFamilies)
 	slices.Sort(n.SecurityGroups)
 	slices.Sort(n.ApiPublicAccessCidrs)
+	slices.Sort(n.VpcCidrs)
 	slices.Sort(b.p.Dns.Upstreams)
 	slices.Sort(b.p.Dns.Hostnames)
 	slices.Sort(b.p.Dns.ManagedDomains)

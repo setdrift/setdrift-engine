@@ -49,7 +49,7 @@ permission beyond what export uses:
 | Pod network | kubeadm's ClusterConfiguration, kube-proxy's `clusterCIDR`, cilium's cluster pool, calico's IPPools, flannel's net-conf.json, kindnet's `POD_SUBNET`; else the range holding the nodes' `spec.podCIDR`s |
 | Service network | `ServiceCIDR` objects (Kubernetes 1.33 and later), kubeadm's ClusterConfiguration, the EKS API; the `kubernetes` Service's address shows where it starts |
 | Node addresses | The smallest range holding the nodes' internal addresses, per zone: the subnet is that size or larger |
-| VPC, subnets, security groups | EKS Auto Mode NodeClasses and Karpenter EC2NodeClasses (as resolved, with zones), VPC CNI ENIConfigs (pod subnets), the AWS Load Balancer Controller's `--aws-vpc-id`, TargetGroupBindings, load balancer annotations on Services and Ingresses, and with `--aws` the EKS API |
+| VPC, subnets, security groups | EKS Auto Mode NodeClasses and Karpenter EC2NodeClasses (as resolved, with zones), VPC CNI ENIConfigs (pod subnets), the AWS Load Balancer Controller's `--aws-vpc-id`, TargetGroupBindings, load balancer annotations on Services and Ingresses, and with `--aws` the EKS API; with `--aws`, EC2 gives each subnet's range, zone and free addresses and the VPC's ranges |
 | CNI, kube-proxy | The network plugin's workload and settings (VPC CNI prefix delegation, custom networking; cilium IPAM, routing, kube-proxy replacement; calico encapsulation), kube-proxy's mode |
 | DNS | CoreDNS's Corefile (cluster domain, upstreams), the cluster DNS Service, external-dns's `--domain-filter`, the host names Ingresses and Gateway routes serve |
 | Storage | StorageClasses, their settings and how many claims use each |
@@ -57,7 +57,13 @@ permission beyond what export uses:
 
 Each value is listed under "Where each value was found" with its source, so
 two sources that disagree both show. A part with nothing found reads "not
-found" rather than a guess. Like the rest of an export, it holds settings
+found" rather than a guess; when the platform is known (medium or high
+confidence), the README adds that platform's default, labelled as not read
+from the cluster, such as EKS's service network. profile.json holds only
+what was read. A subnet's range is held by the cloud, not the cluster: on
+EKS's default VPC CNI the pods take their addresses from the node subnets, so
+without `--aws` the profile can say only that the nodes' addresses fall
+within a range. Like the rest of an export, it holds settings
 only: it reads the objects after every secret value has been replaced. The
 directory read (`diff ./export`, `export --from-dir`) leaves
 `cluster_profile/` out, as it is not manifests. A directory of manifests

@@ -275,6 +275,8 @@ message ProfileNetwork {
   repeated string api_public_access_cidrs = 13;
   // the most pods one node takes (its allocatable pods)
   int32 max_pods_per_node = 14;
+  // the cloud network's address ranges, with export --aws from EC2
+  repeated string vpc_cidrs = 15;
 }
 
 message ProfileSubnet {
@@ -283,6 +285,8 @@ message ProfileSubnet {
   string zone = 3;
   // what it was found holding: nodes, pods, load-balancers, control-plane
   string use = 4;
+  // the addresses still free in it, with export --aws from EC2
+  int32 available_ips = 5;
 }
 
 message ProfileDns {
