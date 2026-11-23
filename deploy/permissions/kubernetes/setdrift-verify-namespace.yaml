@@ -1,0 +1,32 @@
+# setdrift-verify.yaml for one namespace: a Role and RoleBinding, for
+# setdrift verify -n <namespace>.
+#
+#   kubectl apply -n <namespace> -f setdrift-verify-namespace.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: setdrift-verify
+  labels:
+    app.kubernetes.io/name: setdrift
+rules:
+- apiGroups: ["*"]
+  resources: ["*"]
+  verbs: ["get", "list", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: setdrift-verify
+  labels:
+    app.kubernetes.io/name: setdrift
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: setdrift-verify
+subjects:
+- apiGroup: rbac.authorization.k8s.io
+  kind: Group
+  name: setdrift-verify
+
+# Copyright The SetDrift Authors
+# SPDX-License-Identifier: Apache-2.0

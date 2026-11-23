@@ -1,0 +1,83 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2018-05-01/subscriptionDeploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "description": "SetDrift: custom roles for running setdrift against AKS clusters in this subscription (docs/permissions-azure.md). SetDrift Cluster Access gets a kubeconfig, for clusters with Kubernetes RBAC (apply deploy/permissions/kubernetes/ there). SetDrift Export and SetDrift Verify also grant the Kubernetes access, for clusters with Azure RBAC for Kubernetes."
+  },
+  "variables": {
+    "clusterAccess": [
+      "Microsoft.ContainerService/managedClusters/read",
+      "Microsoft.ContainerService/managedClusters/listClusterUserCredential/action"
+    ]
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Authorization/roleDefinitions",
+      "apiVersion": "2022-04-01",
+      "name": "[guid(subscription().id, 'setdrift-cluster-access')]",
+      "properties": {
+        "roleName": "SetDrift Cluster Access",
+        "description": "Get an AKS cluster's kubeconfig for SetDrift; the Kubernetes access comes from Kubernetes RBAC",
+        "type": "CustomRole",
+        "permissions": [
+          {
+            "actions": "[variables('clusterAccess')]",
+            "notActions": [],
+            "dataActions": [],
+            "notDataActions": []
+          }
+        ],
+        "assignableScopes": [
+          "[subscription().id]"
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.Authorization/roleDefinitions",
+      "apiVersion": "2022-04-01",
+      "name": "[guid(subscription().id, 'setdrift-export')]",
+      "properties": {
+        "roleName": "SetDrift Export",
+        "description": "setdrift export and diff on AKS clusters with Azure RBAC for Kubernetes: read every Kubernetes object, Secrets included, whose values SetDrift drops as soon as it reads them",
+        "type": "CustomRole",
+        "permissions": [
+          {
+            "actions": "[variables('clusterAccess')]",
+            "notActions": [],
+            "dataActions": [
+              "Microsoft.ContainerService/managedClusters/*/read"
+            ],
+            "notDataActions": []
+          }
+        ],
+        "assignableScopes": [
+          "[subscription().id]"
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.Authorization/roleDefinitions",
+      "apiVersion": "2022-04-01",
+      "name": "[guid(subscription().id, 'setdrift-verify')]",
+      "properties": {
+        "roleName": "SetDrift Verify",
+        "description": "setdrift verify on AKS clusters with Azure RBAC for Kubernetes: read every Kubernetes object and patch for the server-side dry-run apply, which changes nothing but is checked as a write",
+        "type": "CustomRole",
+        "permissions": [
+          {
+            "actions": "[variables('clusterAccess')]",
+            "notActions": [],
+            "dataActions": [
+              "Microsoft.ContainerService/managedClusters/*/read",
+              "Microsoft.ContainerService/managedClusters/*/write"
+            ],
+            "notDataActions": []
+          }
+        ],
+        "assignableScopes": [
+          "[subscription().id]"
+        ]
+      }
+    }
+  ]
+}

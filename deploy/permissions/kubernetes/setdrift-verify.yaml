@@ -1,0 +1,37 @@
+# The Kubernetes permissions setdrift verify uses, across the cluster
+# (docs/permissions-kubernetes.md): get and list, and patch for the
+# server-side apply with dryRun=All, which changes nothing but which the API
+# server checks as it would a real apply. It also covers export and diff.
+#
+#   kubectl apply -f setdrift-verify.yaml
+#
+# The binding grants it to the group setdrift-verify; see setdrift-export.yaml
+# for naming your users instead.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: setdrift-verify
+  labels:
+    app.kubernetes.io/name: setdrift
+rules:
+- apiGroups: ["*"]
+  resources: ["*"]
+  verbs: ["get", "list", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: setdrift-verify
+  labels:
+    app.kubernetes.io/name: setdrift
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: setdrift-verify
+subjects:
+- apiGroup: rbac.authorization.k8s.io
+  kind: Group
+  name: setdrift-verify
+
+# Copyright The SetDrift Authors
+# SPDX-License-Identifier: Apache-2.0
