@@ -27,9 +27,14 @@ jobs:
     uses: ./.github/workflows/vulncheck.yaml
     permissions:
       contents: read
+  secret-scan:
+    uses: ./.github/workflows/secret-scan.yaml
+    permissions:
+      contents: read
+    secrets: inherit
 
   release:
-    needs: [ci, vulncheck]
+    needs: [ci, vulncheck, secret-scan]
     runs-on: ubuntu-latest
     permissions:
       # the release and its archives

@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Refuses a commit holding a credential, personal information or a cloud
+# identifier (scripts/secret-scan.sh). Turned on by make hooks.
+exec "$(git rev-parse --show-toplevel)/scripts/secret-scan.sh" staged
+
+# Copyright The SetDrift Authors
+# SPDX-License-Identifier: Apache-2.0

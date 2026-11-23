@@ -1,0 +1,130 @@
+# The secret scanner's rules (gitleaks, see scripts/secret-scan.sh): gitleaks'
+# own credential rules, plus SetDrift's rules for personal information and
+# cloud identifiers, which must never reach this public repository. CI runs it
+# on every push and pull request, and the pre-commit hook on every commit.
+#
+# A personal name can't be listed here, as this file is public: names and
+# addresses to refuse go in a list outside the repository instead (see
+# scripts/secret-scan.sh, PII_DENYLIST).
+
+title = "SetDrift secret scan"
+
+[extend]
+useDefault = true
+
+# An email address. GitHub's no-reply addresses, the example domains and
+# SetDrift's own role addresses are allowed; any other address is personal.
+[[rules]]
+id = "email-address"
+description = "An email address other than a GitHub no-reply, example or SetDrift role address"
+regex = '''[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}'''
+keywords = ["@"]
+[[rules.allowlists]]
+regexTarget = "match"
+regexes = [
+  '''@users\.noreply\.github\.com$''',
+  '''@(?:[a-z0-9-]+\.)?example\.(?:com|org|net)$''',
+  '''^(?:release|contact-form|security|noreply)@setdrift\.io$''',
+  '''@iam\.gserviceaccount\.com$''',
+  '''@(?:[a-z0-9-]+\.)?(?:svc|cluster\.local|local)$''',
+  '''^git@[a-z0-9.-]+$''',
+  # credentials in a URL are what the URL tests strip, and GitHub's own token rules catch real tokens there
+  '''@(?:github|gitlab)\.com$''', '''@bitbucket\.org$''',
+]
+
+# An AWS account ID, in an ARN, as an ECR registry, or right after the word
+# account. The documentation placeholders and AWS's own public accounts are
+# allowed.
+[[rules]]
+id = "aws-account-id-arn"
+description = "An AWS account ID in an ARN, other than a placeholder"
+regex = '''arn:aws[a-z-]*:[a-z0-9-]*:[a-z0-9-]*:(\d{12})\b'''
+secretGroup = 1
+keywords = ["arn:aws"]
+[[rules.allowlists]]
+regexTarget = "secret"
+regexes = ['''^(?:0{12}|1{12}|2{12}|3{12}|111122223333|123456789012|210987654321|602401143452)$''']
+
+[[rules]]
+id = "aws-account-id-ecr"
+description = "An AWS account ID as an ECR registry, other than a placeholder or AWS's own"
+regex = '''\b(\d{12})\.dkr\.ecr\.'''
+secretGroup = 1
+keywords = ["dkr.ecr"]
+[[rules.allowlists]]
+regexTarget = "secret"
+# 602401143452 is AWS's own account that serves the EKS images (amazon-k8s-cni and the like)
+regexes = ['''^(?:0{12}|1{12}|2{12}|3{12}|111122223333|123456789012|210987654321|602401143452)$''']
+
+[[rules]]
+id = "aws-account-id-named"
+description = "An AWS account ID right after the word account, other than a placeholder"
+regex = '''(?i)account[_ -]?id["':= ]+(\d{12})\b'''
+secretGroup = 1
+keywords = ["account"]
+[[rules.allowlists]]
+regexTarget = "secret"
+regexes = ['''^(?:0{12}|1{12}|2{12}|3{12}|111122223333|123456789012|210987654321)$''']
+
+# An Azure subscription or tenant ID, in a resource ID or next to its name.
+[[rules]]
+id = "azure-subscription-id"
+description = "An Azure subscription or tenant ID other than a placeholder"
+regex = '''(?i)(?:/subscriptions/|subscription[_ -]?id["':= ]+|tenant[_ -]?id["':= ]+)([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})'''
+secretGroup = 1
+keywords = ["subscription", "tenant"]
+[[rules.allowlists]]
+regexTarget = "secret"
+regexes = ['''^0{8}-0{4}-0{4}-0{4}-0{12}$''', '''^1{8}-1{4}-1{4}-1{4}-1{12}$''']
+
+# A Google Cloud billing account ID.
+[[rules]]
+id = "gcp-billing-account"
+description = "A Google Cloud billing account ID"
+regex = '''\b([0-9A-F]{6}-[0-9A-F]{6}-[0-9A-F]{6})\b'''
+secretGroup = 1
+
+# A Google Cloud project in a node's provider ID or a resource name. The
+# placeholders the tests and docs use are allowed.
+[[rules]]
+id = "gcp-project"
+description = "A Google Cloud project ID other than a placeholder"
+regex = '''(?:gce://|projects/)([a-z][a-z0-9-]{4,28}[a-z0-9])\b'''
+secretGroup = 1
+keywords = ["gce://", "projects/"]
+[[rules.allowlists]]
+regexTarget = "secret"
+regexes = ['''^(?:my-project|example-project|project-id|setdrift-e2e[a-z0-9-]*)$''', '''^[A-Z_]+$''']
+
+# A public IPv4 address. Private, loopback, link-local, CGNAT and documentation
+# ranges are allowed.
+[[rules]]
+id = "public-ipv4"
+description = "A public IPv4 address"
+regex = '''(?:^|[\s"'=:/(,\[@])((?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?:\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3})(?:$|[\s"'/:,)\]])'''
+secretGroup = 1
+[[rules.allowlists]]
+regexTarget = "secret"
+regexes = [
+  '''^10\.''', '''^127\.''', '''^0\.''', '''^169\.254\.''', '''^192\.168\.''',
+  '''^172\.(?:1[6-9]|2\d|3[01])\.''', '''^100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.''',
+  '''^192\.0\.2\.''', '''^198\.51\.100\.''', '''^203\.0\.113\.''', '''^255\.''', '''^224\.''',
+  # a version number, and the address the docs of many tools use as an example
+  '''^1\.0\.0\.0$''', '''^1\.2\.3\.4$''',
+]
+[[rules.allowlists]]
+# the numbers in an SVG drawing's path data, which can look like an address
+regexTarget = "line"
+regexes = ['''<path\b|\sd="[Mm]''']
+
+# Fixtures that hold fake secrets on purpose, to test that SetDrift redacts
+# them, and the license texts of third-party modules, which name their authors.
+[[allowlists]]
+description = "fake secrets in the redaction tests, and third-party license texts"
+paths = [
+  '''^pkg/redact/[^/]+_test\.go$''',
+  '''^testdata/corpus/secrets/''',
+  '''^pkg/awsinventory/awsinventory_test\.go$''',
+  '''^THIRD_PARTY_NOTICES$''',
+  '''^go\.sum$''',
+]
