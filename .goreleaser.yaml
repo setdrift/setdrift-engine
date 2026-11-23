@@ -21,8 +21,8 @@ builds:
     binary: setdrift
     env:
       - CGO_ENABLED=0
-    # Keep in step with ci.yaml's cross-compile list and
-    # scripts/third-party-notices.sh.
+    # Keep in step with scripts/third-party-notices.sh, and with the six
+    # binaries `make size` expects in dist/.
     goos: [linux, darwin, windows]
     goarch: [amd64, arm64]
     flags:

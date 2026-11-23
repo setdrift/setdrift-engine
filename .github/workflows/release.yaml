@@ -46,6 +46,9 @@ jobs:
       - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version-file: go.mod
+          # What is published is built from source, never from a cache an
+          # earlier run wrote: CI uses one to be fast, a release does not.
+          cache: false
       - uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
         with:
           # v2: the formula (brews) is deprecated in favor of casks, which
