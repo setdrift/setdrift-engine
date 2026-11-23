@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Refuses a push whose commits hold a credential, personal information or a
+# cloud identifier, or a personal commit address (scripts/secret-scan.sh).
+# Turned on by make hooks.
+set -euo pipefail
+zero=0000000000000000000000000000000000000000
+scan="$(git rev-parse --show-toplevel)/scripts/secret-scan.sh"
+# git gives one line for each ref pushed
+while read -r _ local _ remote; do
+  # a deleted branch pushes nothing
+  [[ $local == "$zero" ]] && continue
+  # a new branch is scanned from where it left main, an existing one from what the remote has
+  if [[ $remote == "$zero" ]]; then
+    base=$(git merge-base origin/main "$local" 2>/dev/null || true)
+    range=${base:+$base..}$local
+  else
+    range=$remote..$local
+  fi
+  "$scan" range "$range"
+done
+
+# Copyright The SetDrift Authors
+# SPDX-License-Identifier: Apache-2.0
