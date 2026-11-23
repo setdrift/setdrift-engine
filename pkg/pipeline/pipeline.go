@@ -16,6 +16,7 @@ import (
 	"setdrift.io/setdrift-engine/pkg/normalize"
 	"setdrift.io/setdrift-engine/pkg/ownership"
 	"setdrift.io/setdrift-engine/pkg/platform"
+	"setdrift.io/setdrift-engine/pkg/profile"
 	"setdrift.io/setdrift-engine/pkg/provenance"
 	"setdrift.io/setdrift-engine/pkg/redact"
 	"setdrift.io/setdrift-engine/pkg/resource"
@@ -106,6 +107,12 @@ func (p *Pipeline) Run(ctx context.Context, meta snapshot.Meta) (*snapshotv1alph
 	}
 	// invoking inventory.Build right after redaction, before later stages drop volumes, StatefulSet claims and status, its defined in pkg/inventory/inventory.go
 	meta.Inventory = inventory.Build(objs)
+	// checking if the inventory found nothing, if so one is started for the profile, which every capture has
+	if meta.Inventory == nil {
+		meta.Inventory = &snapshotv1alpha1.Inventory{}
+	}
+	// invoking profile.Build at the same point, while status and assigned values like a Service's clusterIP are still there, its defined in pkg/profile/profile.go
+	meta.Inventory.Profile = profile.Build(objs)
 	stages := []resource.Stage{p.Hygiene, p.Ownership, p.Lifecycle}
 	// checking if theres a platform stage, its added only when set since a nil *platform.Stage in the interface slice wouldnt compare equal to nil below
 	if p.Platform != nil {
@@ -154,6 +161,16 @@ func (p *Pipeline) Run(ctx context.Context, meta snapshot.Meta) (*snapshotv1alph
 		if cluster.Platform == "" && st.Result.Is(st.Result.Distribution) {
 			cluster.Platform = string(st.Result.Distribution)
 		}
+	}
+	// invoking profile.SetPlatform to give the profile the cloud and region the classification found, and the account in an EKS ARN, its defined in pkg/profile/nodes.go
+	meta.Inventory.Profile = profile.SetPlatform(meta.Inventory.Profile, cluster)
+	// checking if the profile found nothing, like for a directory of app manifests, if so its left out rather than written as a page of gaps
+	if len(meta.Inventory.Profile.GetEvidence()) == 0 {
+		meta.Inventory.Profile = nil
+	}
+	// checking if the inventory is empty after all, if so theres no inventory, as before the profile
+	if proto.Size(meta.Inventory) == 0 {
+		meta.Inventory = nil
 	}
 	meta.Cluster = cluster
 	// invoking snapshot.Build to put the snapshot together from the metadata and the objects, its defined in pkg/snapshot/snapshot.go

@@ -210,6 +210,125 @@ message Inventory {
   // the cluster's nodes, summarized: read from a cluster only, and only
   // when the credentials can list nodes
   NodeSummary nodes = 5;
+  // what the cluster is built on and with: its networks, DNS, storage and
+  // the components that run it (pkg/profile)
+  Profile profile = 6;
+}
+
+// Profile describes the cluster as infrastructure, what recreating it on
+// another platform or cloud starts from. It is read from the objects the
+// cluster runs (system components, their settings, custom resources), its
+// nodes and, with export --aws, the EKS API. Each value is listed in
+// evidence with where it was found. Settings only, never secret values.
+message Profile {
+  // the cloud account and place the cluster runs in
+  ProfileCloud cloud = 1;
+  ProfileNetwork network = 2;
+  ProfileDns dns = 3;
+  // the StorageClasses, with how many claims use each
+  repeated ProfileStorageClass storage_classes = 4;
+  // the system components found running, by role
+  repeated ProfileComponent components = 5;
+  // every value above and where it was found
+  repeated ProfileEvidence evidence = 6;
+}
+
+message ProfileCloud {
+  // aws, azure, gcp, local, other; empty when unknown
+  string provider = 1;
+  // the AWS account, GCP project or Azure subscription
+  string account = 2;
+  string region = 3;
+  // the zones the nodes run in
+  repeated string zones = 4;
+  // Azure: the resource group the nodes are in (AKS's node resource group)
+  string resource_group = 5;
+}
+
+message ProfileNetwork {
+  // the ranges pods get addresses from, when they have their own (an
+  // overlay or a cluster pool); empty when pods take addresses from the
+  // node network, as with the AWS VPC CNI
+  repeated string pod_cidrs = 1;
+  // the prefix length of each node's pod range, e.g. 24
+  int32 node_pod_prefix = 2;
+  repeated string service_cidrs = 3;
+  // the smallest range holding the nodes' internal addresses, per zone: the
+  // subnet they are in is this range or a larger one
+  repeated ProfileSubnet node_ranges = 4;
+  // aws-vpc-cni, cilium, calico, flannel, kindnet, azure-cni, ...
+  string cni = 5;
+  // CNI and proxy settings that shape the network, e.g. "prefix delegation",
+  // "overlay", "kube-proxy replacement"
+  repeated string cni_settings = 6;
+  // iptables, ipvs or nftables; empty when not found or kube-proxy is not used
+  string kube_proxy_mode = 7;
+  // ipv4, ipv6, or both
+  repeated string ip_families = 8;
+  // the cloud network: an AWS VPC, an Azure VNet, a GCP VPC network
+  string vpc_id = 9;
+  repeated ProfileSubnet subnets = 10;
+  repeated string security_groups = 11;
+  // public, private, or public and private
+  string api_endpoint_access = 12;
+  // the ranges allowed to reach a public API endpoint
+  repeated string api_public_access_cidrs = 13;
+  // the most pods one node takes (its allocatable pods)
+  int32 max_pods_per_node = 14;
+}
+
+message ProfileSubnet {
+  string id = 1;
+  string cidr = 2;
+  string zone = 3;
+  // what it was found holding: nodes, pods, load-balancers, control-plane
+  string use = 4;
+}
+
+message ProfileDns {
+  // e.g. cluster.local
+  string cluster_domain = 1;
+  // the cluster DNS Service's address
+  string cluster_dns_ip = 2;
+  // where cluster DNS forwards other names: addresses, or /etc/resolv.conf
+  repeated string upstreams = 3;
+  // the host names Ingresses and Gateway routes serve
+  repeated string hostnames = 4;
+  // the domains a DNS controller (external-dns) manages records in
+  repeated string managed_domains = 5;
+}
+
+message ProfileStorageClass {
+  string name = 1;
+  string provisioner = 2;
+  bool default = 3;
+  // e.g. type: gp3, encrypted: "true"; settings only, a secret's name at most
+  map<string, string> parameters = 4;
+  string reclaim_policy = 5;
+  string volume_binding_mode = 6;
+  bool allow_volume_expansion = 7;
+  // how many PersistentVolumeClaims use it
+  int32 claims = 8;
+}
+
+message ProfileComponent {
+  // cni, kube-proxy, dns, dns-records, ingress, load-balancer, service-mesh,
+  // certificates, node-autoscaling, autoscaling, secrets, storage, gitops,
+  // observability, policy, backup
+  string role = 1;
+  // e.g. cilium, aws-load-balancer-controller
+  string name = 2;
+  // the image tag, e.g. v1.16.2
+  string version = 3;
+  // the workload running it, e.g. DaemonSet kube-system/cilium
+  string workload = 4;
+}
+
+message ProfileEvidence {
+  // what was found, e.g. "pod network 10.244.0.0/16"
+  string value = 1;
+  // where, e.g. "ConfigMap kube-system/kubeadm-config"
+  string source = 2;
 }
 
 // HelmRelease is the chart a Helm release runs, from the release record's

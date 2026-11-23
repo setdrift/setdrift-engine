@@ -28,13 +28,23 @@ var poolLabels = []string{
 // Nodes lists the cluster's nodes and summarizes them, their count and shape without their names
 // the collector skips nodes as runtime state, but their shape is what tells two clusters' capacity apart
 func Nodes(ctx context.Context, dyn dynamic.Interface) (*snapshotv1alpha1.NodeSummary, error) {
+	// invoking ListNodes to read them, its defined below
+	nodes, err := ListNodes(ctx, dyn)
+	if err != nil {
+		return nil, err
+	}
+	// invoking SummarizeNodes to add them up, its defined below
+	return SummarizeNodes(nodes), nil
+}
+
+// ListNodes lists the cluster's nodes as the API gives them, for the summary and the profile, neither of which keeps a node's name
+func ListNodes(ctx context.Context, dyn dynamic.Interface) ([]unstructured.Unstructured, error) {
 	// listing every node in the cluster
 	list, err := dyn.Resource(nodesGVR).List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return nil, err
 	}
-	// invoking SummarizeNodes to add them up, its defined below
-	return SummarizeNodes(list.Items), nil
+	return list.Items, nil
 }
 
 // SummarizeNodes takes nodes as read from the API and adds them up, counts per instance type, zone, platform, kubelet version and pool, and the total allocatable cpu, memory and pods

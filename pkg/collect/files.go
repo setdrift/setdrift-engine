@@ -57,6 +57,10 @@ func (f FileSource) manifestPaths() ([]string, error) {
 				return fs.SkipDir
 			}
 		}
+		// invoking exportOwnDir to check if its a directory an export writes for people and tools in a cluster's directory, which isnt manifests, its defined below
+		if d.IsDir() && exportOwnDir(path) {
+			return fs.SkipDir
+		}
 		// checking if its a Kustomization file, a Kustomization that only lists files in the tree builds exactly those files, so its skipped
 		// one that changes them (patches, a namespace, images, generators) or pulls in files from elsewhere is refused
 		// read as manifests, a patch and its base would be the same object twice, and the export would keep the base's values
@@ -214,6 +218,19 @@ func (f FileSource) kustomization(path string) (reason string, err error) {
 	return leftOut(filepath.Dir(path), listed, root)
 }
 
+// exportOwnDirs are the directories setdrift export writes in a cluster's directory for people and tools, not manifests, kustomize.ProfileDir in pkg/emit/kustomize/profile.go
+var exportOwnDirs = map[string]bool{"cluster_profile": true}
+
+// exportOwnDir tells if a directory is one an export writes in a cluster's directory for people and tools, found by its name and the export marker beside it
+func exportOwnDir(path string) bool {
+	// checking the name first, then if the directory it is in is an export's cluster directory
+	if !exportOwnDirs[filepath.Base(path)] {
+		return false
+	}
+	_, err := os.Stat(filepath.Join(filepath.Dir(path), exportMarker))
+	return err == nil
+}
+
 // exportMarker is the file setdrift export writes in each cluster's directory, kustomize.ExportInfoFile in pkg/emit/kustomize/exportinfo.go, named here so collect doesnt depend on the emitter
 const exportMarker = ".setdrift-export"
 
@@ -245,8 +262,9 @@ func leftOut(dir string, listed []string, root string) (string, error) {
 		}
 		// checking if its a directory below the top
 		if d.IsDir() && path != dir {
-			// checking if its a dot-directory, which the directory read skips, or has a Kustomization of its own, if so its not this one's to list
-			if strings.HasPrefix(d.Name(), ".") || hasKustomization(path) {
+			// checking if its a dot-directory or an export's own directory, which the directory read skips, or has a Kustomization of its own, if so its not this one's to list
+			// invoking exportOwnDir for the export's own directories, its defined below
+			if strings.HasPrefix(d.Name(), ".") || exportOwnDir(path) || hasKustomization(path) {
 				return fs.SkipDir
 			}
 			return nil
