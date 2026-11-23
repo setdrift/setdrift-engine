@@ -24,3 +24,10 @@ controllers to install first, and what lives outside Kubernetes. In short:
 Point Argo CD or Flux at this directory, or:
 
     kubectl apply --server-side -k .
+
+## Cluster profile
+
+cluster_profile/README.md describes the cluster as infrastructure: its cloud, networks
+(pod, service and node ranges, VPC, subnets), DNS, storage and system
+components, each with where it was found. Start there to recreate the
+cluster on another platform or cloud.

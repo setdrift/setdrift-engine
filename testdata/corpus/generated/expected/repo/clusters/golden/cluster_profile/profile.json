@@ -1,0 +1,11 @@
+{
+  "cloud": {},
+  "network": {},
+  "dns": {},
+  "evidence": [
+    {
+      "value": "service network includes 172.20.0.1",
+      "source": "Service default/kubernetes"
+    }
+  ]
+}

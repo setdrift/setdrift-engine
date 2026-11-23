@@ -23,7 +23,38 @@
           "ReadWriteOnce"
         ]
       }
-    ]
+    ],
+    "profile": {
+      "cloud": {},
+      "network": {},
+      "dns": {},
+      "storageClasses": [
+        {
+          "name": "gp3",
+          "provisioner": "ebs.csi.aws.com",
+          "parameters": {
+            "type": "gp3"
+          },
+          "reclaimPolicy": "Delete",
+          "volumeBindingMode": "WaitForFirstConsumer",
+          "claims": 2
+        }
+      ],
+      "components": [
+        {
+          "role": "observability",
+          "name": "fluent-bit",
+          "version": "latest",
+          "workload": "apps/DaemonSet shop/log-agent"
+        }
+      ],
+      "evidence": [
+        {
+          "value": "observability fluent-bit latest",
+          "source": "apps/DaemonSet shop/log-agent"
+        }
+      ]
+    }
   },
   "producer": {
     "name": "setdrift-test",

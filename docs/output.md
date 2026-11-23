@@ -9,6 +9,7 @@ verify/<time>-<cluster>-report.md, .json   each setdrift verify run
 clusters/<cluster>/
   README.md                 what the export found, and how to apply it
   RESTORE.md                the restore playbook
+  cluster_profile/README.md, profile.json   the cluster as infrastructure
   kustomization.yaml        everything that can be applied, in order
   crds/<name>.yaml
   cluster-scoped/<kind>[.<group>]/<name>.yaml
@@ -33,6 +34,34 @@ self-managed cluster on a cloud's VMs) is an overlay of the generic set plus
 the objects only that platform serves, with its own README and, for AWS and
 EKS, its own restore steps (`platform/aws/RESTORE.md`,
 `platform/aws/eks/RESTORE.md`).
+
+## Cluster profile
+
+`cluster_profile/` describes the cluster as infrastructure, where
+recreating it on another platform or cloud starts: README.md for people,
+profile.json (the snapshot's `inventory.profile`) for tools. SetDrift reads
+it from what the cluster already says about itself, so it needs no
+permission beyond what export uses:
+
+| Part | Read from |
+|---|---|
+| Cloud, account, region, zones | The platform classification; the nodes' provider IDs (GCP project, Azure subscription and resource group) and zones; on EKS the cluster ARN and, with `--aws`, the EKS API |
+| Pod network | kubeadm's ClusterConfiguration, kube-proxy's `clusterCIDR`, cilium's cluster pool, calico's IPPools, flannel's net-conf.json, kindnet's `POD_SUBNET`; else the range holding the nodes' `spec.podCIDR`s |
+| Service network | `ServiceCIDR` objects (Kubernetes 1.33 and later), kubeadm's ClusterConfiguration, the EKS API; the `kubernetes` Service's address shows where it starts |
+| Node addresses | The smallest range holding the nodes' internal addresses, per zone: the subnet is that size or larger |
+| VPC, subnets, security groups | EKS Auto Mode NodeClasses and Karpenter EC2NodeClasses (as resolved, with zones), VPC CNI ENIConfigs (pod subnets), the AWS Load Balancer Controller's `--aws-vpc-id`, TargetGroupBindings, load balancer annotations on Services and Ingresses, and with `--aws` the EKS API |
+| CNI, kube-proxy | The network plugin's workload and settings (VPC CNI prefix delegation, custom networking; cilium IPAM, routing, kube-proxy replacement; calico encapsulation), kube-proxy's mode |
+| DNS | CoreDNS's Corefile (cluster domain, upstreams), the cluster DNS Service, external-dns's `--domain-filter`, the host names Ingresses and Gateway routes serve |
+| Storage | StorageClasses, their settings and how many claims use each |
+| Components | The images of Deployments, DaemonSets and StatefulSets: network plugins, ingress and load balancer controllers, service meshes, cert-manager, autoscalers, CSI drivers, secret operators, GitOps tools, observability and policy agents |
+
+Each value is listed under "Where each value was found" with its source, so
+two sources that disagree both show. A part with nothing found reads "not
+found" rather than a guess. Like the rest of an export, it holds settings
+only: it reads the objects after every secret value has been replaced. The
+directory read (`diff ./export`, `export --from-dir`) leaves
+`cluster_profile/` out, as it is not manifests. A directory of manifests
+with no system components gets no profile.
 
 ## CRDs
 

@@ -160,6 +160,42 @@ func TestFileSourceSkipsExportRecords(t *testing.T) {
 	}
 }
 
+// check that an export's cluster_profile/ is left out, with its own kustomization too, while a cluster_profile/ outside an export is read
+func TestFileSourceSkipsClusterProfile(t *testing.T) {
+	dir := t.TempDir()
+	cm := func(name string) string {
+		return "apiVersion: v1\nkind: ConfigMap\nmetadata: {name: " + name + ", namespace: shop}\n"
+	}
+	for path, content := range map[string]string{
+		"clusters/prod/.setdrift-export":             "{}",
+		"clusters/prod/kustomization.yaml":           "resources: [cm.yaml]\n",
+		"clusters/prod/cm.yaml":                      cm("in-export"),
+		"clusters/prod/cluster_profile/profile.json": `{"network": {"pod_cidrs": ["10.244.0.0/16"]}}`,
+		"clusters/prod/cluster_profile/vpc.yaml":     "AWSTemplateFormatVersion: '2010-09-09'\n",
+		"apps/cluster_profile/cm.yaml":               cm("not-an-export"),
+	} {
+		p := filepath.Join(dir, filepath.FromSlash(path))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	res, err := collect.FileSource{Dir: dir}.Collect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, o := range res.Objects {
+		names = append(names, o.GetName())
+	}
+	sort.Strings(names)
+	if strings.Join(names, ",") != "in-export,not-an-export" {
+		t.Errorf("read %v, want in-export and not-an-export", names)
+	}
+}
+
 // check that a symlink in the directory isnt followed, since it could lead to a file outside it
 func TestFileSourceSkipsSymlinks(t *testing.T) {
 	if runtime.GOOS == "windows" {

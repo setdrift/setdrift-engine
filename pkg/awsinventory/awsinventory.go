@@ -15,9 +15,11 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/eks"
+	ekstypes "github.com/aws/aws-sdk-go-v2/service/eks/types"
 	"github.com/aws/aws-sdk-go-v2/service/iam"
 	"github.com/aws/smithy-go"
 
+	"setdrift.io/setdrift-engine/pkg/profile"
 	snapshotv1alpha1 "setdrift.io/setdrift-engine/pkg/snapshot/v1alpha1"
 )
 
@@ -90,6 +92,8 @@ func Collect(ctx context.Context, c Clients, cluster, region string, snap *snaps
 			snap.Cluster.ProviderId = arn
 		}
 	}
+	// invoking eksNetwork to add the VPC, subnets, security groups, service network and API endpoint to the profile, its defined below
+	snap.Inventory.Profile = profile.AddEKS(snap.Inventory.Profile, eksNetwork(ec, inv.AccountId, region))
 	// checking if the snapshot has a cluster, if so its marked as EKS
 	if snap.Cluster != nil {
 		snap.Cluster.Platform = "eks"
@@ -461,6 +465,29 @@ func short(err error) string {
 		return api.ErrorCode() + ": " + api.ErrorMessage()
 	}
 	return err.Error()
+}
+
+// eksNetwork takes the cluster as DescribeCluster gave it and gives back what it says about the network, for the profile
+// it needs no call beyond the one Collect already makes
+func eksNetwork(ec *ekstypes.Cluster, account, region string) profile.EKS {
+	e := profile.EKS{Account: account, Region: region}
+	// checking if the cluster has its VPC settings
+	if v := ec.ResourcesVpcConfig; v != nil {
+		e.VpcID = aws.ToString(v.VpcId)
+		e.SubnetIDs = v.SubnetIds
+		e.SecurityGroupIDs = v.SecurityGroupIds
+		e.ClusterSecurityGroupID = aws.ToString(v.ClusterSecurityGroupId)
+		e.EndpointPublicAccess = v.EndpointPublicAccess
+		e.EndpointPrivateAccess = v.EndpointPrivateAccess
+		e.PublicAccessCIDRs = v.PublicAccessCidrs
+	}
+	// checking if the cluster has its Kubernetes network settings
+	if k := ec.KubernetesNetworkConfig; k != nil {
+		e.ServiceIPv4CIDR = aws.ToString(k.ServiceIpv4Cidr)
+		e.ServiceIPv6CIDR = aws.ToString(k.ServiceIpv6Cidr)
+		e.IPFamily = string(k.IpFamily)
+	}
+	return e
 }
 
 // Copyright The SetDrift Authors

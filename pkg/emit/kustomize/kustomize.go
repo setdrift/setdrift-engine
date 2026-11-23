@@ -4,6 +4,8 @@
 //	clusters/<cluster>/README.md
 //	clusters/<cluster>/RESTORE.md
 //	clusters/<cluster>/.setdrift-export (the source cluster, for setdrift verify, see ExportInfo)
+//	clusters/<cluster>/cluster_profile/README.md (the cluster as infrastructure, see ProfileDir)
+//	clusters/<cluster>/cluster_profile/profile.json
 //	clusters/<cluster>/restore/volumes/<ns>/<claim>.yaml
 //	clusters/<cluster>/crds/kustomization.yaml
 //	clusters/<cluster>/crds/<name>.yaml
@@ -350,6 +352,10 @@ func (e Emitter) write(s *snapshotv1alpha1.Snapshot, out *outDir, name string) e
 	if err := writeExportInfo(out, s); err != nil {
 		return err
 	}
+	// invoking writeProfile to write cluster_profile/, the cluster described as infrastructure, its defined in profile.go
+	if err := writeProfile(out, s); err != nil {
+		return err
+	}
 	// checking if any crds were written, if so the README says to apply them first
 	_, hasCRDs := buckets[crdsDir]
 	// invoking readme to build README.md and out.write to write it, both defined below
@@ -421,6 +427,14 @@ func (e Emitter) readme(s *snapshotv1alpha1.Snapshot, name string, hasCRDs bool,
 		readme += "\n"
 	}
 	readme += fmt.Sprintf(rootReadmeApply, apply)
+	// checking if the snapshot has a profile, if so the README points at it
+	if s.GetInventory().GetProfile() != nil {
+		readme += "\n## Cluster profile\n\n" +
+			ProfileDir + "/README.md describes the cluster as infrastructure: its cloud, networks\n" +
+			"(pod, service and node ranges, VPC, subnets), DNS, storage and system\n" +
+			"components, each with where it was found. Start there to recreate the\n" +
+			"cluster on another platform or cloud.\n"
+	}
 	// checking if the export has a platform set, if so the README explains it
 	// invoking cls.Summary to name the source's platform, its defined in pkg/platform/platform.go
 	if platDir != "" {

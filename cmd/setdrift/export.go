@@ -38,6 +38,7 @@ import (
 	"setdrift.io/setdrift-engine/pkg/normalize"
 	"setdrift.io/setdrift-engine/pkg/pipeline"
 	"setdrift.io/setdrift-engine/pkg/platform"
+	"setdrift.io/setdrift-engine/pkg/profile"
 	"setdrift.io/setdrift-engine/pkg/provenance"
 	"setdrift.io/setdrift-engine/pkg/snapshot"
 	snapshotv1alpha1 "setdrift.io/setdrift-engine/pkg/snapshot/v1alpha1"
@@ -527,13 +528,15 @@ func capture(ctx context.Context, src *source, cs captureSettings, at time.Time)
 	}
 	// checking if a cluster was read, if so the snapshot also gets the nodes' shape, for diff
 	if c, ok := src.collector.(*collect.ClusterCollector); ok {
-		// invoking inventory.Nodes and checking if it worked, credentials that cant list nodes leave it out, its defined in pkg/inventory/nodes.go
-		if nodes, err := inventory.Nodes(ctx, c.Dynamic); err == nil {
+		// invoking inventory.ListNodes and checking if it worked, credentials that cant list nodes leave it out, its defined in pkg/inventory/nodes.go
+		if nodes, err := inventory.ListNodes(ctx, c.Dynamic); err == nil {
 			// checking if the snapshot has no inventory yet, if so it gets one
 			if snap.Inventory == nil {
 				snap.Inventory = &snapshotv1alpha1.Inventory{}
 			}
-			snap.Inventory.Nodes = nodes
+			snap.Inventory.Nodes = inventory.SummarizeNodes(nodes)
+			// invoking profile.AddNodes to add their zones, address ranges, pod ranges and cloud account to the profile, its defined in pkg/profile/nodes.go
+			snap.Inventory.Profile = profile.AddNodes(snap.Inventory.Profile, nodes)
 		}
 	}
 	// checking if --aws was given, if so the rest of the AWS read happens now since it needs the snapshot, its IRSA roles and volumes

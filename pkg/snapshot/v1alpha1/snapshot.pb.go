@@ -1117,7 +1117,10 @@ type Inventory struct {
 	HelmReleases []*HelmRelease `protobuf:"bytes,4,rep,name=helm_releases,json=helmReleases,proto3" json:"helm_releases,omitempty"`
 	// the cluster's nodes, summarized: read from a cluster only, and only
 	// when the credentials can list nodes
-	Nodes         *NodeSummary `protobuf:"bytes,5,opt,name=nodes,proto3" json:"nodes,omitempty"`
+	Nodes *NodeSummary `protobuf:"bytes,5,opt,name=nodes,proto3" json:"nodes,omitempty"`
+	// what the cluster is built on and with: its networks, DNS, storage and
+	// the components that run it (pkg/profile)
+	Profile       *Profile `protobuf:"bytes,6,opt,name=profile,proto3" json:"profile,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1187,6 +1190,729 @@ func (x *Inventory) GetNodes() *NodeSummary {
 	return nil
 }
 
+func (x *Inventory) GetProfile() *Profile {
+	if x != nil {
+		return x.Profile
+	}
+	return nil
+}
+
+// Profile describes the cluster as infrastructure, what recreating it on
+// another platform or cloud starts from. It is read from the objects the
+// cluster runs (system components, their settings, custom resources), its
+// nodes and, with export --aws, the EKS API. Each value is listed in
+// evidence with where it was found. Settings only, never secret values.
+type Profile struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// the cloud account and place the cluster runs in
+	Cloud   *ProfileCloud   `protobuf:"bytes,1,opt,name=cloud,proto3" json:"cloud,omitempty"`
+	Network *ProfileNetwork `protobuf:"bytes,2,opt,name=network,proto3" json:"network,omitempty"`
+	Dns     *ProfileDns     `protobuf:"bytes,3,opt,name=dns,proto3" json:"dns,omitempty"`
+	// the StorageClasses, with how many claims use each
+	StorageClasses []*ProfileStorageClass `protobuf:"bytes,4,rep,name=storage_classes,json=storageClasses,proto3" json:"storage_classes,omitempty"`
+	// the system components found running, by role
+	Components []*ProfileComponent `protobuf:"bytes,5,rep,name=components,proto3" json:"components,omitempty"`
+	// every value above and where it was found
+	Evidence      []*ProfileEvidence `protobuf:"bytes,6,rep,name=evidence,proto3" json:"evidence,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Profile) Reset() {
+	*x = Profile{}
+	mi := &file_setdrift_snapshot_v1alpha1_snapshot_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Profile) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Profile) ProtoMessage() {}
+
+func (x *Profile) ProtoReflect() protoreflect.Message {
+	mi := &file_setdrift_snapshot_v1alpha1_snapshot_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Profile.ProtoReflect.Descriptor instead.
+func (*Profile) Descriptor() ([]byte, []int) {
+	return file_setdrift_snapshot_v1alpha1_snapshot_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *Profile) GetCloud() *ProfileCloud {
+	if x != nil {
+		return x.Cloud
+	}
+	return nil
+}
+
+func (x *Profile) GetNetwork() *ProfileNetwork {
+	if x != nil {
+		return x.Network
+	}
+	return nil
+}
+
+func (x *Profile) GetDns() *ProfileDns {
+	if x != nil {
+		return x.Dns
+	}
+	return nil
+}
+
+func (x *Profile) GetStorageClasses() []*ProfileStorageClass {
+	if x != nil {
+		return x.StorageClasses
+	}
+	return nil
+}
+
+func (x *Profile) GetComponents() []*ProfileComponent {
+	if x != nil {
+		return x.Components
+	}
+	return nil
+}
+
+func (x *Profile) GetEvidence() []*ProfileEvidence {
+	if x != nil {
+		return x.Evidence
+	}
+	return nil
+}
+
+type ProfileCloud struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// aws, azure, gcp, local, other; empty when unknown
+	Provider string `protobuf:"bytes,1,opt,name=provider,proto3" json:"provider,omitempty"`
+	// the AWS account, GCP project or Azure subscription
+	Account string `protobuf:"bytes,2,opt,name=account,proto3" json:"account,omitempty"`
+	Region  string `protobuf:"bytes,3,opt,name=region,proto3" json:"region,omitempty"`
+	// the zones the nodes run in
+	Zones []string `protobuf:"bytes,4,rep,name=zones,proto3" json:"zones,omitempty"`
+	// Azure: the resource group the nodes are in (AKS's node resource group)
+	ResourceGroup string `protobuf:"bytes,5,opt,name=resource_group,json=resourceGroup,proto3" json:"resource_group,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ProfileCloud) Reset() {
+	*x = ProfileCloud{}
+	mi := &file_setdrift_snapshot_v1alpha1_snapshot_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ProfileCloud) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ProfileCloud) ProtoMessage() {}
+
+func (x *ProfileCloud) ProtoReflect() protoreflect.Message {
+	mi := &file_setdrift_snapshot_v1alpha1_snapshot_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ProfileCloud.ProtoReflect.Descriptor instead.
+func (*ProfileCloud) Descriptor() ([]byte, []int) {
+	return file_setdrift_snapshot_v1alpha1_snapshot_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *ProfileCloud) GetProvider() string {
+	if x != nil {
+		return x.Provider
+	}
+	return ""
+}
+
+func (x *ProfileCloud) GetAccount() string {
+	if x != nil {
+		return x.Account
+	}
+	return ""
+}
+
+func (x *ProfileCloud) GetRegion() string {
+	if x != nil {
+		return x.Region
+	}
+	return ""
+}
+
+func (x *ProfileCloud) GetZones() []string {
+	if x != nil {
+		return x.Zones
+	}
+	return nil
+}
+
+func (x *ProfileCloud) GetResourceGroup() string {
+	if x != nil {
+		return x.ResourceGroup
+	}
+	return ""
+}
+
+type ProfileNetwork struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// the ranges pods get addresses from, when they have their own (an
+	// overlay or a cluster pool); empty when pods take addresses from the
+	// node network, as with the AWS VPC CNI
+	PodCidrs []string `protobuf:"bytes,1,rep,name=pod_cidrs,json=podCidrs,proto3" json:"pod_cidrs,omitempty"`
+	// the prefix length of each node's pod range, e.g. 24
+	NodePodPrefix int32    `protobuf:"varint,2,opt,name=node_pod_prefix,json=nodePodPrefix,proto3" json:"node_pod_prefix,omitempty"`
+	ServiceCidrs  []string `protobuf:"bytes,3,rep,name=service_cidrs,json=serviceCidrs,proto3" json:"service_cidrs,omitempty"`
+	// the smallest range holding the nodes' internal addresses, per zone: the
+	// subnet they are in is this range or a larger one
+	NodeRanges []*ProfileSubnet `protobuf:"bytes,4,rep,name=node_ranges,json=nodeRanges,proto3" json:"node_ranges,omitempty"`
+	// aws-vpc-cni, cilium, calico, flannel, kindnet, azure-cni, ...
+	Cni string `protobuf:"bytes,5,opt,name=cni,proto3" json:"cni,omitempty"`
+	// CNI and proxy settings that shape the network, e.g. "prefix delegation",
+	// "overlay", "kube-proxy replacement"
+	CniSettings []string `protobuf:"bytes,6,rep,name=cni_settings,json=cniSettings,proto3" json:"cni_settings,omitempty"`
+	// iptables, ipvs or nftables; empty when not found or kube-proxy is not used
+	KubeProxyMode string `protobuf:"bytes,7,opt,name=kube_proxy_mode,json=kubeProxyMode,proto3" json:"kube_proxy_mode,omitempty"`
+	// ipv4, ipv6, or both
+	IpFamilies []string `protobuf:"bytes,8,rep,name=ip_families,json=ipFamilies,proto3" json:"ip_families,omitempty"`
+	// the cloud network: an AWS VPC, an Azure VNet, a GCP VPC network
+	VpcId          string           `protobuf:"bytes,9,opt,name=vpc_id,json=vpcId,proto3" json:"vpc_id,omitempty"`
+	Subnets        []*ProfileSubnet `protobuf:"bytes,10,rep,name=subnets,proto3" json:"subnets,omitempty"`
+	SecurityGroups []string         `protobuf:"bytes,11,rep,name=security_groups,json=securityGroups,proto3" json:"security_groups,omitempty"`
+	// public, private, or public and private
+	ApiEndpointAccess string `protobuf:"bytes,12,opt,name=api_endpoint_access,json=apiEndpointAccess,proto3" json:"api_endpoint_access,omitempty"`
+	// the ranges allowed to reach a public API endpoint
+	ApiPublicAccessCidrs []string `protobuf:"bytes,13,rep,name=api_public_access_cidrs,json=apiPublicAccessCidrs,proto3" json:"api_public_access_cidrs,omitempty"`
+	// the most pods one node takes (its allocatable pods)
+	MaxPodsPerNode int32 `protobuf:"varint,14,opt,name=max_pods_per_node,json=maxPodsPerNode,proto3" json:"max_pods_per_node,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *ProfileNetwork) Reset() {
+	*x = ProfileNetwork{}
+	mi := &file_setdrift_snapshot_v1alpha1_snapshot_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ProfileNetwork) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ProfileNetwork) ProtoMessage() {}
+
+func (x *ProfileNetwork) ProtoReflect() protoreflect.Message {
+	mi := &file_setdrift_snapshot_v1alpha1_snapshot_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ProfileNetwork.ProtoReflect.Descriptor instead.
+func (*ProfileNetwork) Descriptor() ([]byte, []int) {
+	return file_setdrift_snapshot_v1alpha1_snapshot_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *ProfileNetwork) GetPodCidrs() []string {
+	if x != nil {
+		return x.PodCidrs
+	}
+	return nil
+}
+
+func (x *ProfileNetwork) GetNodePodPrefix() int32 {
+	if x != nil {
+		return x.NodePodPrefix
+	}
+	return 0
+}
+
+func (x *ProfileNetwork) GetServiceCidrs() []string {
+	if x != nil {
+		return x.ServiceCidrs
+	}
+	return nil
+}
+
+func (x *ProfileNetwork) GetNodeRanges() []*ProfileSubnet {
+	if x != nil {
+		return x.NodeRanges
+	}
+	return nil
+}
+
+func (x *ProfileNetwork) GetCni() string {
+	if x != nil {
+		return x.Cni
+	}
+	return ""
+}
+
+func (x *ProfileNetwork) GetCniSettings() []string {
+	if x != nil {
+		return x.CniSettings
+	}
+	return nil
+}
+
+func (x *ProfileNetwork) GetKubeProxyMode() string {
+	if x != nil {
+		return x.KubeProxyMode
+	}
+	return ""
+}
+
+func (x *ProfileNetwork) GetIpFamilies() []string {
+	if x != nil {
+		return x.IpFamilies
+	}
+	return nil
+}
+
+func (x *ProfileNetwork) GetVpcId() string {
+	if x != nil {
+		return x.VpcId
+	}
+	return ""
+}
+
+func (x *ProfileNetwork) GetSubnets() []*ProfileSubnet {
+	if x != nil {
+		return x.Subnets
+	}
+	return nil
+}
+
+func (x *ProfileNetwork) GetSecurityGroups() []string {
+	if x != nil {
+		return x.SecurityGroups
+	}
+	return nil
+}
+
+func (x *ProfileNetwork) GetApiEndpointAccess() string {
+	if x != nil {
+		return x.ApiEndpointAccess
+	}
+	return ""
+}
+
+func (x *ProfileNetwork) GetApiPublicAccessCidrs() []string {
+	if x != nil {
+		return x.ApiPublicAccessCidrs
+	}
+	return nil
+}
+
+func (x *ProfileNetwork) GetMaxPodsPerNode() int32 {
+	if x != nil {
+		return x.MaxPodsPerNode
+	}
+	return 0
+}
+
+type ProfileSubnet struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Id    string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	Cidr  string                 `protobuf:"bytes,2,opt,name=cidr,proto3" json:"cidr,omitempty"`
+	Zone  string                 `protobuf:"bytes,3,opt,name=zone,proto3" json:"zone,omitempty"`
+	// what it was found holding: nodes, pods, load-balancers, control-plane
+	Use           string `protobuf:"bytes,4,opt,name=use,proto3" json:"use,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ProfileSubnet) Reset() {
+	*x = ProfileSubnet{}
+	mi := &file_setdrift_snapshot_v1alpha1_snapshot_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ProfileSubnet) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ProfileSubnet) ProtoMessage() {}
+
+func (x *ProfileSubnet) ProtoReflect() protoreflect.Message {
+	mi := &file_setdrift_snapshot_v1alpha1_snapshot_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ProfileSubnet.ProtoReflect.Descriptor instead.
+func (*ProfileSubnet) Descriptor() ([]byte, []int) {
+	return file_setdrift_snapshot_v1alpha1_snapshot_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *ProfileSubnet) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *ProfileSubnet) GetCidr() string {
+	if x != nil {
+		return x.Cidr
+	}
+	return ""
+}
+
+func (x *ProfileSubnet) GetZone() string {
+	if x != nil {
+		return x.Zone
+	}
+	return ""
+}
+
+func (x *ProfileSubnet) GetUse() string {
+	if x != nil {
+		return x.Use
+	}
+	return ""
+}
+
+type ProfileDns struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// e.g. cluster.local
+	ClusterDomain string `protobuf:"bytes,1,opt,name=cluster_domain,json=clusterDomain,proto3" json:"cluster_domain,omitempty"`
+	// the cluster DNS Service's address
+	ClusterDnsIp string `protobuf:"bytes,2,opt,name=cluster_dns_ip,json=clusterDnsIp,proto3" json:"cluster_dns_ip,omitempty"`
+	// where cluster DNS forwards other names: addresses, or /etc/resolv.conf
+	Upstreams []string `protobuf:"bytes,3,rep,name=upstreams,proto3" json:"upstreams,omitempty"`
+	// the host names Ingresses and Gateway routes serve
+	Hostnames []string `protobuf:"bytes,4,rep,name=hostnames,proto3" json:"hostnames,omitempty"`
+	// the domains a DNS controller (external-dns) manages records in
+	ManagedDomains []string `protobuf:"bytes,5,rep,name=managed_domains,json=managedDomains,proto3" json:"managed_domains,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *ProfileDns) Reset() {
+	*x = ProfileDns{}
+	mi := &file_setdrift_snapshot_v1alpha1_snapshot_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ProfileDns) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ProfileDns) ProtoMessage() {}
+
+func (x *ProfileDns) ProtoReflect() protoreflect.Message {
+	mi := &file_setdrift_snapshot_v1alpha1_snapshot_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ProfileDns.ProtoReflect.Descriptor instead.
+func (*ProfileDns) Descriptor() ([]byte, []int) {
+	return file_setdrift_snapshot_v1alpha1_snapshot_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *ProfileDns) GetClusterDomain() string {
+	if x != nil {
+		return x.ClusterDomain
+	}
+	return ""
+}
+
+func (x *ProfileDns) GetClusterDnsIp() string {
+	if x != nil {
+		return x.ClusterDnsIp
+	}
+	return ""
+}
+
+func (x *ProfileDns) GetUpstreams() []string {
+	if x != nil {
+		return x.Upstreams
+	}
+	return nil
+}
+
+func (x *ProfileDns) GetHostnames() []string {
+	if x != nil {
+		return x.Hostnames
+	}
+	return nil
+}
+
+func (x *ProfileDns) GetManagedDomains() []string {
+	if x != nil {
+		return x.ManagedDomains
+	}
+	return nil
+}
+
+type ProfileStorageClass struct {
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	Name        string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Provisioner string                 `protobuf:"bytes,2,opt,name=provisioner,proto3" json:"provisioner,omitempty"`
+	Default     bool                   `protobuf:"varint,3,opt,name=default,proto3" json:"default,omitempty"`
+	// e.g. type: gp3, encrypted: "true"; settings only, a secret's name at most
+	Parameters           map[string]string `protobuf:"bytes,4,rep,name=parameters,proto3" json:"parameters,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	ReclaimPolicy        string            `protobuf:"bytes,5,opt,name=reclaim_policy,json=reclaimPolicy,proto3" json:"reclaim_policy,omitempty"`
+	VolumeBindingMode    string            `protobuf:"bytes,6,opt,name=volume_binding_mode,json=volumeBindingMode,proto3" json:"volume_binding_mode,omitempty"`
+	AllowVolumeExpansion bool              `protobuf:"varint,7,opt,name=allow_volume_expansion,json=allowVolumeExpansion,proto3" json:"allow_volume_expansion,omitempty"`
+	// how many PersistentVolumeClaims use it
+	Claims        int32 `protobuf:"varint,8,opt,name=claims,proto3" json:"claims,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ProfileStorageClass) Reset() {
+	*x = ProfileStorageClass{}
+	mi := &file_setdrift_snapshot_v1alpha1_snapshot_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ProfileStorageClass) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ProfileStorageClass) ProtoMessage() {}
+
+func (x *ProfileStorageClass) ProtoReflect() protoreflect.Message {
+	mi := &file_setdrift_snapshot_v1alpha1_snapshot_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ProfileStorageClass.ProtoReflect.Descriptor instead.
+func (*ProfileStorageClass) Descriptor() ([]byte, []int) {
+	return file_setdrift_snapshot_v1alpha1_snapshot_proto_rawDescGZIP(), []int{17}
+}
+
+func (x *ProfileStorageClass) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *ProfileStorageClass) GetProvisioner() string {
+	if x != nil {
+		return x.Provisioner
+	}
+	return ""
+}
+
+func (x *ProfileStorageClass) GetDefault() bool {
+	if x != nil {
+		return x.Default
+	}
+	return false
+}
+
+func (x *ProfileStorageClass) GetParameters() map[string]string {
+	if x != nil {
+		return x.Parameters
+	}
+	return nil
+}
+
+func (x *ProfileStorageClass) GetReclaimPolicy() string {
+	if x != nil {
+		return x.ReclaimPolicy
+	}
+	return ""
+}
+
+func (x *ProfileStorageClass) GetVolumeBindingMode() string {
+	if x != nil {
+		return x.VolumeBindingMode
+	}
+	return ""
+}
+
+func (x *ProfileStorageClass) GetAllowVolumeExpansion() bool {
+	if x != nil {
+		return x.AllowVolumeExpansion
+	}
+	return false
+}
+
+func (x *ProfileStorageClass) GetClaims() int32 {
+	if x != nil {
+		return x.Claims
+	}
+	return 0
+}
+
+type ProfileComponent struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// cni, kube-proxy, dns, dns-records, ingress, load-balancer, service-mesh,
+	// certificates, node-autoscaling, autoscaling, secrets, storage, gitops,
+	// observability, policy, backup
+	Role string `protobuf:"bytes,1,opt,name=role,proto3" json:"role,omitempty"`
+	// e.g. cilium, aws-load-balancer-controller
+	Name string `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	// the image tag, e.g. v1.16.2
+	Version string `protobuf:"bytes,3,opt,name=version,proto3" json:"version,omitempty"`
+	// the workload running it, e.g. DaemonSet kube-system/cilium
+	Workload      string `protobuf:"bytes,4,opt,name=workload,proto3" json:"workload,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ProfileComponent) Reset() {
+	*x = ProfileComponent{}
+	mi := &file_setdrift_snapshot_v1alpha1_snapshot_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ProfileComponent) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ProfileComponent) ProtoMessage() {}
+
+func (x *ProfileComponent) ProtoReflect() protoreflect.Message {
+	mi := &file_setdrift_snapshot_v1alpha1_snapshot_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ProfileComponent.ProtoReflect.Descriptor instead.
+func (*ProfileComponent) Descriptor() ([]byte, []int) {
+	return file_setdrift_snapshot_v1alpha1_snapshot_proto_rawDescGZIP(), []int{18}
+}
+
+func (x *ProfileComponent) GetRole() string {
+	if x != nil {
+		return x.Role
+	}
+	return ""
+}
+
+func (x *ProfileComponent) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *ProfileComponent) GetVersion() string {
+	if x != nil {
+		return x.Version
+	}
+	return ""
+}
+
+func (x *ProfileComponent) GetWorkload() string {
+	if x != nil {
+		return x.Workload
+	}
+	return ""
+}
+
+type ProfileEvidence struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// what was found, e.g. "pod network 10.244.0.0/16"
+	Value string `protobuf:"bytes,1,opt,name=value,proto3" json:"value,omitempty"`
+	// where, e.g. "ConfigMap kube-system/kubeadm-config"
+	Source        string `protobuf:"bytes,2,opt,name=source,proto3" json:"source,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ProfileEvidence) Reset() {
+	*x = ProfileEvidence{}
+	mi := &file_setdrift_snapshot_v1alpha1_snapshot_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ProfileEvidence) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ProfileEvidence) ProtoMessage() {}
+
+func (x *ProfileEvidence) ProtoReflect() protoreflect.Message {
+	mi := &file_setdrift_snapshot_v1alpha1_snapshot_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ProfileEvidence.ProtoReflect.Descriptor instead.
+func (*ProfileEvidence) Descriptor() ([]byte, []int) {
+	return file_setdrift_snapshot_v1alpha1_snapshot_proto_rawDescGZIP(), []int{19}
+}
+
+func (x *ProfileEvidence) GetValue() string {
+	if x != nil {
+		return x.Value
+	}
+	return ""
+}
+
+func (x *ProfileEvidence) GetSource() string {
+	if x != nil {
+		return x.Source
+	}
+	return ""
+}
+
 // HelmRelease is the chart a Helm release runs, from the release record's
 // chart metadata. Values and rendered manifests are not read.
 // The shape of a cluster's nodes at capture time, without node names:
@@ -1215,7 +1941,7 @@ type NodeSummary struct {
 
 func (x *NodeSummary) Reset() {
 	*x = NodeSummary{}
-	mi := &file_setdrift_snapshot_v1alpha1_snapshot_proto_msgTypes[12]
+	mi := &file_setdrift_snapshot_v1alpha1_snapshot_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1227,7 +1953,7 @@ func (x *NodeSummary) String() string {
 func (*NodeSummary) ProtoMessage() {}
 
 func (x *NodeSummary) ProtoReflect() protoreflect.Message {
-	mi := &file_setdrift_snapshot_v1alpha1_snapshot_proto_msgTypes[12]
+	mi := &file_setdrift_snapshot_v1alpha1_snapshot_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1240,7 +1966,7 @@ func (x *NodeSummary) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NodeSummary.ProtoReflect.Descriptor instead.
 func (*NodeSummary) Descriptor() ([]byte, []int) {
-	return file_setdrift_snapshot_v1alpha1_snapshot_proto_rawDescGZIP(), []int{12}
+	return file_setdrift_snapshot_v1alpha1_snapshot_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *NodeSummary) GetCount() int32 {
@@ -1330,7 +2056,7 @@ type HelmRelease struct {
 
 func (x *HelmRelease) Reset() {
 	*x = HelmRelease{}
-	mi := &file_setdrift_snapshot_v1alpha1_snapshot_proto_msgTypes[13]
+	mi := &file_setdrift_snapshot_v1alpha1_snapshot_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1342,7 +2068,7 @@ func (x *HelmRelease) String() string {
 func (*HelmRelease) ProtoMessage() {}
 
 func (x *HelmRelease) ProtoReflect() protoreflect.Message {
-	mi := &file_setdrift_snapshot_v1alpha1_snapshot_proto_msgTypes[13]
+	mi := &file_setdrift_snapshot_v1alpha1_snapshot_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1355,7 +2081,7 @@ func (x *HelmRelease) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HelmRelease.ProtoReflect.Descriptor instead.
 func (*HelmRelease) Descriptor() ([]byte, []int) {
-	return file_setdrift_snapshot_v1alpha1_snapshot_proto_rawDescGZIP(), []int{13}
+	return file_setdrift_snapshot_v1alpha1_snapshot_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *HelmRelease) GetNamespace() string {
@@ -1455,7 +2181,7 @@ type Volume struct {
 
 func (x *Volume) Reset() {
 	*x = Volume{}
-	mi := &file_setdrift_snapshot_v1alpha1_snapshot_proto_msgTypes[14]
+	mi := &file_setdrift_snapshot_v1alpha1_snapshot_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1467,7 +2193,7 @@ func (x *Volume) String() string {
 func (*Volume) ProtoMessage() {}
 
 func (x *Volume) ProtoReflect() protoreflect.Message {
-	mi := &file_setdrift_snapshot_v1alpha1_snapshot_proto_msgTypes[14]
+	mi := &file_setdrift_snapshot_v1alpha1_snapshot_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1480,7 +2206,7 @@ func (x *Volume) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Volume.ProtoReflect.Descriptor instead.
 func (*Volume) Descriptor() ([]byte, []int) {
-	return file_setdrift_snapshot_v1alpha1_snapshot_proto_rawDescGZIP(), []int{14}
+	return file_setdrift_snapshot_v1alpha1_snapshot_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *Volume) GetNamespace() string {
@@ -1608,7 +2334,7 @@ type AwsVolume struct {
 
 func (x *AwsVolume) Reset() {
 	*x = AwsVolume{}
-	mi := &file_setdrift_snapshot_v1alpha1_snapshot_proto_msgTypes[15]
+	mi := &file_setdrift_snapshot_v1alpha1_snapshot_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1620,7 +2346,7 @@ func (x *AwsVolume) String() string {
 func (*AwsVolume) ProtoMessage() {}
 
 func (x *AwsVolume) ProtoReflect() protoreflect.Message {
-	mi := &file_setdrift_snapshot_v1alpha1_snapshot_proto_msgTypes[15]
+	mi := &file_setdrift_snapshot_v1alpha1_snapshot_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1633,7 +2359,7 @@ func (x *AwsVolume) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AwsVolume.ProtoReflect.Descriptor instead.
 func (*AwsVolume) Descriptor() ([]byte, []int) {
-	return file_setdrift_snapshot_v1alpha1_snapshot_proto_rawDescGZIP(), []int{15}
+	return file_setdrift_snapshot_v1alpha1_snapshot_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *AwsVolume) GetVolumeType() string {
@@ -1708,7 +2434,7 @@ type LoadBalancer struct {
 
 func (x *LoadBalancer) Reset() {
 	*x = LoadBalancer{}
-	mi := &file_setdrift_snapshot_v1alpha1_snapshot_proto_msgTypes[16]
+	mi := &file_setdrift_snapshot_v1alpha1_snapshot_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1720,7 +2446,7 @@ func (x *LoadBalancer) String() string {
 func (*LoadBalancer) ProtoMessage() {}
 
 func (x *LoadBalancer) ProtoReflect() protoreflect.Message {
-	mi := &file_setdrift_snapshot_v1alpha1_snapshot_proto_msgTypes[16]
+	mi := &file_setdrift_snapshot_v1alpha1_snapshot_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1733,7 +2459,7 @@ func (x *LoadBalancer) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LoadBalancer.ProtoReflect.Descriptor instead.
 func (*LoadBalancer) Descriptor() ([]byte, []int) {
-	return file_setdrift_snapshot_v1alpha1_snapshot_proto_rawDescGZIP(), []int{16}
+	return file_setdrift_snapshot_v1alpha1_snapshot_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *LoadBalancer) GetKind() string {
@@ -1794,7 +2520,7 @@ type AwsInventory struct {
 
 func (x *AwsInventory) Reset() {
 	*x = AwsInventory{}
-	mi := &file_setdrift_snapshot_v1alpha1_snapshot_proto_msgTypes[17]
+	mi := &file_setdrift_snapshot_v1alpha1_snapshot_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1806,7 +2532,7 @@ func (x *AwsInventory) String() string {
 func (*AwsInventory) ProtoMessage() {}
 
 func (x *AwsInventory) ProtoReflect() protoreflect.Message {
-	mi := &file_setdrift_snapshot_v1alpha1_snapshot_proto_msgTypes[17]
+	mi := &file_setdrift_snapshot_v1alpha1_snapshot_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1819,7 +2545,7 @@ func (x *AwsInventory) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AwsInventory.ProtoReflect.Descriptor instead.
 func (*AwsInventory) Descriptor() ([]byte, []int) {
-	return file_setdrift_snapshot_v1alpha1_snapshot_proto_rawDescGZIP(), []int{17}
+	return file_setdrift_snapshot_v1alpha1_snapshot_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *AwsInventory) GetAccountId() string {
@@ -1903,7 +2629,7 @@ type PodIdentityAssociation struct {
 
 func (x *PodIdentityAssociation) Reset() {
 	*x = PodIdentityAssociation{}
-	mi := &file_setdrift_snapshot_v1alpha1_snapshot_proto_msgTypes[18]
+	mi := &file_setdrift_snapshot_v1alpha1_snapshot_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1915,7 +2641,7 @@ func (x *PodIdentityAssociation) String() string {
 func (*PodIdentityAssociation) ProtoMessage() {}
 
 func (x *PodIdentityAssociation) ProtoReflect() protoreflect.Message {
-	mi := &file_setdrift_snapshot_v1alpha1_snapshot_proto_msgTypes[18]
+	mi := &file_setdrift_snapshot_v1alpha1_snapshot_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1928,7 +2654,7 @@ func (x *PodIdentityAssociation) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PodIdentityAssociation.ProtoReflect.Descriptor instead.
 func (*PodIdentityAssociation) Descriptor() ([]byte, []int) {
-	return file_setdrift_snapshot_v1alpha1_snapshot_proto_rawDescGZIP(), []int{18}
+	return file_setdrift_snapshot_v1alpha1_snapshot_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *PodIdentityAssociation) GetNamespace() string {
@@ -1965,7 +2691,7 @@ type IamRole struct {
 
 func (x *IamRole) Reset() {
 	*x = IamRole{}
-	mi := &file_setdrift_snapshot_v1alpha1_snapshot_proto_msgTypes[19]
+	mi := &file_setdrift_snapshot_v1alpha1_snapshot_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1977,7 +2703,7 @@ func (x *IamRole) String() string {
 func (*IamRole) ProtoMessage() {}
 
 func (x *IamRole) ProtoReflect() protoreflect.Message {
-	mi := &file_setdrift_snapshot_v1alpha1_snapshot_proto_msgTypes[19]
+	mi := &file_setdrift_snapshot_v1alpha1_snapshot_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1990,7 +2716,7 @@ func (x *IamRole) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IamRole.ProtoReflect.Descriptor instead.
 func (*IamRole) Descriptor() ([]byte, []int) {
-	return file_setdrift_snapshot_v1alpha1_snapshot_proto_rawDescGZIP(), []int{19}
+	return file_setdrift_snapshot_v1alpha1_snapshot_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *IamRole) GetArn() string {
@@ -2027,7 +2753,7 @@ type AccessEntry struct {
 
 func (x *AccessEntry) Reset() {
 	*x = AccessEntry{}
-	mi := &file_setdrift_snapshot_v1alpha1_snapshot_proto_msgTypes[20]
+	mi := &file_setdrift_snapshot_v1alpha1_snapshot_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2039,7 +2765,7 @@ func (x *AccessEntry) String() string {
 func (*AccessEntry) ProtoMessage() {}
 
 func (x *AccessEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_setdrift_snapshot_v1alpha1_snapshot_proto_msgTypes[20]
+	mi := &file_setdrift_snapshot_v1alpha1_snapshot_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2052,7 +2778,7 @@ func (x *AccessEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AccessEntry.ProtoReflect.Descriptor instead.
 func (*AccessEntry) Descriptor() ([]byte, []int) {
-	return file_setdrift_snapshot_v1alpha1_snapshot_proto_rawDescGZIP(), []int{20}
+	return file_setdrift_snapshot_v1alpha1_snapshot_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *AccessEntry) GetPrincipalArn() string {
@@ -2095,7 +2821,7 @@ type AccessPolicy struct {
 
 func (x *AccessPolicy) Reset() {
 	*x = AccessPolicy{}
-	mi := &file_setdrift_snapshot_v1alpha1_snapshot_proto_msgTypes[21]
+	mi := &file_setdrift_snapshot_v1alpha1_snapshot_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2107,7 +2833,7 @@ func (x *AccessPolicy) String() string {
 func (*AccessPolicy) ProtoMessage() {}
 
 func (x *AccessPolicy) ProtoReflect() protoreflect.Message {
-	mi := &file_setdrift_snapshot_v1alpha1_snapshot_proto_msgTypes[21]
+	mi := &file_setdrift_snapshot_v1alpha1_snapshot_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2120,7 +2846,7 @@ func (x *AccessPolicy) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AccessPolicy.ProtoReflect.Descriptor instead.
 func (*AccessPolicy) Descriptor() ([]byte, []int) {
-	return file_setdrift_snapshot_v1alpha1_snapshot_proto_rawDescGZIP(), []int{21}
+	return file_setdrift_snapshot_v1alpha1_snapshot_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *AccessPolicy) GetPolicyArn() string {
@@ -2159,7 +2885,7 @@ type Addon struct {
 
 func (x *Addon) Reset() {
 	*x = Addon{}
-	mi := &file_setdrift_snapshot_v1alpha1_snapshot_proto_msgTypes[22]
+	mi := &file_setdrift_snapshot_v1alpha1_snapshot_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2171,7 +2897,7 @@ func (x *Addon) String() string {
 func (*Addon) ProtoMessage() {}
 
 func (x *Addon) ProtoReflect() protoreflect.Message {
-	mi := &file_setdrift_snapshot_v1alpha1_snapshot_proto_msgTypes[22]
+	mi := &file_setdrift_snapshot_v1alpha1_snapshot_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2184,7 +2910,7 @@ func (x *Addon) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Addon.ProtoReflect.Descriptor instead.
 func (*Addon) Descriptor() ([]byte, []int) {
-	return file_setdrift_snapshot_v1alpha1_snapshot_proto_rawDescGZIP(), []int{22}
+	return file_setdrift_snapshot_v1alpha1_snapshot_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *Addon) GetName() string {
@@ -2305,13 +3031,81 @@ const file_setdrift_snapshot_v1alpha1_snapshot_proto_rawDesc = "" +
 	"\aFinding\x12@\n" +
 	"\bseverity\x18\x01 \x01(\x0e2$.setdrift.snapshot.v1alpha1.SeverityR\bseverity\x12\x12\n" +
 	"\x04code\x18\x02 \x01(\tR\x04code\x12\x18\n" +
-	"\amessage\x18\x03 \x01(\tR\amessage\"\xe3\x02\n" +
+	"\amessage\x18\x03 \x01(\tR\amessage\"\xa2\x03\n" +
 	"\tInventory\x12<\n" +
 	"\avolumes\x18\x01 \x03(\v2\".setdrift.snapshot.v1alpha1.VolumeR\avolumes\x12O\n" +
 	"\x0eload_balancers\x18\x02 \x03(\v2(.setdrift.snapshot.v1alpha1.LoadBalancerR\rloadBalancers\x12:\n" +
 	"\x03aws\x18\x03 \x01(\v2(.setdrift.snapshot.v1alpha1.AwsInventoryR\x03aws\x12L\n" +
 	"\rhelm_releases\x18\x04 \x03(\v2'.setdrift.snapshot.v1alpha1.HelmReleaseR\fhelmReleases\x12=\n" +
-	"\x05nodes\x18\x05 \x01(\v2'.setdrift.snapshot.v1alpha1.NodeSummaryR\x05nodes\"\xcf\x06\n" +
+	"\x05nodes\x18\x05 \x01(\v2'.setdrift.snapshot.v1alpha1.NodeSummaryR\x05nodes\x12=\n" +
+	"\aprofile\x18\x06 \x01(\v2#.setdrift.snapshot.v1alpha1.ProfileR\aprofile\"\xba\x03\n" +
+	"\aProfile\x12>\n" +
+	"\x05cloud\x18\x01 \x01(\v2(.setdrift.snapshot.v1alpha1.ProfileCloudR\x05cloud\x12D\n" +
+	"\anetwork\x18\x02 \x01(\v2*.setdrift.snapshot.v1alpha1.ProfileNetworkR\anetwork\x128\n" +
+	"\x03dns\x18\x03 \x01(\v2&.setdrift.snapshot.v1alpha1.ProfileDnsR\x03dns\x12X\n" +
+	"\x0fstorage_classes\x18\x04 \x03(\v2/.setdrift.snapshot.v1alpha1.ProfileStorageClassR\x0estorageClasses\x12L\n" +
+	"\n" +
+	"components\x18\x05 \x03(\v2,.setdrift.snapshot.v1alpha1.ProfileComponentR\n" +
+	"components\x12G\n" +
+	"\bevidence\x18\x06 \x03(\v2+.setdrift.snapshot.v1alpha1.ProfileEvidenceR\bevidence\"\x99\x01\n" +
+	"\fProfileCloud\x12\x1a\n" +
+	"\bprovider\x18\x01 \x01(\tR\bprovider\x12\x18\n" +
+	"\aaccount\x18\x02 \x01(\tR\aaccount\x12\x16\n" +
+	"\x06region\x18\x03 \x01(\tR\x06region\x12\x14\n" +
+	"\x05zones\x18\x04 \x03(\tR\x05zones\x12%\n" +
+	"\x0eresource_group\x18\x05 \x01(\tR\rresourceGroup\"\xdb\x04\n" +
+	"\x0eProfileNetwork\x12\x1b\n" +
+	"\tpod_cidrs\x18\x01 \x03(\tR\bpodCidrs\x12&\n" +
+	"\x0fnode_pod_prefix\x18\x02 \x01(\x05R\rnodePodPrefix\x12#\n" +
+	"\rservice_cidrs\x18\x03 \x03(\tR\fserviceCidrs\x12J\n" +
+	"\vnode_ranges\x18\x04 \x03(\v2).setdrift.snapshot.v1alpha1.ProfileSubnetR\n" +
+	"nodeRanges\x12\x10\n" +
+	"\x03cni\x18\x05 \x01(\tR\x03cni\x12!\n" +
+	"\fcni_settings\x18\x06 \x03(\tR\vcniSettings\x12&\n" +
+	"\x0fkube_proxy_mode\x18\a \x01(\tR\rkubeProxyMode\x12\x1f\n" +
+	"\vip_families\x18\b \x03(\tR\n" +
+	"ipFamilies\x12\x15\n" +
+	"\x06vpc_id\x18\t \x01(\tR\x05vpcId\x12C\n" +
+	"\asubnets\x18\n" +
+	" \x03(\v2).setdrift.snapshot.v1alpha1.ProfileSubnetR\asubnets\x12'\n" +
+	"\x0fsecurity_groups\x18\v \x03(\tR\x0esecurityGroups\x12.\n" +
+	"\x13api_endpoint_access\x18\f \x01(\tR\x11apiEndpointAccess\x125\n" +
+	"\x17api_public_access_cidrs\x18\r \x03(\tR\x14apiPublicAccessCidrs\x12)\n" +
+	"\x11max_pods_per_node\x18\x0e \x01(\x05R\x0emaxPodsPerNode\"Y\n" +
+	"\rProfileSubnet\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
+	"\x04cidr\x18\x02 \x01(\tR\x04cidr\x12\x12\n" +
+	"\x04zone\x18\x03 \x01(\tR\x04zone\x12\x10\n" +
+	"\x03use\x18\x04 \x01(\tR\x03use\"\xbe\x01\n" +
+	"\n" +
+	"ProfileDns\x12%\n" +
+	"\x0ecluster_domain\x18\x01 \x01(\tR\rclusterDomain\x12$\n" +
+	"\x0ecluster_dns_ip\x18\x02 \x01(\tR\fclusterDnsIp\x12\x1c\n" +
+	"\tupstreams\x18\x03 \x03(\tR\tupstreams\x12\x1c\n" +
+	"\thostnames\x18\x04 \x03(\tR\thostnames\x12'\n" +
+	"\x0fmanaged_domains\x18\x05 \x03(\tR\x0emanagedDomains\"\xaa\x03\n" +
+	"\x13ProfileStorageClass\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12 \n" +
+	"\vprovisioner\x18\x02 \x01(\tR\vprovisioner\x12\x18\n" +
+	"\adefault\x18\x03 \x01(\bR\adefault\x12_\n" +
+	"\n" +
+	"parameters\x18\x04 \x03(\v2?.setdrift.snapshot.v1alpha1.ProfileStorageClass.ParametersEntryR\n" +
+	"parameters\x12%\n" +
+	"\x0ereclaim_policy\x18\x05 \x01(\tR\rreclaimPolicy\x12.\n" +
+	"\x13volume_binding_mode\x18\x06 \x01(\tR\x11volumeBindingMode\x124\n" +
+	"\x16allow_volume_expansion\x18\a \x01(\bR\x14allowVolumeExpansion\x12\x16\n" +
+	"\x06claims\x18\b \x01(\x05R\x06claims\x1a=\n" +
+	"\x0fParametersEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"p\n" +
+	"\x10ProfileComponent\x12\x12\n" +
+	"\x04role\x18\x01 \x01(\tR\x04role\x12\x12\n" +
+	"\x04name\x18\x02 \x01(\tR\x04name\x12\x18\n" +
+	"\aversion\x18\x03 \x01(\tR\aversion\x12\x1a\n" +
+	"\bworkload\x18\x04 \x01(\tR\bworkload\"?\n" +
+	"\x0fProfileEvidence\x12\x14\n" +
+	"\x05value\x18\x01 \x01(\tR\x05value\x12\x16\n" +
+	"\x06source\x18\x02 \x01(\tR\x06source\"\xcf\x06\n" +
 	"\vNodeSummary\x12\x14\n" +
 	"\x05count\x18\x01 \x01(\x05R\x05count\x12a\n" +
 	"\x0einstance_types\x18\x02 \x03(\v2:.setdrift.snapshot.v1alpha1.NodeSummary.InstanceTypesEntryR\rinstanceTypes\x12H\n" +
@@ -2461,7 +3255,7 @@ func file_setdrift_snapshot_v1alpha1_snapshot_proto_rawDescGZIP() []byte {
 }
 
 var file_setdrift_snapshot_v1alpha1_snapshot_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_setdrift_snapshot_v1alpha1_snapshot_proto_msgTypes = make([]protoimpl.MessageInfo, 29)
+var file_setdrift_snapshot_v1alpha1_snapshot_proto_msgTypes = make([]protoimpl.MessageInfo, 38)
 var file_setdrift_snapshot_v1alpha1_snapshot_proto_goTypes = []any{
 	(Source)(0),                    // 0: setdrift.snapshot.v1alpha1.Source
 	(RedactionReason)(0),           // 1: setdrift.snapshot.v1alpha1.RedactionReason
@@ -2478,27 +3272,36 @@ var file_setdrift_snapshot_v1alpha1_snapshot_proto_goTypes = []any{
 	(*Redaction)(nil),              // 12: setdrift.snapshot.v1alpha1.Redaction
 	(*Finding)(nil),                // 13: setdrift.snapshot.v1alpha1.Finding
 	(*Inventory)(nil),              // 14: setdrift.snapshot.v1alpha1.Inventory
-	(*NodeSummary)(nil),            // 15: setdrift.snapshot.v1alpha1.NodeSummary
-	(*HelmRelease)(nil),            // 16: setdrift.snapshot.v1alpha1.HelmRelease
-	(*Volume)(nil),                 // 17: setdrift.snapshot.v1alpha1.Volume
-	(*AwsVolume)(nil),              // 18: setdrift.snapshot.v1alpha1.AwsVolume
-	(*LoadBalancer)(nil),           // 19: setdrift.snapshot.v1alpha1.LoadBalancer
-	(*AwsInventory)(nil),           // 20: setdrift.snapshot.v1alpha1.AwsInventory
-	(*PodIdentityAssociation)(nil), // 21: setdrift.snapshot.v1alpha1.PodIdentityAssociation
-	(*IamRole)(nil),                // 22: setdrift.snapshot.v1alpha1.IamRole
-	(*AccessEntry)(nil),            // 23: setdrift.snapshot.v1alpha1.AccessEntry
-	(*AccessPolicy)(nil),           // 24: setdrift.snapshot.v1alpha1.AccessPolicy
-	(*Addon)(nil),                  // 25: setdrift.snapshot.v1alpha1.Addon
-	nil,                            // 26: setdrift.snapshot.v1alpha1.Provenance.EvidenceEntry
-	nil,                            // 27: setdrift.snapshot.v1alpha1.NodeSummary.InstanceTypesEntry
-	nil,                            // 28: setdrift.snapshot.v1alpha1.NodeSummary.ZonesEntry
-	nil,                            // 29: setdrift.snapshot.v1alpha1.NodeSummary.PlatformsEntry
-	nil,                            // 30: setdrift.snapshot.v1alpha1.NodeSummary.KubeletVersionsEntry
-	nil,                            // 31: setdrift.snapshot.v1alpha1.NodeSummary.PoolsEntry
-	(*timestamppb.Timestamp)(nil),  // 32: google.protobuf.Timestamp
+	(*Profile)(nil),                // 15: setdrift.snapshot.v1alpha1.Profile
+	(*ProfileCloud)(nil),           // 16: setdrift.snapshot.v1alpha1.ProfileCloud
+	(*ProfileNetwork)(nil),         // 17: setdrift.snapshot.v1alpha1.ProfileNetwork
+	(*ProfileSubnet)(nil),          // 18: setdrift.snapshot.v1alpha1.ProfileSubnet
+	(*ProfileDns)(nil),             // 19: setdrift.snapshot.v1alpha1.ProfileDns
+	(*ProfileStorageClass)(nil),    // 20: setdrift.snapshot.v1alpha1.ProfileStorageClass
+	(*ProfileComponent)(nil),       // 21: setdrift.snapshot.v1alpha1.ProfileComponent
+	(*ProfileEvidence)(nil),        // 22: setdrift.snapshot.v1alpha1.ProfileEvidence
+	(*NodeSummary)(nil),            // 23: setdrift.snapshot.v1alpha1.NodeSummary
+	(*HelmRelease)(nil),            // 24: setdrift.snapshot.v1alpha1.HelmRelease
+	(*Volume)(nil),                 // 25: setdrift.snapshot.v1alpha1.Volume
+	(*AwsVolume)(nil),              // 26: setdrift.snapshot.v1alpha1.AwsVolume
+	(*LoadBalancer)(nil),           // 27: setdrift.snapshot.v1alpha1.LoadBalancer
+	(*AwsInventory)(nil),           // 28: setdrift.snapshot.v1alpha1.AwsInventory
+	(*PodIdentityAssociation)(nil), // 29: setdrift.snapshot.v1alpha1.PodIdentityAssociation
+	(*IamRole)(nil),                // 30: setdrift.snapshot.v1alpha1.IamRole
+	(*AccessEntry)(nil),            // 31: setdrift.snapshot.v1alpha1.AccessEntry
+	(*AccessPolicy)(nil),           // 32: setdrift.snapshot.v1alpha1.AccessPolicy
+	(*Addon)(nil),                  // 33: setdrift.snapshot.v1alpha1.Addon
+	nil,                            // 34: setdrift.snapshot.v1alpha1.Provenance.EvidenceEntry
+	nil,                            // 35: setdrift.snapshot.v1alpha1.ProfileStorageClass.ParametersEntry
+	nil,                            // 36: setdrift.snapshot.v1alpha1.NodeSummary.InstanceTypesEntry
+	nil,                            // 37: setdrift.snapshot.v1alpha1.NodeSummary.ZonesEntry
+	nil,                            // 38: setdrift.snapshot.v1alpha1.NodeSummary.PlatformsEntry
+	nil,                            // 39: setdrift.snapshot.v1alpha1.NodeSummary.KubeletVersionsEntry
+	nil,                            // 40: setdrift.snapshot.v1alpha1.NodeSummary.PoolsEntry
+	(*timestamppb.Timestamp)(nil),  // 41: google.protobuf.Timestamp
 }
 var file_setdrift_snapshot_v1alpha1_snapshot_proto_depIdxs = []int32{
-	32, // 0: setdrift.snapshot.v1alpha1.Snapshot.captured_at:type_name -> google.protobuf.Timestamp
+	41, // 0: setdrift.snapshot.v1alpha1.Snapshot.captured_at:type_name -> google.protobuf.Timestamp
 	6,  // 1: setdrift.snapshot.v1alpha1.Snapshot.cluster:type_name -> setdrift.snapshot.v1alpha1.Cluster
 	9,  // 2: setdrift.snapshot.v1alpha1.Snapshot.producer:type_name -> setdrift.snapshot.v1alpha1.Producer
 	10, // 3: setdrift.snapshot.v1alpha1.Snapshot.resources:type_name -> setdrift.snapshot.v1alpha1.Resource
@@ -2512,30 +3315,40 @@ var file_setdrift_snapshot_v1alpha1_snapshot_proto_depIdxs = []int32{
 	12, // 11: setdrift.snapshot.v1alpha1.Resource.redactions:type_name -> setdrift.snapshot.v1alpha1.Redaction
 	13, // 12: setdrift.snapshot.v1alpha1.Resource.findings:type_name -> setdrift.snapshot.v1alpha1.Finding
 	0,  // 13: setdrift.snapshot.v1alpha1.Provenance.source:type_name -> setdrift.snapshot.v1alpha1.Source
-	26, // 14: setdrift.snapshot.v1alpha1.Provenance.evidence:type_name -> setdrift.snapshot.v1alpha1.Provenance.EvidenceEntry
+	34, // 14: setdrift.snapshot.v1alpha1.Provenance.evidence:type_name -> setdrift.snapshot.v1alpha1.Provenance.EvidenceEntry
 	1,  // 15: setdrift.snapshot.v1alpha1.Redaction.reason:type_name -> setdrift.snapshot.v1alpha1.RedactionReason
 	2,  // 16: setdrift.snapshot.v1alpha1.Finding.severity:type_name -> setdrift.snapshot.v1alpha1.Severity
-	17, // 17: setdrift.snapshot.v1alpha1.Inventory.volumes:type_name -> setdrift.snapshot.v1alpha1.Volume
-	19, // 18: setdrift.snapshot.v1alpha1.Inventory.load_balancers:type_name -> setdrift.snapshot.v1alpha1.LoadBalancer
-	20, // 19: setdrift.snapshot.v1alpha1.Inventory.aws:type_name -> setdrift.snapshot.v1alpha1.AwsInventory
-	16, // 20: setdrift.snapshot.v1alpha1.Inventory.helm_releases:type_name -> setdrift.snapshot.v1alpha1.HelmRelease
-	15, // 21: setdrift.snapshot.v1alpha1.Inventory.nodes:type_name -> setdrift.snapshot.v1alpha1.NodeSummary
-	27, // 22: setdrift.snapshot.v1alpha1.NodeSummary.instance_types:type_name -> setdrift.snapshot.v1alpha1.NodeSummary.InstanceTypesEntry
-	28, // 23: setdrift.snapshot.v1alpha1.NodeSummary.zones:type_name -> setdrift.snapshot.v1alpha1.NodeSummary.ZonesEntry
-	29, // 24: setdrift.snapshot.v1alpha1.NodeSummary.platforms:type_name -> setdrift.snapshot.v1alpha1.NodeSummary.PlatformsEntry
-	30, // 25: setdrift.snapshot.v1alpha1.NodeSummary.kubelet_versions:type_name -> setdrift.snapshot.v1alpha1.NodeSummary.KubeletVersionsEntry
-	31, // 26: setdrift.snapshot.v1alpha1.NodeSummary.pools:type_name -> setdrift.snapshot.v1alpha1.NodeSummary.PoolsEntry
-	18, // 27: setdrift.snapshot.v1alpha1.Volume.aws:type_name -> setdrift.snapshot.v1alpha1.AwsVolume
-	21, // 28: setdrift.snapshot.v1alpha1.AwsInventory.pod_identity_associations:type_name -> setdrift.snapshot.v1alpha1.PodIdentityAssociation
-	22, // 29: setdrift.snapshot.v1alpha1.AwsInventory.iam_roles:type_name -> setdrift.snapshot.v1alpha1.IamRole
-	23, // 30: setdrift.snapshot.v1alpha1.AwsInventory.access_entries:type_name -> setdrift.snapshot.v1alpha1.AccessEntry
-	25, // 31: setdrift.snapshot.v1alpha1.AwsInventory.addons:type_name -> setdrift.snapshot.v1alpha1.Addon
-	24, // 32: setdrift.snapshot.v1alpha1.AccessEntry.policies:type_name -> setdrift.snapshot.v1alpha1.AccessPolicy
-	33, // [33:33] is the sub-list for method output_type
-	33, // [33:33] is the sub-list for method input_type
-	33, // [33:33] is the sub-list for extension type_name
-	33, // [33:33] is the sub-list for extension extendee
-	0,  // [0:33] is the sub-list for field type_name
+	25, // 17: setdrift.snapshot.v1alpha1.Inventory.volumes:type_name -> setdrift.snapshot.v1alpha1.Volume
+	27, // 18: setdrift.snapshot.v1alpha1.Inventory.load_balancers:type_name -> setdrift.snapshot.v1alpha1.LoadBalancer
+	28, // 19: setdrift.snapshot.v1alpha1.Inventory.aws:type_name -> setdrift.snapshot.v1alpha1.AwsInventory
+	24, // 20: setdrift.snapshot.v1alpha1.Inventory.helm_releases:type_name -> setdrift.snapshot.v1alpha1.HelmRelease
+	23, // 21: setdrift.snapshot.v1alpha1.Inventory.nodes:type_name -> setdrift.snapshot.v1alpha1.NodeSummary
+	15, // 22: setdrift.snapshot.v1alpha1.Inventory.profile:type_name -> setdrift.snapshot.v1alpha1.Profile
+	16, // 23: setdrift.snapshot.v1alpha1.Profile.cloud:type_name -> setdrift.snapshot.v1alpha1.ProfileCloud
+	17, // 24: setdrift.snapshot.v1alpha1.Profile.network:type_name -> setdrift.snapshot.v1alpha1.ProfileNetwork
+	19, // 25: setdrift.snapshot.v1alpha1.Profile.dns:type_name -> setdrift.snapshot.v1alpha1.ProfileDns
+	20, // 26: setdrift.snapshot.v1alpha1.Profile.storage_classes:type_name -> setdrift.snapshot.v1alpha1.ProfileStorageClass
+	21, // 27: setdrift.snapshot.v1alpha1.Profile.components:type_name -> setdrift.snapshot.v1alpha1.ProfileComponent
+	22, // 28: setdrift.snapshot.v1alpha1.Profile.evidence:type_name -> setdrift.snapshot.v1alpha1.ProfileEvidence
+	18, // 29: setdrift.snapshot.v1alpha1.ProfileNetwork.node_ranges:type_name -> setdrift.snapshot.v1alpha1.ProfileSubnet
+	18, // 30: setdrift.snapshot.v1alpha1.ProfileNetwork.subnets:type_name -> setdrift.snapshot.v1alpha1.ProfileSubnet
+	35, // 31: setdrift.snapshot.v1alpha1.ProfileStorageClass.parameters:type_name -> setdrift.snapshot.v1alpha1.ProfileStorageClass.ParametersEntry
+	36, // 32: setdrift.snapshot.v1alpha1.NodeSummary.instance_types:type_name -> setdrift.snapshot.v1alpha1.NodeSummary.InstanceTypesEntry
+	37, // 33: setdrift.snapshot.v1alpha1.NodeSummary.zones:type_name -> setdrift.snapshot.v1alpha1.NodeSummary.ZonesEntry
+	38, // 34: setdrift.snapshot.v1alpha1.NodeSummary.platforms:type_name -> setdrift.snapshot.v1alpha1.NodeSummary.PlatformsEntry
+	39, // 35: setdrift.snapshot.v1alpha1.NodeSummary.kubelet_versions:type_name -> setdrift.snapshot.v1alpha1.NodeSummary.KubeletVersionsEntry
+	40, // 36: setdrift.snapshot.v1alpha1.NodeSummary.pools:type_name -> setdrift.snapshot.v1alpha1.NodeSummary.PoolsEntry
+	26, // 37: setdrift.snapshot.v1alpha1.Volume.aws:type_name -> setdrift.snapshot.v1alpha1.AwsVolume
+	29, // 38: setdrift.snapshot.v1alpha1.AwsInventory.pod_identity_associations:type_name -> setdrift.snapshot.v1alpha1.PodIdentityAssociation
+	30, // 39: setdrift.snapshot.v1alpha1.AwsInventory.iam_roles:type_name -> setdrift.snapshot.v1alpha1.IamRole
+	31, // 40: setdrift.snapshot.v1alpha1.AwsInventory.access_entries:type_name -> setdrift.snapshot.v1alpha1.AccessEntry
+	33, // 41: setdrift.snapshot.v1alpha1.AwsInventory.addons:type_name -> setdrift.snapshot.v1alpha1.Addon
+	32, // 42: setdrift.snapshot.v1alpha1.AccessEntry.policies:type_name -> setdrift.snapshot.v1alpha1.AccessPolicy
+	43, // [43:43] is the sub-list for method output_type
+	43, // [43:43] is the sub-list for method input_type
+	43, // [43:43] is the sub-list for extension type_name
+	43, // [43:43] is the sub-list for extension extendee
+	0,  // [0:43] is the sub-list for field type_name
 }
 
 func init() { file_setdrift_snapshot_v1alpha1_snapshot_proto_init() }
@@ -2549,7 +3362,7 @@ func file_setdrift_snapshot_v1alpha1_snapshot_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_setdrift_snapshot_v1alpha1_snapshot_proto_rawDesc), len(file_setdrift_snapshot_v1alpha1_snapshot_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   29,
+			NumMessages:   38,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
