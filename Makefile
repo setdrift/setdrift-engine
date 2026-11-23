@@ -50,17 +50,19 @@ vulncheck: $(BIN)/govulncheck ## Scan the built CLI for known vulnerabilities in
 	@# binary mode: govulncheck's source mode can't yet load Go 1.27's standard library
 	$(BIN)/govulncheck -mode=binary $(BIN)/setdrift-vulncheck
 
-size: ## Check every release binary is under MAX_SIZE_MIB, built as goreleaser builds it
+size: ## Check every release binary in dist/ is under MAX_SIZE_MIB (run make release-snapshot first)
 	@# A call that makes Go's linker keep every exported method (such as running a
 	@# text/template) about doubles the binary; this catches it in the change that adds it.
-	@set -e; for p in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do \
-		GOOS=$${p%/*} GOARCH=$${p#*/} CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o $(BIN)/setdrift-size ./cmd/setdrift; \
-		size=$$(wc -c < $(BIN)/setdrift-size); mib=$$((size / 1048576)); \
-		echo "$$p: $$mib MiB"; \
+	@# It measures the binaries goreleaser built, so CI builds each platform once.
+	@set -e; n=0; for f in dist/setdrift_*/setdrift dist/setdrift_*/setdrift.exe; do \
+		[ -f "$$f" ] || continue; n=$$((n + 1)); \
+		size=$$(wc -c < "$$f"); mib=$$((size / 1048576)); \
+		echo "$${f#dist/}: $$mib MiB"; \
 		if [ $$size -gt $$(( $(MAX_SIZE_MIB) * 1048576 )) ]; then \
-			echo "$$p is $$mib MiB, over the $(MAX_SIZE_MIB) MiB budget: see what grew with go tool nm -size -sort size" >&2; exit 1; \
+			echo "$${f#dist/} is $$mib MiB, over the $(MAX_SIZE_MIB) MiB budget: see what grew with go tool nm -size -sort size" >&2; exit 1; \
 		fi; \
-	done; rm -f $(BIN)/setdrift-size
+	done; \
+	if [ $$n -ne 6 ]; then echo "found $$n release binaries in dist/, expected 6: run make release-snapshot first" >&2; exit 1; fi
 
 tools: $(BIN)/buf $(BIN)/protoc-gen-go
 

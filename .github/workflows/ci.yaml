@@ -1,7 +1,17 @@
 # CI for every pull request and every push to main: lint, check that
-# generated files are current, test, and build for each release platform.
-# Each step runs a make target, so a failure can be reproduced locally.
+# generated files are current, test, build the release archives for each
+# platform, and install them on each OS. Each step runs a make target or the
+# release tool, so a failure can be reproduced locally.
 # release.yaml calls it too, so nothing is published unless all of it passes.
+#
+# Speed: the goal is under 3 minutes for a push. Two things keep it there.
+# Each platform is compiled once, by GoReleaser in release-build (make size
+# measures those binaries). And the Go build cache is kept between runs, so
+# only what changed is compiled again: runs on main save it, every other run
+# (pull requests, Dependabot, the release tag) restores main's copy and never
+# writes one. The release job in release.yaml builds what it publishes
+# without any cache.
+
 name: ci
 
 on:
@@ -21,7 +31,47 @@ concurrency:
   group: ci-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: true
 
+env:
+  # Only runs on main write caches; see the note at the top.
+  SAVE_CACHE: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+
 jobs:
+  # Whether the change can affect the release archives. A change to docs and
+  # Markdown files only still runs lint and tests (tests read docs/), but skips
+  # the release build and install jobs. Those then show as skipped, which
+  # branch protection accepts. A tag (release.yaml) always builds.
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.diff.outputs.build }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - id: diff
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          BEFORE: ${{ github.event.before }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          # No file list (a tag, or a commit git can't find) means build.
+          files=
+          if [ "$EVENT" = pull_request ]; then
+            files=$(git diff --name-only "$BASE...$HEAD" || true)
+          elif [ "$REF" = refs/heads/main ]; then
+            files=$(git diff --name-only "$BEFORE" "$SHA" 2>/dev/null || true)
+          fi
+          build=true
+          if [ -n "$files" ] && ! printf '%s\n' "$files" | grep -qvE '^docs/|\.md$'; then
+            build=false
+          fi
+          printf '%s\n' "$files" | sed 's/^/changed: /'
+          echo "build=$build" | tee -a "$GITHUB_OUTPUT"
+
   test:
     runs-on: ubuntu-latest
     steps:
@@ -32,6 +82,29 @@ jobs:
         with:
           # The Go version in go.mod, so CI and local builds match.
           go-version-file: go.mod
+          # The caches below replace setup-go's own.
+          cache: false
+      # Compiled packages and downloaded modules. The key changes with
+      # go.sum; a run whose go.sum is new (a dependency update) starts from
+      # the newest cache instead and compiles only the modules that changed.
+      - id: go-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: go-test-${{ hashFiles('go.sum') }}
+          restore-keys: go-test-
+      # buf and protoc-gen-go, which make installs into bin/ from source. Only
+      # an exact match: the key is the Makefile, which pins their versions, and
+      # make would keep an older copy it found in bin/.
+      - id: tools-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            bin/buf
+            bin/protoc-gen-go
+          key: tools-${{ hashFiles('Makefile') }}
       - run: make lint
       # The public repo must never depend on the private one. Fails on any
       # reference to the private module path (setdrift.io/setdrift).
@@ -58,22 +131,31 @@ jobs:
         # -shuffle=on runs the tests in a random order, so one that only
         # passes by luck of the order fails here instead of in a later PR.
         run: go test -race -shuffle=on ./...
-      # Cross-compile for every release platform, so an OS-specific build
-      # break shows up here rather than at release time. Keep the list in step
-      # with scripts/third-party-notices.sh.
-      - name: Build
-        run: |
-          make build
-          for p in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do
-            GOOS=${p%/*} GOARCH=${p#*/} CGO_ENABLED=0 go build -o /dev/null ./cmd/setdrift
-          done
-      # The release binaries stay under the size budget (Makefile MAX_SIZE_MIB).
-      - name: Binary size
-        run: make size
+      - if: env.SAVE_CACHE == 'true' && steps.go-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ steps.go-cache.outputs.cache-primary-key }}
+      - if: env.SAVE_CACHE == 'true' && steps.tools-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            bin/buf
+            bin/protoc-gen-go
+          key: ${{ steps.tools-cache.outputs.cache-primary-key }}
 
-  # The release archives, built as a release would build them but published
-  # nowhere, for the install jobs below.
+  # The release archives for every platform, built as a release builds them
+  # but published nowhere. This is the one place CI compiles for each OS and
+  # CPU, so an OS-specific build break shows up here rather than at release
+  # time; make size then checks those binaries against the size budget. The
+  # archives go to the install jobs below.
   release-build:
+    needs: changes
+    # Skipped only when the changes job says docs only: if that job failed,
+    # this still runs, so a broken check can't skip the build.
+    if: ${{ !cancelled() && needs.changes.outputs.build != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -82,10 +164,23 @@ jobs:
       - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version-file: go.mod
+          cache: false
+      # Its own cache, holding all six platforms; see the test job.
+      - id: go-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: go-release-${{ hashFiles('go.sum') }}
+          restore-keys: go-release-
       - uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
         with:
           version: "~> v2"
           args: release --snapshot --clean
+      # The release binaries stay under the size budget (Makefile MAX_SIZE_MIB).
+      - name: Binary size
+        run: make size
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist
@@ -94,16 +189,27 @@ jobs:
             dist/*.zip
             dist/checksums.txt
           retention-days: 3
+      - if: env.SAVE_CACHE == 'true' && steps.go-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ steps.go-cache.outputs.cache-primary-key }}
 
   # The install commands in README.md, on each OS and CPU a release supports:
   # each installer fetches those archives from a local server (as from a
   # release), checks the checksum, installs, and runs setdrift.
+  # macOS and Windows run on pull requests and release tags only. GitHub's
+  # macOS runners can sit in a queue for minutes, and a push to main has
+  # already passed them in its pull request, so a push runs the Linux ones.
   install-unix:
     needs: release-build
+    if: ${{ !cancelled() && needs.release-build.result == 'success' }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, macos-15-intel]
+        os: ${{ fromJSON((github.event_name == 'pull_request' || startsWith(github.ref, 'refs/tags/')) && '["ubuntu-latest", "ubuntu-24.04-arm", "macos-latest", "macos-15-intel"]' || '["ubuntu-latest", "ubuntu-24.04-arm"]') }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -124,6 +230,8 @@ jobs:
 
   install-windows:
     needs: release-build
+    # Pull requests and release tags only, as the note above install-unix says.
+    if: ${{ !cancelled() && needs.release-build.result == 'success' && (github.event_name == 'pull_request' || startsWith(github.ref, 'refs/tags/')) }}
     strategy:
       fail-fast: false
       matrix:
