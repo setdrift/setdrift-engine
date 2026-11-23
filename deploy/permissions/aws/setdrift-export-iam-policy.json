@@ -1,0 +1,33 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "Cluster",
+      "Effect": "Allow",
+      "Action": ["eks:DescribeCluster", "eks:ListPodIdentityAssociations", "eks:ListAccessEntries", "eks:ListAddons"],
+      "Resource": "arn:aws:eks:REGION:ACCOUNT:cluster/CLUSTER"
+    },
+    {
+      "Sid": "ClusterParts",
+      "Effect": "Allow",
+      "Action": ["eks:DescribePodIdentityAssociation", "eks:DescribeAccessEntry", "eks:ListAssociatedAccessPolicies", "eks:DescribeAddon"],
+      "Resource": [
+        "arn:aws:eks:REGION:ACCOUNT:podidentityassociation/CLUSTER/*",
+        "arn:aws:eks:REGION:ACCOUNT:access-entry/CLUSTER/*",
+        "arn:aws:eks:REGION:ACCOUNT:addon/CLUSTER/*"
+      ]
+    },
+    {
+      "Sid": "Roles",
+      "Effect": "Allow",
+      "Action": "iam:GetRole",
+      "Resource": "arn:aws:iam::ACCOUNT:role/*"
+    },
+    {
+      "Sid": "Describe",
+      "Effect": "Allow",
+      "Action": ["ec2:DescribeSubnets", "ec2:DescribeVolumes", "ec2:DescribeVpcs"],
+      "Resource": "*"
+    }
+  ]
+}

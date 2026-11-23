@@ -1,0 +1,15 @@
+# A Google Cloud custom role with only what getting a GKE kubeconfig needs
+# (docs/permissions-gcp.md), for granting the Kubernetes access with
+# Kubernetes RBAC (deploy/permissions/kubernetes/) instead of IAM. The same as
+# the predefined roles/container.clusterViewer.
+#
+#   gcloud iam roles create setdrift_cluster_access --project=PROJECT --file=setdrift-cluster-access-role.yaml
+#   gcloud projects add-iam-policy-binding PROJECT --member=user:EMAIL --role=projects/PROJECT/roles/setdrift_cluster_access
+title: SetDrift cluster access
+description: Get a GKE cluster's kubeconfig for SetDrift; Kubernetes access comes from Kubernetes RBAC
+stage: GA
+includedPermissions:
+- container.clusters.get
+
+# Copyright The SetDrift Authors
+# SPDX-License-Identifier: Apache-2.0
