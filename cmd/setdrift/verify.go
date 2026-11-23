@@ -83,6 +83,8 @@ is applied to a new cluster.`,
 		"or auto: the platform set when this cluster is on the export's platform, else generic")
 	cmd.Flags().StringVarP(&o.output, "output", "o", "", "directory to write the report to (default: DIR/verify)")
 	cmd.Flags().BoolVar(&o.noReport, "no-report", false, "write no report, only print the result")
+	// invoking cannotUseWith to declare that -o and --no-report contradict each other, checkFlags enforces it, its defined in flagrules.go
+	cannotUseWith(cmd.Flags(), "names where to write the report", "output", "no-report")
 	cmd.Flags().IntVar(&o.threshold, "threshold", verify.AcceptancePercent, "percent of resources that must not change to pass, 0 to 100")
 	cmd.Flags().StringSliceVarP(&o.namespaces, "namespace", "n", nil, "check only the export's resources in these namespaces, and their Namespace objects; skips cluster-scoped resources (repeatable)")
 	return cmd
@@ -120,10 +122,6 @@ func (o *verifyOptions) run(cmd *cobra.Command, dir string) error {
 	// checking if the threshold is outside 0 to 100, if so the flag was given wrong
 	if o.threshold < 0 || o.threshold > 100 {
 		return fmt.Errorf("--threshold %d: give a percent from 0 to 100", o.threshold)
-	}
-	// checking if both -o and --no-report were given, they contradict each other
-	if o.noReport && o.output != "" {
-		return errors.New("-o names where to write the report, so it cannot be used with --no-report")
 	}
 	// invoking verify.ClusterRoot to find the cluster's directory inside dir, its defined in pkg/verify/dryrun.go
 	root, err := verify.ClusterRoot(dir)

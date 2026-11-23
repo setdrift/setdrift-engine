@@ -15,7 +15,7 @@ GOVULNCHECK_VERSION   := v1.10.0
 MAX_SIZE_MIB          := 28
 
 ## indicates target are command names not files
-.PHONY: build plugin helm-plugin test golden scan hooks generate notices lint vulncheck size tools clean release-snapshot e2e-setup e2e-up e2e-ready e2e-populate e2e-restore e2e-status e2e-down
+.PHONY: build plugin helm-plugin test golden scan hooks docs generate notices lint vulncheck size tools clean release-snapshot e2e-setup e2e-up e2e-ready e2e-populate e2e-restore e2e-status e2e-down
 
 build: ## Build bin/setdrift
 	go build -ldflags "$(LDFLAGS)" -o $(BIN)/setdrift ./cmd/setdrift
@@ -30,7 +30,7 @@ helm-plugin: ## Package the Helm post-renderer plugin as bin/setdrift-chart-repo
 test: ## Run all tests
 	go test ./...
 
-scan: ## Scan the history and working tree for credentials, personal information and cloud identifiers (scripts/secret-scan.sh)
+scan: ## Scan the whole history for credentials, personal information and cloud identifiers (scripts/secret-scan.sh)
 	scripts/secret-scan.sh all
 
 hooks: ## Turn on the git hooks in .githooks, the secret scan before every commit and push
@@ -38,6 +38,9 @@ hooks: ## Turn on the git hooks in .githooks, the secret scan before every commi
 
 golden: ## Regenerate golden files after an intended output change; review the diff
 	go test ./pkg/pipeline -run TestGolden -update
+
+docs: ## Write what the code can into docs/commands: a page for a new command, a section for a new flag, changed type lines; then fill in each part marked <!-- write this -->
+	go test ./cmd/setdrift -run TestCommandPagesFlags -update
 
 generate: tools ## Regenerate Go code from proto/
 	PATH="$(BIN):$$PATH" $(BIN)/buf generate

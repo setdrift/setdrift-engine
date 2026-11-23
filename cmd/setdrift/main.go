@@ -57,6 +57,8 @@ func newRootCmd() *cobra.Command {
 		// telling cobra not to print usage and errors itself, run already prints the error once
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		// invoking checkFlags before any command runs, so a flag given without the flag it needs, or with one it cant be used with, is refused, its defined in flagrules.go
+		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error { return checkFlags(cmd) },
 	}
 	// checking if kubectl started us as kubectl setdrift, if so the help text shows that name instead
 	if strings.TrimSuffix(filepath.Base(os.Args[0]), ".exe") == "kubectl-setdrift" {

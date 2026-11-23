@@ -5,6 +5,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -15,6 +16,8 @@ import (
 
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 
+	"setdrift.io/setdrift-engine/pkg/collect"
+	"setdrift.io/setdrift-engine/pkg/emit/kustomize"
 	snapshotv1alpha1 "setdrift.io/setdrift-engine/pkg/snapshot/v1alpha1"
 )
 
@@ -32,6 +35,7 @@ func TestConfirmReplace(t *testing.T) {
 		name                    string
 		dir                     string
 		cluster                 string
+		other                   string
 		force, yes, interactive bool
 		answer                  string
 		ok                      bool
@@ -47,9 +51,11 @@ func TestConfirmReplace(t *testing.T) {
 		{name: "--force --yes", dir: full, cluster: "prod", force: true, yes: true, ok: true, says: "will be deleted"},
 		// not empty, but it holds no earlier export of this cluster, only another one
 		{name: "--force, another cluster", dir: full, cluster: "staging", force: true, yes: true, ok: true, says: "nothing is deleted"},
+		{name: "--force, a different cluster's export, answered yes", dir: full, cluster: "prod", other: "arn:aws:eks:us-west-2:222222222222:cluster/prod", force: true, interactive: true, answer: "y\n", ok: true, says: "holds the export of a different cluster, arn:aws:eks:us-west-2:222222222222:cluster/prod"},
+		{name: "--force --yes, a different cluster's export", dir: full, cluster: "prod", other: "arn:aws:eks:us-west-2:222222222222:cluster/prod", force: true, yes: true, says: "--yes does not replace another cluster's export"},
 	} {
 		var out bytes.Buffer
-		err := confirmReplace(c.dir, c.cluster, c.force, c.yes, c.interactive, strings.NewReader(c.answer), &out)
+		err := confirmReplace(c.dir, c.cluster, c.other, c.force, c.yes, c.interactive, strings.NewReader(c.answer), &out)
 		if (err == nil) != c.ok {
 			t.Errorf("%s: err = %v", c.name, err)
 		}
@@ -60,6 +66,35 @@ func TestConfirmReplace(t *testing.T) {
 		if !strings.Contains(text, c.says) {
 			t.Errorf("%s: %q does not say %q", c.name, text, c.says)
 		}
+	}
+}
+
+// check that an earlier export of a different EKS cluster under the same name is told apart by its ARN, the same cluster is not, and a directory source never is
+func TestOtherCluster(t *testing.T) {
+	dir := t.TempDir()
+	root := filepath.Join(dir, "clusters", "prod")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	west := "arn:aws:eks:us-west-2:222222222222:cluster/prod"
+	if err := os.WriteFile(filepath.Join(root, kustomize.ExportInfoFile), []byte("cluster: prod\nproviderId: "+west+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cluster := func(arn string) *source {
+		return &source{collector: &collect.ClusterCollector{}, cluster: &snapshotv1alpha1.Cluster{Name: "prod", ProviderId: arn}}
+	}
+	if got := otherCluster(context.Background(), dir, cluster("arn:aws:eks:us-east-1:111111111111:cluster/prod")); got != west {
+		t.Errorf("another cluster: got %q, want %q", got, west)
+	}
+	if got := otherCluster(context.Background(), dir, cluster(west)); got != "" {
+		t.Errorf("the same cluster: got %q", got)
+	}
+	files := &source{collector: collect.FileSource{Dir: dir}, cluster: &snapshotv1alpha1.Cluster{Name: "prod"}}
+	if got := otherCluster(context.Background(), dir, files); got != "" {
+		t.Errorf("a directory source: got %q", got)
+	}
+	if got := otherCluster(context.Background(), t.TempDir(), cluster(west)); got != "" {
+		t.Errorf("no earlier export: got %q", got)
 	}
 }
 

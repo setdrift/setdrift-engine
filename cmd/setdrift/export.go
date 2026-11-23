@@ -145,6 +145,19 @@ under redacted/, outside every kustomization.yaml.`,
 	f.BoolVar(&o.aws, "aws", false, "also read the EKS settings held in AWS (Pod Identity, IRSA role trust, access entries, add-ons, EBS volumes) for RESTORE.md, with your AWS credentials; read-only")
 	f.StringVar(&o.awsCluster, "aws-cluster", "", "EKS cluster name for --aws (default: from the kubeconfig context)")
 	f.StringVar(&o.awsRegion, "aws-region", "", "AWS region for --aws (default: from the kubeconfig context)")
+	// invoking belongsUnder and cannotUseWith to declare how the flags relate, checkFlags enforces it before the command runs, both defined in flagrules.go
+	belongsUnder(f, "aws-cluster", "aws", true)
+	belongsUnder(f, "aws-region", "aws", true)
+	belongsUnder(f, "yes", "force", true)
+	// going through the ExternalSecrets settings, each one belongs under --external-secrets, which is on by default so they dont need it given
+	for _, name := range externalSecretsFlags {
+		belongsUnder(f, name, "external-secrets", false)
+	}
+	cannotUseWith(f, "writes no snapshot", "no-snapshot", "snapshot", "snapshot-json")
+	// going through the flags about reading a cluster, none of them means anything for a directory
+	for _, name := range clusterOnlyFlags {
+		cannotUseWith(f, "applies to reading a cluster", name, "from-dir")
+	}
 	return cmd
 }
 
@@ -183,8 +196,10 @@ func (o *exportOptions) run(cmd *cobra.Command) error {
 	if f, ok := cmd.InOrStdin().(*os.File); ok {
 		interactive = term.IsTerminal(int(f.Fd()))
 	}
+	// invoking otherCluster to tell if the cluster's directory holds the export of a different cluster with the same name, its defined below
+	other := otherCluster(cmd.Context(), o.output, src)
 	// invoking confirmReplace to make sure a non-empty output directory may be written into, still before the read, its defined below
-	if err := confirmReplace(o.output, src.cluster.Name, o.force, o.yes, interactive, cmd.InOrStdin(), cmd.ErrOrStderr()); err != nil {
+	if err := confirmReplace(o.output, src.cluster.Name, other, o.force, o.yes, interactive, cmd.InOrStdin(), cmd.ErrOrStderr()); err != nil {
 		return err
 	}
 
@@ -230,12 +245,8 @@ const snapshotsDir = "snapshots"
 // by default thats <output>/snapshots/<time>-<cluster>.pb and .json, --snapshot and --snapshot-json name a file or a directory for either, --no-snapshot writes none
 // an existing file is replaced only with --force
 func (o *exportOptions) snapshotPaths(cmd *cobra.Command, cluster string, at time.Time) (pb, js string, err error) {
-	// checking if --no-snapshot was given, if so no paths are needed
+	// checking if --no-snapshot was given, if so no paths are needed, checkFlags in flagrules.go already refused it with a snapshot path
 	if o.noSnapshot {
-		// checking if a snapshot path was given too, that contradicts --no-snapshot
-		if o.snapshotPath != "" || o.snapshotJSON != "" {
-			return "", "", errors.New("--no-snapshot writes no snapshot, so it cannot be used with --snapshot or --snapshot-json")
-		}
 		return "", "", nil
 	}
 	// invoking fileName to make the cluster name safe for a file name, its defined in verifyreport.go
@@ -399,19 +410,6 @@ func (o *exportOptions) open(cmd *cobra.Command) (*source, error) {
 	src := &source{plat: &platform.Stage{}, cluster: &snapshotv1alpha1.Cluster{Name: o.clusterName}}
 	// checking if --from-dir was given, if so a directory is read and no cluster is contacted
 	if o.fromDir != "" {
-		// going over the flags that only mean something when reading a cluster, they get rejected rather than ignored
-		// ignoring them would surprise, -n would export every namespace for example
-		for _, name := range clusterOnlyFlags {
-			// checking if this flag was given
-			if f := cmd.Flags().Lookup(name); f != nil && f.Changed {
-				flag := "--" + name
-				// checking if the flag has a short form, if so the error names that too
-				if f.Shorthand != "" {
-					flag += " (-" + f.Shorthand + ")"
-				}
-				return nil, fmt.Errorf("%s applies to reading a cluster, so it cannot be used with --from-dir", flag)
-			}
-		}
 		// collect.FileSource reads the manifests from the directory, its defined in pkg/collect/files.go
 		src.collector = collect.FileSource{Dir: o.fromDir}
 		// checking if --cluster-name was left out, if so the cluster is called local
@@ -665,9 +663,42 @@ func (t clusterTarget) awsTarget(kc *kubeContext) (name, region string, err erro
 	return name, region, nil
 }
 
-// confirmReplace takes the output directory and the cluster name and checks the directory may be written into
+// otherCluster takes the output directory and the source and gives back the cluster an earlier export in the cluster's directory came from, when its a different cluster with the same name, else ""
+// two EKS clusters named prod in two regions, or two kubeconfigs with a prod context, would otherwise replace each other's export
+// it compares the EKS ARNs when both are known, else the kube-system uid, which is fixed for a cluster's life, and says nothing when it cant tell
+func otherCluster(ctx context.Context, dir string, src *source) string {
+	// invoking kustomize.ReadExportInfo to read which cluster the earlier export came from, its defined in pkg/emit/kustomize/exportinfo.go
+	info, err := kustomize.ReadExportInfo(kustomize.ClusterDir(dir, src.cluster.Name))
+	// checking if theres no earlier export to compare, or the source is a directory with no cluster to tell apart
+	c, isCluster := src.collector.(*collect.ClusterCollector)
+	if err != nil || info == nil || !isCluster {
+		return ""
+	}
+	// the other cluster has the same name, so its told apart by its provider id, or else by when its export was taken
+	from := "the one exported " + info.ExportedAt
+	// checking if the earlier export recorded its provider id, like an EKS ARN, if so that names the cluster
+	if info.ProviderID != "" {
+		from = info.ProviderID
+	}
+	// checking if both sides have a provider id, like an EKS ARN, if so they tell the clusters apart on their own
+	if info.ProviderID != "" && src.cluster.ProviderId != "" {
+		// checking if they differ, if so its another cluster
+		if info.ProviderID != src.cluster.ProviderId {
+			return from
+		}
+		return ""
+	}
+	// invoking sameCluster to compare the kube-system uids, its defined in verify.go
+	if same := sameCluster(ctx, c.Dynamic, info); same != nil && !*same {
+		return from
+	}
+	return ""
+}
+
+// confirmReplace takes the output directory, the cluster name and the other cluster an earlier export there came from ("" when its this one), and checks the directory may be written into
 // one that exists and isnt empty needs --force, and then a yes at the prompt, or --yes when theres no terminal to ask at
-func confirmReplace(dir, cluster string, force, yes, interactive bool, in io.Reader, out io.Writer) error {
+// replacing another cluster's export needs a person to say yes, --yes alone refuses it, so a script never overwrites another cluster
+func confirmReplace(dir, cluster, other string, force, yes, interactive bool, in io.Reader, out io.Writer) error {
 	entries, err := os.ReadDir(dir)
 	// checking if the directory is missing or empty, if so theres nothing to replace
 	if errors.Is(err, os.ErrNotExist) || (err == nil && len(entries) == 0) {
@@ -698,6 +729,14 @@ func confirmReplace(dir, cluster string, force, yes, interactive bool, in io.Rea
 			dir, root, text.Plural(files, "file", "files"), dir)
 	} else {
 		msg = fmt.Sprintf("Output directory %s is not empty. The export will be written to %s; nothing is deleted.", dir, root)
+	}
+	// checking if the directory holds another cluster's export under this name, if so the message says so first
+	if other != "" {
+		msg = fmt.Sprintf("%s holds the export of a different cluster, %s, under the same name. Replacing it loses that export; to keep both, export this one with --cluster-name.\n%s", root, other, msg)
+		// checking if --yes was given, it answers for a person, but not to replacing another cluster's export
+		if yes {
+			return fmt.Errorf("%s\n--yes does not replace another cluster's export: pass --cluster-name, or run without --yes to confirm", msg)
+		}
 	}
 	// checking if --yes was given, if so we say what happens and carry on without asking
 	if yes {
