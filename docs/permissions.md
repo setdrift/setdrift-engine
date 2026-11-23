@@ -37,121 +37,40 @@ StorageClasses), except the Namespace objects of the namespaces read.
   (`insecure-skip-tls-verify`) gets a warning: anything on the network path
   could answer in the cluster's place.
 - **`export --aws`** reads with your AWS credentials (the default chain, or
-  the AWS profile the kubeconfig context uses), read-only:
-  `eks:DescribeCluster`, `eks:ListPodIdentityAssociations`,
-  `eks:DescribePodIdentityAssociation`, `eks:ListAccessEntries`,
-  `eks:DescribeAccessEntry`, `eks:ListAssociatedAccessPolicies`,
-  `eks:ListAddons`, `eks:DescribeAddon`, `iam:GetRole`,
-  `ec2:DescribeVolumes`, `ec2:DescribeSubnets` and `ec2:DescribeVpcs`. `eks:DescribeCluster` is checked first: without it,
-  or with the wrong cluster name or region, the export stops before reading
-  the cluster. Any other refused call is recorded and listed in RESTORE.md's
-  AWS settings, and the export goes on without that part. `iam:GetRole` is
-  only called for roles in the cluster's own AWS account, so a ServiceAccount
-  annotation can't make the export read any other role.
+  the AWS profile the kubeconfig context uses), read-only; every call is in
+  [AWS](permissions-aws.md). `eks:DescribeCluster` is checked first: without
+  it, or with the wrong cluster name or region, the export stops before
+  reading the cluster. Any other refused call is recorded and listed in
+  RESTORE.md's AWS settings, and the export goes on without that part.
 
 ## Least-privilege permissions
 
-What each command needs, and nothing more. Everything is read-only, except
-`verify`'s dry-run apply, which changes nothing either.
+Every permission SetDrift uses, each tied to the command and the output
+that needs it and to what happens without it, has its own page:
 
-### Kubernetes (RBAC)
+- **[Kubernetes](permissions-kubernetes.md):** each API group, resource and
+  verb (`list` on every type, `get` for single objects, `list` `nodes`,
+  `patch` for `verify`'s dry-run), on any cluster.
+- **[AWS](permissions-aws.md):** each IAM action `export --aws` calls
+  (`eks:DescribeCluster`, `ec2:DescribeSubnets`, ...), and how EKS access
+  entries and access policies give the Kubernetes permissions.
+- **[Azure](permissions-azure.md):** no Azure API is called; the
+  kubeconfig actions, and the AKS data actions for a cluster with Azure RBAC
+  for Kubernetes.
+- **[Google Cloud](permissions-gcp.md):** no Google Cloud API is called;
+  the kubeconfig permission, and the GKE IAM permissions that can grant the
+  Kubernetes access.
 
-Every signed-in user can already read the API's discovery documents and
-version, and ask who they are and what they may do (SelfSubjectReview,
-SelfSubjectAccessReview, SelfSubjectRulesReview: the built-in
-`system:basic-user`, `system:discovery` and `system:public-info-viewer`
-roles). SetDrift uses these to explain a refusal; they need no grant.
+Each page ends with templates to apply, in
+[deploy/permissions/](https://github.com/setdrift/setdrift-engine/blob/main/deploy/permissions): Kubernetes roles and
+bindings, an IAM policy and a CloudFormation stack, an ARM template of Azure
+custom roles, and Google Cloud custom roles.
 
-| Command | Verbs | Resources | For |
-|---|---|---|---|
-| `export`, and the live side of `diff` | `get`, `list` | every resource type to export, in the namespaces to read; cluster-wide for cluster-scoped types | reading the objects; `get` fetches single objects, like a Pod nothing owns or an owner that wasn't listed |
-| | `get`, `list` | `secrets` | optional: only the key names are kept, each value is dropped as soon as it is read; without it, Secrets are skipped and named in the summary |
-| | `list` | `namespaces`, cluster-wide | optional: finding the namespaces you can read; without it, the kubeconfig context's namespace or `-n` is read |
-| | `get` | `namespaces`, each one given with `-n` | checking `-n` before anything is read |
-| | `list` | `nodes` | optional: identifying the platform; without it, the platform is identified from less evidence |
-| `verify` | `get` | every resource the export builds | comparing it with the live object |
-| | `patch` | every resource the export builds | the server-side dry-run apply (`dryRun=All`, the cluster changes nothing) |
-| | `get` | `namespaces`: `kube-system`, and each one given with `-n` | optional: telling whether this is the export's own cluster; checking `-n` |
-| | `list` | `nodes` | optional: choosing the platform set with `--set auto` |
-| `diff` of two snapshots or directories, `export --from-dir`, `snapshot json`, `helm-postrender` | none | | they read no cluster |
+In short:
 
-The built-in roles cover most of it:
-
-- **`view`** is enough for `export` and `diff`, except Secrets and RBAC objects
-  (Roles, RoleBindings, ClusterRoles), which it doesn't allow: those are
-  skipped and named. On EKS, the access policy `AmazonEKSViewPolicy` is the
-  same.
-- **`edit`** is enough for `verify`, except RBAC objects, which only `admin`
-  may patch.
-
-A ClusterRole for `export` that reads everything, Secrets included (their
-values are dropped as soon as they are read):
-
-```yaml
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: setdrift-export
-rules:
-- apiGroups: ["*"]
-  resources: ["*"]
-  verbs: ["get", "list"]
-```
-
-### AWS (IAM), for `export --aws`
-
-Only `export --aws` calls AWS; no other command or flag does.
-
-| Action | Resource | For |
+| Command | Kubernetes | Cloud |
 |---|---|---|
-| `eks:DescribeCluster` | the cluster | its ARN, version and OIDC issuer; checked first, the export stops without it |
-| `eks:ListPodIdentityAssociations` | the cluster | the Pod Identity associations |
-| `eks:DescribePodIdentityAssociation` | each Pod Identity association | the role each one gives a ServiceAccount |
-| `eks:ListAccessEntries` | the cluster | the access entries |
-| `eks:DescribeAccessEntry` | each access entry | its type and Kubernetes groups |
-| `eks:ListAssociatedAccessPolicies` | each access entry | its access policies and their scope |
-| `eks:ListAddons` | the cluster | the add-ons |
-| `eks:DescribeAddon` | each add-on | its version, its role, and whether it has configuration (the values are never kept) |
-| `iam:GetRole` | roles in the cluster's own account | the trust policy of each role an IRSA annotation or Pod Identity association names, for RESTORE.md |
-| `ec2:DescribeVolumes` | `*` (this action takes no resource) | the type, size, IOPS, encryption and zone of each EBS volume behind a PersistentVolume |
-| `ec2:DescribeSubnets` | `*` (this action takes no resource) | the range, zone and free addresses of each subnet the cluster profile names (the cluster's own, its nodes', pods' and load balancers') |
-| `ec2:DescribeVpcs` | `*` (this action takes no resource) | the address ranges of the cluster's VPC, for the cluster profile |
-
-A policy with only those, for one cluster (replace `REGION`, `ACCOUNT` and
-`CLUSTER`):
-
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Sid": "Cluster",
-      "Effect": "Allow",
-      "Action": ["eks:DescribeCluster", "eks:ListPodIdentityAssociations", "eks:ListAccessEntries", "eks:ListAddons"],
-      "Resource": "arn:aws:eks:REGION:ACCOUNT:cluster/CLUSTER"
-    },
-    {
-      "Sid": "ClusterParts",
-      "Effect": "Allow",
-      "Action": ["eks:DescribePodIdentityAssociation", "eks:DescribeAccessEntry", "eks:ListAssociatedAccessPolicies", "eks:DescribeAddon"],
-      "Resource": [
-        "arn:aws:eks:REGION:ACCOUNT:podidentityassociation/CLUSTER/*",
-        "arn:aws:eks:REGION:ACCOUNT:access-entry/CLUSTER/*",
-        "arn:aws:eks:REGION:ACCOUNT:addon/CLUSTER/*"
-      ]
-    },
-    {
-      "Sid": "Roles",
-      "Effect": "Allow",
-      "Action": "iam:GetRole",
-      "Resource": "arn:aws:iam::ACCOUNT:role/*"
-    },
-    {
-      "Sid": "Describe",
-      "Effect": "Allow",
-      "Action": ["ec2:DescribeSubnets", "ec2:DescribeVolumes", "ec2:DescribeVpcs"],
-      "Resource": "*"
-    }
-  ]
-}
-```
+| `export` | `get`, `list` on what it exports; `list` on Secrets, namespaces and nodes, each optional | with `--aws`, the AWS actions; none otherwise |
+| `diff` | the same as `export` for each live side; none for snapshots and directories | none |
+| `verify` | `get` and `patch` on what the export holds | none |
+| `export --from-dir`, `snapshot json`, `helm-postrender` | none | none |

@@ -1,0 +1,38 @@
+# The Kubernetes permissions setdrift export and diff use, across the cluster
+# (docs/permissions-kubernetes.md): get and list on every type, Secrets
+# included, whose values SetDrift drops as soon as it reads them.
+#
+#   kubectl apply -f setdrift-export.yaml
+#
+# The binding grants it to the group setdrift-export. Put your users in that
+# group, or change the subject: on EKS name the group in an access entry's
+# Kubernetes groups, on GKE use a Google Group or a user's email (kind: User),
+# on AKS an Entra ID group's object ID.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: setdrift-export
+  labels:
+    app.kubernetes.io/name: setdrift
+rules:
+- apiGroups: ["*"]
+  resources: ["*"]
+  verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: setdrift-export
+  labels:
+    app.kubernetes.io/name: setdrift
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: setdrift-export
+subjects:
+- apiGroup: rbac.authorization.k8s.io
+  kind: Group
+  name: setdrift-export
+
+# Copyright The SetDrift Authors
+# SPDX-License-Identifier: Apache-2.0

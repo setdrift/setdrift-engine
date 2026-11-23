@@ -1,4 +1,4 @@
-// checks docs/permissions.md lists exactly the AWS calls export --aws can make, in its table and in its example policy
+// checks docs/permissions-aws.md lists exactly the AWS calls export --aws can make, in its table and in its example policy
 
 package awsinventory
 
@@ -12,7 +12,7 @@ import (
 	"testing"
 )
 
-// check that the AWS actions docs/permissions.md documents are exactly the calls the EKS, IAM and EC2 interfaces allow, in the table and in the policy
+// check that the AWS actions docs/permissions-aws.md documents are exactly the calls the EKS, IAM and EC2 interfaces allow, in the table and in the policy
 func TestPermissionsDocMatchesCalls(t *testing.T) {
 	var calls []string
 	// the interfaces are the only way Collect reaches AWS, so their methods are every call it can make
@@ -25,7 +25,7 @@ func TestPermissionsDocMatchesCalls(t *testing.T) {
 	}
 	slices.Sort(calls)
 
-	b, err := os.ReadFile("../../docs/permissions.md")
+	b, err := os.ReadFile("../../docs/permissions-aws.md")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,13 +37,13 @@ func TestPermissionsDocMatchesCalls(t *testing.T) {
 	}
 	slices.Sort(table)
 	if !slices.Equal(table, calls) {
-		t.Errorf("docs/permissions.md's AWS table lists %v, the code calls %v", table, calls)
+		t.Errorf("docs/permissions-aws.md's AWS table lists %v, the code calls %v", table, calls)
 	}
 
 	// the actions in the example policy
 	m := regexp.MustCompile("(?s)```json\n(.*?)\n```").FindStringSubmatch(doc)
 	if m == nil {
-		t.Fatal("docs/permissions.md has no example policy")
+		t.Fatal("docs/permissions-aws.md has no example policy")
 	}
 	var policy struct {
 		Statement []struct {
