@@ -45,6 +45,12 @@
     },
     {
       "apiVersion": "v1",
+      "fieldManagers": [
+        {
+          "manager": "kubectl-create",
+          "operation": "Update"
+        }
+      ],
       "kind": "Namespace",
       "manifest": {
         "apiVersion": "v1",

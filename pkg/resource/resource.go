@@ -36,6 +36,9 @@ type Object struct {
 
 	// the object's uid in the cluster, kept by the normalizer when it removes metadata.uid from the manifest, for the snapshot's source_uid
 	SourceUID string
+
+	// who wrote the object and when, kept by the normalizer when it removes metadata.managedFields from the manifest, for the snapshot's field_managers
+	FieldManagers []*snapshotv1alpha1.FieldManager
 }
 
 // OwnerStatus says what happened to a controller owner that is not in the collected objects

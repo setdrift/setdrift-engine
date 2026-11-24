@@ -4,8 +4,11 @@
 package normalize
 
 import (
+	"cmp"
 	"context"
+	"slices"
 
+	"google.golang.org/protobuf/types/known/timestamppb"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
@@ -151,6 +154,8 @@ func (n Normalizer) Process(_ context.Context, objs []*resource.Object) ([]*reso
 		if uid := string(o.GetUID()); uid != "" {
 			o.SourceUID = uid
 		}
+		// invoking fieldManagers to keep who wrote the object and when, before managedFields goes, its defined below
+		o.FieldManagers = fieldManagers(o)
 		// removing each server metadata field
 		for _, f := range serverMetadata {
 			unstructured.RemoveNestedField(o.Object, "metadata", f)
@@ -236,6 +241,27 @@ func (n Normalizer) removeToolMarkers(o *resource.Object) {
 		delete(labels, n.ArgoInstanceLabel)
 	}
 	o.SetLabels(labels)
+}
+
+// fieldManagers takes an object and gives back its writers from managedFields, one per manager, operation and subresource, oldest first
+// only the names, operations, subresources and times are kept, never the fields they own, which can be larger than the object
+func fieldManagers(o *resource.Object) []*snapshotv1alpha1.FieldManager {
+	var out []*snapshotv1alpha1.FieldManager
+	// going through each managedFields entry
+	for _, m := range o.GetManagedFields() {
+		fm := &snapshotv1alpha1.FieldManager{Manager: m.Manager, Operation: string(m.Operation), Subresource: m.Subresource}
+		// checking if the API server recorded a time, if so its kept
+		if m.Time != nil {
+			fm.Time = timestamppb.New(m.Time.UTC())
+		}
+		out = append(out, fm)
+	}
+	// sorting by time, then by manager, so the same object always gives the same order
+	slices.SortStableFunc(out, func(a, b *snapshotv1alpha1.FieldManager) int {
+		return cmp.Or(a.GetTime().AsTime().Compare(b.GetTime().AsTime()), cmp.Compare(a.Manager, b.Manager),
+			cmp.Compare(a.Operation, b.Operation), cmp.Compare(a.Subresource, b.Subresource))
+	})
+	return out
 }
 
 // Copyright The SetDrift Authors

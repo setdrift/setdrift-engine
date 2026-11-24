@@ -127,6 +127,21 @@ message Resource {
   repeated Redaction redactions = 8;
   // nested message defined below
   repeated Finding findings = 9;
+  // who wrote the resource and when, from its managedFields, which the
+  // manifest_json drops; names and times only, never the fields they own
+  repeated FieldManager field_managers = 10;
+}
+
+// one writer of a resource, as the API server recorded it in managedFields
+message FieldManager {
+  // the field manager's name, e.g. eks, helm, argocd-controller or kubectl-client-side-apply
+  string manager = 1;
+  // Apply (server-side apply) or Update
+  string operation = 2;
+  // when this manager last wrote the resource
+  google.protobuf.Timestamp time = 3;
+  // the subresource it wrote, e.g. status or scale, empty for the resource itself
+  string subresource = 4;
 }
 
 // who manages the resource/where it came from, different than parent/child
