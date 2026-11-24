@@ -95,15 +95,16 @@ func Build(meta Meta, objs []*resource.Object) (*snapshotv1alpha1.Snapshot, erro
 			return nil, fmt.Errorf("%s: %w", o.Ref(), err)
 		}
 		s.Resources = append(s.Resources, &snapshotv1alpha1.Resource{
-			ApiVersion:   o.GetAPIVersion(),
-			Kind:         o.GetKind(),
-			Namespace:    o.GetNamespace(),
-			Name:         o.GetName(),
-			SourceUid:    cmp.Or(o.SourceUID, string(o.GetUID())),
-			ManifestJson: string(manifest),
-			Provenance:   o.Provenance,
-			Redactions:   o.Redactions,
-			Findings:     o.Findings,
+			ApiVersion:    o.GetAPIVersion(),
+			Kind:          o.GetKind(),
+			Namespace:     o.GetNamespace(),
+			Name:          o.GetName(),
+			SourceUid:     cmp.Or(o.SourceUID, string(o.GetUID())),
+			ManifestJson:  string(manifest),
+			Provenance:    o.Provenance,
+			Redactions:    o.Redactions,
+			Findings:      o.Findings,
+			FieldManagers: o.FieldManagers,
 		})
 	}
 	// sorting the resources by group, kind, namespace and name, invoking kube.Group for the group, its defined in internal/kube/kube.go

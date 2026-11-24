@@ -5,8 +5,11 @@ package normalize
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"testing"
+	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	"setdrift.io/setdrift-engine/pkg/resource"
@@ -332,6 +335,34 @@ func TestServiceIPFamilies(t *testing.T) {
 		if _, kept := spec["ipFamilies"]; kept != keep {
 			t.Errorf("%s: ipFamilies kept %v, want %v: %v", fam, kept, keep, spec)
 		}
+	}
+}
+
+// check that the field managers are kept for the snapshot, oldest first, with their names, operations, subresources and times only, and managedFields leaves the manifest
+func TestFieldManagersKept(t *testing.T) {
+	u := &unstructured.Unstructured{}
+	u.SetAPIVersion("v1")
+	u.SetKind("ConfigMap")
+	u.SetNamespace("shop")
+	u.SetName("web")
+	late, early := metav1.NewTime(time.Date(2026, 11, 24, 6, 0, 0, 0, time.UTC)), metav1.NewTime(time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC))
+	u.SetManagedFields([]metav1.ManagedFieldsEntry{
+		{Manager: "kubectl-edit", Operation: metav1.ManagedFieldsOperationUpdate, Time: &late, FieldsType: "FieldsV1", FieldsV1: &metav1.FieldsV1{Raw: []byte(`{"f:data":{}}`)}},
+		{Manager: "helm", Operation: metav1.ManagedFieldsOperationApply, Time: &early},
+	})
+	o := resource.New(u)
+	if _, _, err := (Normalizer{}).Process(context.Background(), []*resource.Object{o}); err != nil {
+		t.Fatal(err)
+	}
+	if len(o.GetManagedFields()) != 0 {
+		t.Errorf("managedFields left in the manifest")
+	}
+	var got []string
+	for _, m := range o.FieldManagers {
+		got = append(got, m.Manager+" "+m.Operation+" "+m.GetTime().AsTime().Format(time.RFC3339))
+	}
+	if want := []string{"helm Apply 2026-11-20T09:00:00Z", "kubectl-edit Update 2026-11-24T06:00:00Z"}; !slices.Equal(got, want) {
+		t.Errorf("field managers %v, want %v", got, want)
 	}
 }
 
