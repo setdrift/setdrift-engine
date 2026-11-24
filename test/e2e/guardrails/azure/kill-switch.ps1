@@ -29,7 +29,8 @@ Write-Output 'Denying all new resources'
 # Delete every other resource group, in parallel, keeping the guard's, Azure's
 # signup group and any tagged setdrift-keep=true.
 $keep = @($guard, 'azure-signup-rg')
-$doomed = Get-AzResourceGroup | Where-Object { $_.ResourceGroupName -notin $keep -and $_.Tags['setdrift-keep'] -ne 'true' }
+# a group with no tags at all has a null Tags, which can't be indexed
+$doomed = Get-AzResourceGroup | Where-Object { $_.ResourceGroupName -notin $keep -and -not ($_.Tags -and $_.Tags['setdrift-keep'] -eq 'true') }
 $jobs = foreach ($rg in $doomed) {
   Write-Output "Deleting resource group $($rg.ResourceGroupName)"
   Remove-AzResourceGroup -Name $rg.ResourceGroupName -Force -AsJob
