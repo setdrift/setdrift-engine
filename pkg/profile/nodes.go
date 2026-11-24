@@ -62,6 +62,11 @@ func AddNodes(p *snapshotv1alpha1.Profile, nodes []unstructured.Unstructured) *s
 	}
 	// invoking nodePodRanges to read the pod network from the nodes pod ranges, its defined below
 	b.nodePodRanges(podRanges)
+	// checking if theyre GKE nodes and nothing named a network plugin, if so its GKE's built-in networking, which runs no component of its own to find
+	if b.p.Network.Cni == "" && gkeNodes(nodes) {
+		b.p.Network.Cni = "gke-default"
+		b.found("network plugin gke-default (GKE's built-in networking, no other network plugin found)", nodesSource+" (cloud.google.com/gke-nodepool label)")
+	}
 	// going through the zones, giving each the smallest range holding its nodes addresses
 	for zone, list := range addrs {
 		// invoking covering for each address family, its defined in cidr.go
@@ -258,6 +263,17 @@ func AddVpcCidrs(p *snapshotv1alpha1.Profile, vpcID string, cidrs []string) *sna
 func stringOf(obj map[string]any, path ...string) string {
 	s, _, _ := unstructured.NestedString(obj, path...)
 	return s
+}
+
+// gkeNodes tells if every node is a GKE node, labelled with its node pool
+func gkeNodes(nodes []unstructured.Unstructured) bool {
+	// going through the nodes, any without the label means its not all GKE
+	for _, n := range nodes {
+		if n.GetLabels()["cloud.google.com/gke-nodepool"] == "" {
+			return false
+		}
+	}
+	return len(nodes) > 0
 }
 
 // nodeZone takes a node's labels and gives back its zone, "" when it has none
