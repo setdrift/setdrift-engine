@@ -9,7 +9,7 @@ Neither cloud offers a true spending cap for a normal account. Azure pay-as-you-
 | Isolation | A subscription of its own, so nothing here can touch anything else | A project of its own |
 | The guard that acts in hours | A reaper, every hour, deletes test resource groups past their time to live (2 hours by default) | A reaper, every hour, deletes test GKE clusters past their time to live |
 | Alerts | Emails at 25% of the budget and when the month is forecast to pass it | Emails to the billing account's admins at 25%, 75% and 100% |
-| The kill switch | At 50% of the budget, denies every new resource and deletes every resource group but the guard's own | At 75% of the budget, deletes the test clusters and disables billing on the project, which stops everything in it |
+| The kill switch | At 50% of the budget, denies every new resource and deletes every resource group except the guard's own, Azure's `azure-signup-rg` (it holds the account's free services) and any tagged `setdrift-keep=true` | At 75% of the budget, deletes the test clusters and disables billing on the project, which stops everything in it |
 
 The kill switch fires below the cap because both clouds report cost late. Azure evaluates budgets once a day, on cost data 8 to 24 hours old, so spending can run a day or two past the point that fires it, hence 50%. GCP sends budget updates several times a day, with the first one possibly hours late, hence 75%. Neither is a guarantee, which is why the reaper is the guard that matters day to day.
 

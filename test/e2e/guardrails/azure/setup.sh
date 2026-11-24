@@ -2,7 +2,8 @@
 # Sets up the cost guardrails for SetDrift's Azure test subscription: a monthly
 # budget that emails as spending grows and, at KILL_PERCENT of it, fires the
 # kill switch (kill-switch.ps1), which denies all new resources and deletes
-# every resource group but setdrift-guard; and an hourly reaper (reaper.ps1)
+# every resource group but setdrift-guard, Azure's azure-signup-rg and any
+# tagged setdrift-keep=true; and an hourly reaper (reaper.ps1)
 # that deletes test resource groups past their time to live. See ../README.md.
 #
 #   setup.sh setup                create or update all of it (safe to run again)
@@ -136,7 +137,7 @@ status() {
 }
 
 test_kill() {
-  say "this fires the kill switch: every resource group in $name but $guard is deleted"
+  say "this fires the kill switch: every resource group in $name is deleted, except $guard, azure-signup-rg and any tagged setdrift-keep=true"
   read -r -p "type the subscription name to go on: " answer
   [[ $answer == "$name" ]] || die "not confirmed"
   az group create --name setdrift-killtest --location "$location" --output none
