@@ -79,6 +79,16 @@ translate:
     default: external
     internal: {service.beta.kubernetes.io/azure-load-balancer-internal: "true"}
     external: {}
+  ingress:
+    # Application Gateway for Containers; App Routing's managed NGINX is out of Azure support from November 2026
+    className: azure-alb-external
+    exposureAnnotation: appgw.ingress.kubernetes.io/use-private-ip
+    internalValues: ["true"]
+    externalValues: ["false"]
+    default: external
+    internalUnsupported: true
+    external: {}
+  snapshotDriver: disk.csi.azure.com
   nodes:
     pools: [kubernetes.azure.com/agentpool, agentpool, karpenter.sh/nodepool]
     spot: [{key: kubernetes.azure.com/scalesetpriority, value: spot, taint: true}, {key: karpenter.sh/capacity-type, value: spot}]

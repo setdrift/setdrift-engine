@@ -351,5 +351,90 @@ metadata:
 	}
 }
 
+// an internal ALB Ingress stays internal on GKE, through GKE's class annotation, and its ALB settings are listed as dropped
+func TestIngressStaysInternal(t *testing.T) {
+	ing := u(t, `
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: shop
+  namespace: shop
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internal
+    alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:us-east-2:111111111111:certificate/abc
+spec:
+  ingressClassName: alb
+  rules: [{host: shop.acme.com}]`)
+	r, err := Translate([]*unstructured.Unstructured{ing}, platform.EKS, platform.GKE, load(t), nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := patchFor(r, "Ingress", "shop")
+	if p == nil {
+		t.Fatal("no patch")
+	}
+	if op := opAt(p, "/metadata/annotations/kubernetes.io~1ingress.class"); op == nil || op.Value != "gce-internal" {
+		t.Errorf("not gce-internal: %+v", p.Ops)
+	}
+	if op := opAt(p, "/spec/ingressClassName"); op == nil || op.Op != "remove" {
+		t.Errorf("ingressClassName not removed: %+v", p.Ops)
+	}
+	if !strings.Contains(strings.Join(r.Notes, " "), "certificate-arn") {
+		t.Errorf("the dropped certificate isn't listed: %v", r.Notes)
+	}
+	// on AKS, whose Ingress controller is public only, an internal Ingress waits for a decision
+	r, _ = Translate([]*unstructured.Unstructured{ing}, platform.EKS, platform.AKS, load(t), nil, "")
+	if len(r.Undecided()) != 1 || !strings.HasPrefix(r.Undecided()[0].Feature, "ingress/") {
+		t.Errorf("decisions %+v", r.Decisions)
+	}
+}
+
+// another platform's IngressClass goes, and a VolumeSnapshotClass moves to the target's driver
+func TestClassesMove(t *testing.T) {
+	r, err := Translate([]*unstructured.Unstructured{
+		u(t, `{apiVersion: networking.k8s.io/v1, kind: IngressClass, metadata: {name: alb}, spec: {controller: ingress.k8s.aws/alb}}`),
+		u(t, `{apiVersion: snapshot.storage.k8s.io/v1, kind: VolumeSnapshotClass, metadata: {name: ebs}, driver: ebs.csi.aws.com, deletionPolicy: Delete, parameters: {tagSpecification_1: "a=b"}}`),
+	}, platform.EKS, platform.GKE, load(t), nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p := patchFor(r, "IngressClass", "alb"); p == nil || !p.Delete {
+		t.Errorf("IngressClass: %+v", p)
+	}
+	p := patchFor(r, "VolumeSnapshotClass", "ebs")
+	if p == nil || opAt(p, "/driver").Value != "pd.csi.storage.gke.io" || opAt(p, "/parameters") == nil {
+		t.Errorf("VolumeSnapshotClass: %+v", p)
+	}
+}
+
+// a SecretProviderClass moves to the target's provider keeping its secret names
+func TestSecretProviderClassConverted(t *testing.T) {
+	spc := u(t, `
+apiVersion: secrets-store.csi.x-k8s.io/v1
+kind: SecretProviderClass
+metadata: {name: orders, namespace: shop}
+spec:
+  provider: aws
+  parameters:
+    objects: |
+      - objectName: "prod/orders/db"
+        objectType: secretsmanager`)
+	r, err := Translate([]*unstructured.Unstructured{spc}, platform.EKS, platform.GKE, load(t), nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := patchFor(r, "SecretProviderClass", "orders")
+	if p == nil || opAt(p, "/spec/provider").Value != "gcp" {
+		t.Fatalf("got %+v", p)
+	}
+	secrets := opAt(p, "/spec/parameters").Value.(map[string]any)["secrets"].(string)
+	if !strings.Contains(secrets, "projects/<project>/secrets/prod-orders-db/versions/latest") {
+		t.Errorf("secrets %q", secrets)
+	}
+	if !strings.Contains(strings.Join(r.Notes, " "), "prod/orders/db as prod-orders-db") {
+		t.Errorf("the rename isn't said: %v", r.Notes)
+	}
+}
+
 // Copyright The SetDrift Authors
 // SPDX-License-Identifier: Apache-2.0

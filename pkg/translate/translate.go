@@ -257,6 +257,15 @@ func (t *translator) object(o *unstructured.Unstructured) {
 		t.identity(ref, o)
 	case gvk.Group == "external-secrets.io" && (gvk.Kind == "SecretStore" || gvk.Kind == "ClusterSecretStore"):
 		t.secretStore(ref, o)
+	// the classes and Ingresses, in classes.go
+	case gvk.Group == "networking.k8s.io" && gvk.Kind == "Ingress":
+		t.ingress(&p, ref, o)
+	case gvk.Group == "networking.k8s.io" && gvk.Kind == "IngressClass":
+		t.ingressClass(&p, ref, o)
+	case gvk.Group == "snapshot.storage.k8s.io" && gvk.Kind == "VolumeSnapshotClass":
+		t.snapshotClass(&p, ref, o)
+	case gvk.Group == "secrets-store.csi.x-k8s.io" && gvk.Kind == "SecretProviderClass":
+		t.secretProviderClass(&p, ref, o)
 	}
 	// invoking placement to rewrite the node pool and spot labels a Pod template asks for, its defined in placement.go
 	t.placement(&p, ref, o)

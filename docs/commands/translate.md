@@ -18,6 +18,13 @@ Objects keep their kind, names and intent. Only what the target reads differentl
 | Load balancer Services | Internal stays internal and public stays public, written explicitly in the target's annotation, since each platform defaults differently. Another platform's load balancer class and annotations go |
 | Node pool and spot labels in Pod templates | The target's labels, keeping the pool name, with the toleration the target's spot taint needs. Other node labels of another platform go, and the README says the placement was relaxed |
 | Another platform's finalizers | Removed, since nothing on the target would ever remove them |
+| Ingresses of another platform's controller | The target's controller, with internal kept internal and public kept public, written explicitly (GKE's `gce-internal` class, the ALB's `internal` scheme). The settings of the old load balancer, like certificates, health checks and WAF, are listed to set again by hand. AKS's Ingress controller is public only, so an internal Ingress for AKS is a decision |
+| IngressClasses of another platform's controller | Left out, the target's controller installs its own |
+| VolumeSnapshotClasses | The target's block storage driver |
+| SecretProviderClasses | The target's provider, keeping the secret names (renamed where the target's secret manager doesn't allow a character, like `/`), with its own settings, like the vault name or project, left to fill in. SetDrift never copies the values |
+| Pods using a cloud identity kept on the source | The projected token and settings that cloud's webhook gives on its own platform, so its SDK works unchanged from the target |
+
+The overlay also holds its own RESTORE.md, the cross-cloud version of the export's: what comes over and what doesn't (a volume's data, since the target can't attach the source's disks, comes over separately), the Kubernetes version check, the commands that make a kept identity's cloud trust the new cluster, and when to apply.
 
 ## Decisions
 

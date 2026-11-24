@@ -33,10 +33,13 @@ type Platform struct {
 // Translate holds how a translation reads this platform's settings and writes them for it
 type Translate struct {
 	// Dir is where a translation for this platform goes in an export, like platform/gcp/gke
-	Dir          string          `json:"dir"`
-	Storage      []StorageTier   `json:"storage,omitempty"`
-	LoadBalancer LoadBalancer    `json:"loadBalancer"`
-	Nodes        NodeTranslation `json:"nodes"`
+	Dir          string        `json:"dir"`
+	Storage      []StorageTier `json:"storage,omitempty"`
+	LoadBalancer LoadBalancer  `json:"loadBalancer"`
+	Ingress      Ingress       `json:"ingress"`
+	// SnapshotDriver is the VolumeSnapshotClass driver of the platform's block storage
+	SnapshotDriver string          `json:"snapshotDriver,omitempty"`
+	Nodes          NodeTranslation `json:"nodes"`
 }
 
 // StorageTier is one kind of storage on a platform, how a StorageClass for it is recognized and how one is written
@@ -73,6 +76,40 @@ type LoadBalancer struct {
 	// Internal and External are the annotations a translation writes for each
 	Internal map[string]string `json:"internal,omitempty"`
 	External map[string]string `json:"external,omitempty"`
+}
+
+// Ingress says how an Ingress's controller and exposure read and are written on a platform
+type Ingress struct {
+	// ClassName is the ingressClassName a translation writes, unless ClassAnnotation says the platform reads the class from the kubernetes.io/ingress.class annotation, with InternalClass or ExternalClass
+	ClassName       string `json:"className,omitempty"`
+	ClassAnnotation bool   `json:"classAnnotation,omitempty"`
+	InternalClass   string `json:"internalClass,omitempty"`
+	ExternalClass   string `json:"externalClass,omitempty"`
+	// ExposureAnnotation holds the exposure with InternalValues or ExternalValues, Default is the exposure without it
+	ExposureAnnotation string   `json:"exposureAnnotation,omitempty"`
+	InternalValues     []string `json:"internalValues,omitempty"`
+	ExternalValues     []string `json:"externalValues,omitempty"`
+	Default            string   `json:"default"`
+	// InternalUnsupported means the platform's controller offers no internal Ingress, so an internal one is a decision
+	InternalUnsupported bool `json:"internalUnsupported,omitempty"`
+	// Internal and External are the annotations a translation writes for each
+	Internal map[string]string `json:"internal,omitempty"`
+	External map[string]string `json:"external,omitempty"`
+}
+
+// IngressClassOwners gives back the platforms an ingress class name belongs to, as the kubernetes.io/ingress.class annotation or ingressClassName names it
+func (m *Map) IngressClassOwners(c string) []platform.Distribution {
+	return m.owners(c, func(k Markers) []string { return k.IngressClassAnnotations }, false)
+}
+
+// IngressControllerOwners gives back the platforms an IngressClass controller belongs to
+func (m *Map) IngressControllerOwners(c string) []platform.Distribution {
+	return m.owners(c, func(k Markers) []string { return k.IngressControllers }, false)
+}
+
+// IngressAnnotationOwners gives back the platforms an Ingress annotation belongs to, by prefix
+func (m *Map) IngressAnnotationOwners(a string) []platform.Distribution {
+	return m.owners(a, func(k Markers) []string { return k.IngressAnnotationPrefixes }, true)
 }
 
 // NodeTranslation says which node labels name a pool and which mark spot capacity on a platform
@@ -459,6 +496,11 @@ func (m *Map) SecretStoreProviderOwners(p string) []platform.Distribution {
 // FinalizerOwners gives back the platforms a finalizer belongs to, by prefix
 func (m *Map) FinalizerOwners(f string) []platform.Distribution {
 	return m.owners(f, func(k Markers) []string { return k.FinalizerPrefixes }, true)
+}
+
+// SecretProviderClassOwners gives back the platforms a Secrets Store CSI provider belongs to
+func (m *Map) SecretProviderClassOwners(p string) []platform.Distribution {
+	return m.owners(p, func(k Markers) []string { return k.SecretProviderClassProviders }, false)
 }
 
 // NodeLabelOwners gives back the platforms a node label key belongs to, by prefix

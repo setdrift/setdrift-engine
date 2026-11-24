@@ -85,6 +85,16 @@ translate:
     default: external
     internal: {service.beta.kubernetes.io/aws-load-balancer-scheme: internal}
     external: {service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing}
+  ingress:
+    # the AWS Load Balancer Controller's class; Auto Mode clusters name theirs in an IngressClass with controller eks.amazonaws.com/alb
+    className: alb
+    exposureAnnotation: alb.ingress.kubernetes.io/scheme
+    internalValues: [internal]
+    externalValues: [internet-facing]
+    default: internal
+    internal: {alb.ingress.kubernetes.io/scheme: internal}
+    external: {alb.ingress.kubernetes.io/scheme: internet-facing}
+  snapshotDriver: ebs.csi.aws.com
   nodes:
     pools: [eks.amazonaws.com/nodegroup, karpenter.sh/nodepool]
     spot: [{key: eks.amazonaws.com/capacityType, value: SPOT}, {key: karpenter.sh/capacity-type, value: spot}]

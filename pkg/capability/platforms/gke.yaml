@@ -83,6 +83,13 @@ translate:
     default: external
     internal: {networking.gke.io/load-balancer-type: Internal}
     external: {}
+  ingress:
+    # GKE reads its class from the annotation, not ingressClassName
+    classAnnotation: true
+    internalClass: gce-internal
+    externalClass: gce
+    default: external
+  snapshotDriver: pd.csi.storage.gke.io
   nodes:
     pools: [cloud.google.com/gke-nodepool]
     spot: [{key: cloud.google.com/gke-spot, value: "true", taint: true}]
