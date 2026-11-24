@@ -41,6 +41,21 @@ gcloud config set project "$project" >/dev/null 2>&1
 
 fraction=$(awk "BEGIN { print $kill / 100 }")
 
+# A service account just created takes up to a minute to appear to IAM, so a
+# role granted to it at once can fail as if it didn't exist; each grant is
+# retried for two minutes.
+grant() { # what to grant on (projects, or billing accounts), id, member, role, flag
+  # $1 is left unquoted, "billing accounts" is two words to gcloud
+  local i
+  for i in $(seq 24); do
+    if gcloud $1 add-iam-policy-binding "$2" --member="$3" --role="$4" ${5:+"$5"} >/dev/null 2>&1; then
+      return
+    fi
+    sleep 5
+  done
+  gcloud $1 add-iam-policy-binding "$2" --member="$3" --role="$4" ${5:+"$5"} >/dev/null
+}
+
 deploy() { # name entry topic simulate
   gcloud functions deploy "$1" --gen2 --runtime=python313 --region="$region" --source="$here/functions" \
     --entry-point="$2" --trigger-topic="$3" --service-account="$sa" --trigger-service-account="$sa" \
@@ -64,15 +79,15 @@ setup() {
     gcloud iam service-accounts create setdrift-guard --display-name="SetDrift cost guardrails" >/dev/null
   gcloud iam service-accounts describe "$build_sa" >/dev/null 2>&1 ||
     gcloud iam service-accounts create setdrift-build --display-name="SetDrift guardrails build" >/dev/null
-  gcloud projects add-iam-policy-binding "$project" --member="serviceAccount:$build_sa" --role=roles/cloudbuild.builds.builder --condition=None >/dev/null
+  grant projects "$project" "serviceAccount:$build_sa" roles/cloudbuild.builds.builder --condition=None
   # Disabling billing needs Project Billing Manager and Browser on the project
   # and Billing Account Viewer on the account; deleting clusters needs
   # Kubernetes Engine Cluster Admin; the Pub/Sub triggers need Eventarc Event
   # Receiver and Cloud Run Invoker. Nothing broader.
   for role in roles/billing.projectManager roles/browser roles/container.clusterAdmin roles/eventarc.eventReceiver roles/run.invoker; do
-    gcloud projects add-iam-policy-binding "$project" --member="serviceAccount:$sa" --role="$role" --condition=None >/dev/null
+    grant projects "$project" "serviceAccount:$sa" "$role" --condition=None
   done
-  gcloud billing accounts add-iam-policy-binding "$account" --member="serviceAccount:$sa" --role=roles/billing.viewer >/dev/null
+  grant "billing accounts" "$account" "serviceAccount:$sa" roles/billing.viewer
 
   say "Pub/Sub topics for the budget and the reaper's clock"
   for t in setdrift-budget setdrift-reaper-tick; do
