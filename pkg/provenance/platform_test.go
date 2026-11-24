@@ -169,6 +169,8 @@ func TestAKSAndGKE(t *testing.T) {
 		{"written only by GKE's add-on manager", mk("cluster-autoscaler-status", nil, "kube-addon-manager"), on(platform.GKE), "gke", false},
 		{"GKE's manager on AKS isnt GKE's", mk("settings", nil, "glbc"), on(platform.AKS), "", false},
 		{"a user's ConfigMap on AKS", mk("settings", nil, "kubectl-client-side-apply"), on(platform.AKS), "", false},
+		{"GKE's heartbeat, with no marker, on GKE", mk("gke-common-webhook-heartbeat", nil), on(platform.GKE), "gke", false},
+		{"the same name on AKS isnt GKE's", mk("gke-common-webhook-heartbeat", nil), on(platform.AKS), "", false},
 		{"eno and a user", mk("settings", nil, "eno", "kubectl-edit"), on(platform.AKS), "", false},
 	} {
 		p := LabelClassifier{Platform: tc.cluster}.Classify(tc.o)

@@ -328,6 +328,11 @@ var gkeManagers = map[string]bool{
 	"kube-addon-manager": true, "gke-common-webhooks": true, "glbc": true, "gcp-controller-manager": true, "gke-volume-populator": true, "cluster-autoscaler": true,
 }
 
+// gkeUnmarked are GKE's own objects that carry no label and no field manager, so nothing on them says GKE wrote them, keyed by namespace/kind/name
+// the rule is to recognize a platform's objects by the markers it writes, these are the known exceptions, named and checked only on GKE
+// gke-common-webhook-heartbeat is a ConfigMap GKE rewrites constantly, so left in it shows as a difference in every verify
+var gkeUnmarked = map[string]bool{"kube-system/ConfigMap/gke-common-webhook-heartbeat": true}
+
 // the labels a platform's add-on manager and AKS put on the objects they own
 const (
 	// addonModeLabel is the add-on manager's, on GKE, AKS and other clusters built with it, Reconcile means it keeps the object as it set it, EnsureExists that it creates it once and leaves it to you
@@ -378,6 +383,10 @@ func platformObject(o *resource.Object, cls *platform.Classification) (string, m
 		// invoking onlyManagers to check every writer is one of GKE's, its defined below
 		if ev := onlyManagers(o, gkeManagers); ev != nil {
 			return "gke", ev
+		}
+		// checking if its one of GKE's known objects that carry no marker at all, if so its GKE's by name
+		if gkeUnmarked[o.GetNamespace()+"/"+o.GroupVersionKind().Kind+"/"+o.GetName()] {
+			return "gke", map[string]string{"name": o.GetName()}
 		}
 	}
 	// invoking kubeadmEvidence and checking if kubeadm created it, its defined below
