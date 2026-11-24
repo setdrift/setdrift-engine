@@ -60,7 +60,8 @@ func profileJSON(p *snapshotv1alpha1.Profile) ([]byte, error) {
 	if err := json.Indent(&out, compact.Bytes(), "", "  "); err != nil {
 		return nil, err
 	}
-	out.WriteByte('\n')
+	// a bytes.Buffer's WriteByte only fails when it cant grow, which panics instead, so its error is always nil
+	_ = out.WriteByte('\n')
 	return out.Bytes(), nil
 }
 
