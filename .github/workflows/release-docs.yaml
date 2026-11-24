@@ -1,7 +1,8 @@
 # A release branch (release-v0.2) holds a released version's docs fixes, so
 # setdrift.io can show them before the next release. It may differ from the
-# newest tag it holds only in docs/ and README.md: code goes to main and out
-# in a release, never onto a release branch. See docs/releasing.md.
+# newest tag it holds only in docs/, README.md and .github/workflows/ (a
+# release older than these workflows gets main's copies): code goes to main
+# and out in a release, never onto a release branch. See docs/releasing.md.
 name: release-docs
 
 on:
@@ -27,13 +28,13 @@ jobs:
         run: |
           # the newest release tag the branch holds
           tag=$(git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' HEAD)
-          other=$(git diff --name-only "$tag" HEAD -- . ':!docs/' ':!README.md')
+          other=$(git diff --name-only "$tag" HEAD -- . ':!docs/' ':!README.md' ':!.github/workflows/')
           if [ -n "$other" ]; then
-            echo "::error::a release branch may change only docs/ and README.md since $tag, but these changed:"
+            echo "::error::a release branch may change only docs/, README.md and .github/workflows/ since $tag, but these changed:"
             echo "$other"
             exit 1
           fi
-          echo "only docs/ and README.md changed since $tag"
+          echo "only docs/, README.md and .github/workflows/ changed since $tag"
 
 # Copyright The SetDrift Authors
 # SPDX-License-Identifier: Apache-2.0
