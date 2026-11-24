@@ -141,7 +141,7 @@ func printRead(w io.Writer, s *snapshotv1alpha1.Snapshot, out string, c exportCo
 				// invoking platformCreators to name who created them, its defined above
 				note = "  (created by " + platformCreators(s) + "; in the snapshot, not written)"
 			case snapshotv1alpha1.Source_SOURCE_CI_CD:
-				note = "  (deployed by a pipeline: setdrift.io/source-* annotations or --ci-field-manager)"
+				note = "  (deployed by a pipeline: setdrift.io/source-* annotations)"
 			}
 			name := strings.ToLower(strings.TrimPrefix(src.String(), "SOURCE_"))
 			// checking if its ci/cd, if so it gets its slash rather than the enum's ci_cd

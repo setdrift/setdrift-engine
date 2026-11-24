@@ -144,6 +144,7 @@ func Unmanaged(r *snapshotv1alpha1.Resource) bool {
 		return false
 	}
 	// checking if the manager was only guessed with low confidence, if so it counts as none
+	// only snapshots from before v0.2.0 have such guesses, now an object with only a chart's labels is unmanaged
 	if p.GetEvidence()["confidence"] == "low" {
 		return true
 	}

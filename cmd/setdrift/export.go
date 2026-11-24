@@ -72,8 +72,6 @@ type exportOptions struct {
 	argoInstanceLabel string
 	// writes only the resources nothing manages, the snapshot still keeps everything
 	unmanagedOnly bool
-	// kubectl field managers of ci/cd pipelines, what they wrote counts as deployed from git
-	ciFieldManagers []string
 	// how redacted secrets are written as ExternalSecrets
 	// the secret manager the ExternalSecrets read from, auto, none or one of kustomize.ExternalSecretProviders
 	externalSecrets   string
@@ -131,14 +129,13 @@ under redacted/, outside every kustomization.yaml.`,
 	f.BoolVar(&o.noSnapshot, "no-snapshot", false, "write no snapshot files")
 	f.BoolVar(&o.force, "force", false, "write into a non-empty output directory, replacing clusters/<cluster>/ in it (asks first)")
 	f.BoolVarP(&o.yes, "yes", "y", false, "with --force, replace without asking")
-	f.StringVar(&o.argoInstanceLabel, "argocd-instance-label", provenance.DefaultArgoInstanceLabel, "label Argo CD's label tracking uses (application.instanceLabelKey in argocd-cm)")
+	f.StringVar(&o.argoInstanceLabel, "argocd-instance-label", provenance.DefaultArgoInstanceLabel, "custom label Argo CD's label tracking uses (application.instanceLabelKey in argocd-cm); the default app.kubernetes.io/instance is never read, since every Helm chart sets it")
 	f.StringVar(&o.externalSecrets, "external-secrets", "auto", "secret manager the ExternalSecrets written for redacted Secrets read from: "+strings.Join(kustomize.ExternalSecretProviders, ", ")+
 		", or none (auto: AWS Secrets Manager on a cluster on AWS, otherwise generic, with store examples for the common secret managers)")
 	f.StringVar(&o.secretStore, "secret-store", "", "name of the External Secrets store the ExternalSecrets reference (default "+kustomize.DefaultStoreName+")")
 	f.StringVar(&o.secretStoreKind, "secret-store-kind", "ClusterSecretStore", "kind of that store: ClusterSecretStore or SecretStore")
 	f.StringVar(&o.secretKeyTemplate, "secret-key-template", "", "remote key of each Secret, a Go template with .Cluster, .Namespace and .Name (default {{.Cluster}}/{{.Namespace}}/{{.Name}}; with a leading / for aws-parameter-store)")
 	f.BoolVar(&o.unmanagedOnly, "unmanaged-only", false, "write only resources no GitOps tool, Helm or CI/CD pipeline manages, to adopt into Git (the snapshot keeps everything)")
-	f.StringSliceVar(&o.ciFieldManagers, "ci-field-manager", nil, "kubectl field manager of a CI/CD pipeline (kubectl apply --field-manager=NAME): what it wrote counts as deployed from Git, not applied by hand (repeatable)")
 	f.BoolVar(&o.fullList, "full-list", false, "list every resource in full instead of listing high-volume types metadata-only first")
 	f.BoolVar(&o.keepSourceDefaults, "keep-source-defaults", false, "keep values this cluster's own defaults set that another cluster may lack, such as the storage class a claim got from the default class, so claims ask for the same class by name in any cluster (see RESTORE.md's storage classes)")
 	f.StringVar(&o.helmRepos, "helm-repos", "", "YAML file naming the chart repository of Helm releases, which Helm does not record, so RESTORE.md writes complete helm install commands: <chart>: <url> for every release of a chart, or <namespace>/<release>: <url> for one (RESTORE.md lists the charts to fill in)")
@@ -430,7 +427,7 @@ func (o *exportOptions) target() clusterTarget {
 
 // settings gives back the flags that change how the capture classifies and normalizes, for capture below
 func (o *exportOptions) settings() captureSettings {
-	return captureSettings{argoInstanceLabel: o.argoInstanceLabel, ciFieldManagers: o.ciFieldManagers, keepSourceDefaults: o.keepSourceDefaults}
+	return captureSettings{argoInstanceLabel: o.argoInstanceLabel, keepSourceDefaults: o.keepSourceDefaults}
 }
 
 // clusterTarget is the cluster to read and how, the cluster flags export and diff share
@@ -492,8 +489,6 @@ func openCluster(ctx context.Context, t clusterTarget, stderr io.Writer) (*sourc
 type captureSettings struct {
 	// the label Argo CD tracks its resources with
 	argoInstanceLabel string
-	// kubectl field managers of ci/cd pipelines, what they wrote counts as deployed from git
-	ciFieldManagers []string
 	// keeps values the source cluster's own defaults set
 	keepSourceDefaults bool
 }
@@ -511,7 +506,7 @@ func capture(ctx context.Context, src *source, cs captureSettings, at time.Time)
 	p := pipeline.New(src.collector)
 	p.Lifecycle = lifecycle.Filter{}
 	p.Platform = src.plat
-	p.Provenance = provenance.LabelClassifier{ArgoInstanceLabel: cs.argoInstanceLabel, Platform: src.plat, CIFieldManagers: cs.ciFieldManagers}
+	p.Provenance = provenance.LabelClassifier{ArgoInstanceLabel: cs.argoInstanceLabel, Platform: src.plat}
 	p.Normalizer = normalize.Normalizer{ArgoInstanceLabel: cs.argoInstanceLabel, KeepSourceDefaults: cs.keepSourceDefaults}
 	// invoking Run to read and process everything into the snapshot, its defined in pkg/pipeline/pipeline.go
 	snap, err := p.Run(ctx, snapshot.Meta{

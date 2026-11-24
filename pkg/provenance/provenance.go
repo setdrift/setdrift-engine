@@ -13,7 +13,7 @@ import (
 	snapshotv1alpha1 "setdrift.io/setdrift-engine/pkg/snapshot/v1alpha1"
 )
 
-// the labels and annotations that tell an external system manages an object, and the evidence keys for confidence
+// the labels and annotations that tell an external system manages an object
 const (
 	argoTrackingID = "argocd.argoproj.io/tracking-id"
 	// DefaultArgoInstanceLabel is the label Argo CD's label tracking uses unless argocd-cm sets instanceLabelKey
@@ -25,8 +25,6 @@ const (
 	managedByLabel           = "app.kubernetes.io/managed-by"
 	helmReleaseName          = "meta.helm.sh/release-name"
 	helmReleaseNS            = "meta.helm.sh/release-namespace"
-	confidenceKey            = "confidence"
-	lowConfidence            = "low"
 )
 
 // the API groups of the external systems' own objects, for finding the managers among the collected objects
@@ -42,17 +40,17 @@ const (
 // second the Flux labels, the Kustomization one then the HelmRelease one
 // third the Argo CD tracking-id annotation, if it names this object, a tracking id naming another object was copied with kubectl get | kubectl apply and Argo CD doesnt manage the copy
 // fourth the meta.helm.sh/release-* annotations, which only `helm install` and `helm upgrade` write
-// fifth the Argo CD instance label, from label tracking, the default before Argo CD 3.0, with low confidence since many charts set app.kubernetes.io/instance too
-// sixth the app.kubernetes.io/managed-by=Helm label alone, with low confidence since chart templates set it, so its also on charts Argo CD rendered with `helm template` that Helm doesnt manage
+// fifth a custom Argo CD instance label, from label tracking with application.instanceLabelKey set in argocd-cm, which no chart sets
+// only markers a tool writes itself count, the labels every Helm chart's templates set dont, app.kubernetes.io/instance (also Argo CD's default tracking label before 3.0) and app.kubernetes.io/managed-by=Helm
+// theyre on whatever renders the chart, helm install, helm template | kubectl apply, Argo CD or Flux, so they cant say who applied it, and an object with only those is unmanaged
+// a pipeline makes its objects clear with the setdrift.io/source-* annotations, see pipeline below
 // the stage then checks that each manager exists in the collected objects, see managerIndex.check below, and drops Helm's release records, which are Helm's state rather than configuration
 // last an owner reference to an object outside the export, meaning an operator created it
 // TODO detect operator-managed objects from managedFields managers, that needs real cluster dumps to learn the manager names, and resolve Argo Applications to their Git source
 type LabelClassifier struct {
 	// ArgoInstanceLabel is the label Argo CD's label tracking uses, when its not DefaultArgoInstanceLabel, from application.instanceLabelKey in argocd-cm
+	// the default label is never read, every Helm chart sets it too
 	ArgoInstanceLabel string
-	// CIFieldManagers are the kubectl field managers of CI/CD pipelines, like kubectl apply --field-manager=github-actions
-	// an object one of them wrote, with no other manager, is CI/CD's with low confidence
-	CIFieldManagers []string
 	// Platform is the stage that classified the platform, which runs before this one, its Result decides which name-based platform rules apply, like kind's add-ons
 	// with nil or an unsure result only the rules whose evidence names its platform apply, like EKS's and kubeadm's field managers
 	Platform *platform.Stage
@@ -199,9 +197,9 @@ var SourceAnnotations = []string{SourceRepoAnnotation, SourcePathAnnotation, Sou
 	SourceRevisionAnnotation, DeployedByAnnotation}
 
 // pipeline takes o and the provenance its markers gave, and applies a CI/CD pipeline's evidence on top
-// the source annotations make an object CI/CD's, managed from its repository, when no tool claims it or only a low-confidence marker does, like the Helm label helm template | kubectl apply leaves
+// the source annotations make an object CI/CD's, managed from its repository, when no tool claims it, like what helm template | kubectl apply leaves
 // on an object Argo CD, Flux, Helm, an operator or the platform manages, theyre kept as extra evidence since those markers are stronger
-// with neither, a write by one of CIFieldManagers makes it CI/CD's
+// only the annotations make an object a pipeline's, they name the repository and path its deployed from, which is where a change to it goes back to
 func (c LabelClassifier) pipeline(o *resource.Object, p *snapshotv1alpha1.Provenance) *snapshotv1alpha1.Provenance {
 	ann := o.GetAnnotations()
 	src := map[string]string{}
@@ -212,9 +210,8 @@ func (c LabelClassifier) pipeline(o *resource.Object, p *snapshotv1alpha1.Proven
 			src[k] = v
 		}
 	}
-	// weak means nothing claims the object, or only with low confidence
-	weak := p.GetSource() == snapshotv1alpha1.Source_SOURCE_UNMANAGED || p.GetSource() == snapshotv1alpha1.Source_SOURCE_UNSPECIFIED ||
-		p.GetEvidence()[confidenceKey] == lowConfidence
+	// weak means nothing claims the object
+	weak := p.GetSource() == snapshotv1alpha1.Source_SOURCE_UNMANAGED || p.GetSource() == snapshotv1alpha1.Source_SOURCE_UNSPECIFIED
 	// checking if theres a repository annotation, if so its written in its canonical form
 	if repo, ok := src[SourceRepoAnnotation]; ok {
 		// invoking CanonicalRepo to write it as one url, its defined above
@@ -243,21 +240,6 @@ func (c LabelClassifier) pipeline(o *resource.Object, p *snapshotv1alpha1.Proven
 		p.Evidence = ev
 		return p
 	}
-	// checking if nothing claims the object, if so a CI/CD field manager can still claim it
-	if p.GetSource() == snapshotv1alpha1.Source_SOURCE_UNMANAGED || p.GetSource() == snapshotv1alpha1.Source_SOURCE_UNSPECIFIED {
-		// looking through the field managers for a CI/CD one
-		for _, m := range o.GetManagedFields() {
-			// checking if this manager wrote more than status and is one of CIFieldManagers, if so the object is CI/CD's with low confidence
-			if m.Subresource != "status" && slices.Contains(c.CIFieldManagers, m.Manager) {
-				ev := map[string]string{"fieldManager": m.Manager, confidenceKey: lowConfidence}
-				// adding any source annotations as evidence too
-				for k, v := range src {
-					ev[k] = v
-				}
-				return &snapshotv1alpha1.Provenance{Source: snapshotv1alpha1.Source_SOURCE_CI_CD, Evidence: ev}
-			}
-		}
-	}
 	return p
 }
 
@@ -265,9 +247,9 @@ func (c LabelClassifier) pipeline(o *resource.Object, p *snapshotv1alpha1.Proven
 func (c LabelClassifier) fromMarkers(o *resource.Object, cls *platform.Classification) *snapshotv1alpha1.Provenance {
 	labels, ann := o.GetLabels(), o.GetAnnotations()
 	instanceLabel := c.ArgoInstanceLabel
-	// checking if no Argo CD instance label was configured, if so the default one is used
-	if instanceLabel == "" {
-		instanceLabel = DefaultArgoInstanceLabel
+	// checking if the instance label is the default one, if so its never read, every Helm chart sets it too
+	if instanceLabel == DefaultArgoInstanceLabel {
+		instanceLabel = ""
 	}
 	// p builds a provenance from its source, manager and evidence
 	p := func(src snapshotv1alpha1.Source, manager string, evidence map[string]string) *snapshotv1alpha1.Provenance {
@@ -313,16 +295,10 @@ func (c LabelClassifier) fromMarkers(o *resource.Object, cls *platform.Classific
 		}
 		return p(snapshotv1alpha1.Source_SOURCE_HELM, join(ns, name), ev)
 	}
-	// checking if theres an Argo CD instance label from label tracking, if so Argo CD manages it with low confidence
-	if app := labels[instanceLabel]; app != "" {
+	// checking if a custom Argo CD instance label is set and the object has it, if so Argo CD manages it from label tracking
+	if app := labels[instanceLabel]; instanceLabel != "" && app != "" {
 		// invoking argoApp to write the instance name as namespace/app, its defined below
-		return p(snapshotv1alpha1.Source_SOURCE_ARGO_CD, argoApp(app),
-			map[string]string{instanceLabel: app, confidenceKey: lowConfidence})
-	}
-	// checking if theres only the managed-by=Helm label, if so Helm manages it, always with low confidence
-	if labels[managedByLabel] == "Helm" {
-		return p(snapshotv1alpha1.Source_SOURCE_HELM, "",
-			map[string]string{managedByLabel: "Helm", confidenceKey: lowConfidence})
+		return p(snapshotv1alpha1.Source_SOURCE_ARGO_CD, argoApp(app), map[string]string{instanceLabel: app})
 	}
 
 	// looking for an owner in a custom resource group, an object that wasnt collected and that an operator runs
@@ -620,7 +596,6 @@ func newManagerIndex(objs []*resource.Object) *managerIndex {
 }
 
 // check takes a classified object and fills in its Argo CD app's namespace when it can, and flags it when its manager isnt in the cluster
-// an Argo CD claim resting only on the instance label is dropped when Argo CD runs here without that Application
 func (idx *managerIndex) check(o *resource.Object) {
 	p := o.Provenance
 	missing := ""
@@ -629,13 +604,6 @@ func (idx *managerIndex) check(o *resource.Object) {
 	case snapshotv1alpha1.Source_SOURCE_ARGO_CD:
 		// checking if Argo CD's Applications cant be seen or no app is named, if so theres nothing to check against
 		if !idx.argoSeen || p.Manager == "" {
-			return
-		}
-		// invoking hasArgoApp and checking if only the instance label claims it and theres no such Application, its defined below
-		if p.Evidence[confidenceKey] == lowConfidence && !idx.hasArgoApp(p.Manager) {
-			// many charts and installers set the instance label too, Flux's own objects say flux-system
-			// with Argo CD running here and no such Application, its not Argo CD's
-			o.Provenance = &snapshotv1alpha1.Provenance{Source: snapshotv1alpha1.Source_SOURCE_UNMANAGED, Evidence: p.Evidence}
 			return
 		}
 		// checking if the manager names its namespace, if so that Application must be in it
@@ -684,15 +652,6 @@ func (idx *managerIndex) check(o *resource.Object) {
 	o.AddFinding(snapshotv1alpha1.Severity_SEVERITY_WARNING, ManagerNotFound,
 		"carries the markers of %s, which is not in the cluster; it was probably deleted without deleting this object, so nothing manages it now",
 		missing)
-}
-
-// hasArgoApp tells if an Argo CD Application named by manager, as name or namespace/name, was collected
-func (idx *managerIndex) hasArgoApp(manager string) bool {
-	// checking if the manager names a namespace, if so the Application must be in it
-	if ns, app, ok := strings.Cut(manager, "/"); ok {
-		return slices.Contains(idx.argoApps[app], ns)
-	}
-	return len(idx.argoApps[manager]) > 0
 }
 
 // join writes a namespace and name as namespace/name, or only the name when theres no namespace

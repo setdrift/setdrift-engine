@@ -89,7 +89,7 @@ Teams that run Helm from scripts or CI can record the repository at
 install time instead, with the post-renderer in contrib/helm of the
 SetDrift repository.
 
-**GitOps.** 7 objects are managed by Argo CD or Flux from Git. The
+**GitOps.** 6 objects are managed by Argo CD or Flux from Git. The
 Applications and Kustomizations are in this export, so once Argo CD or Flux
 runs in the new cluster (installed from this export or as you installed
 it), it syncs them from Git; the exported copies of what they manage match

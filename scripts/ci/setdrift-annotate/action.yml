@@ -1,0 +1,12 @@
+# this puts setdrift-annotate on PATH for the rest of the job, so deploy steps can pipe their manifests through it
+# used as - uses: setdrift/setdrift-engine/scripts/ci/setdrift-annotate@<release tag>
+name: setdrift-annotate
+description: Puts setdrift-annotate on PATH, to add SetDrift's source annotations to manifests before they're applied
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: echo "$GITHUB_ACTION_PATH" >> "$GITHUB_PATH"
+
+# Copyright The SetDrift Authors
+# SPDX-License-Identifier: Apache-2.0
