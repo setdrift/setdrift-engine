@@ -77,6 +77,8 @@ type Result struct {
 	Notes []string
 	// Stale are the features of earlier decisions with nothing left to decide in the export, like an object deleted since, theyre dropped
 	Stale []string
+	// Identities are the cloud identities kept, keep-source, for the RESTORE.md steps that federate the target to them
+	Identities []Identity
 }
 
 // Undecided gives back the decisions with neither a choice nor a default, which stop a translation
@@ -93,7 +95,8 @@ func (r *Result) Undecided() []Decision {
 // Translate works out the translation of the generic set's objects from one platform to another
 // from may be Unknown, for an export of a cluster on no known cloud, then only markers owned by a platform other than the target are rewritten
 // earlier holds the decisions from a previous run, their choices carry over by feature
-func Translate(objs []*unstructured.Unstructured, from, to platform.Distribution, m *capability.Map, earlier []Decision) (*Result, error) {
+// region is the source cluster's, for the AWS SDK's region in a kept AWS identity, empty when unknown
+func Translate(objs []*unstructured.Unstructured, from, to platform.Distribution, m *capability.Map, earlier []Decision, region string) (*Result, error) {
 	tgt := m.For(to)
 	if tgt == nil {
 		return nil, fmt.Errorf("no capability map for %s: translate knows eks, aks and gke", to)
@@ -106,11 +109,37 @@ func Translate(objs []*unstructured.Unstructured, from, to platform.Distribution
 	for _, d := range earlier {
 		chosen[d.Feature] = d.Choose
 	}
-	t := &translator{m: m, from: from, to: to, tgt: tgt, chosen: chosen, r: r}
+	t := &translator{m: m, from: from, to: to, tgt: tgt, chosen: chosen, r: r, region: region, kept: map[string]Identity{}}
 	for _, o := range objs {
 		// invoking object to work out one object's patch and decisions, its defined below
 		t.object(o)
 	}
+	// a second pass, now that every kept identity is known, gives the Pods using one what its cloud's webhook would have
+	for _, o := range objs {
+		base, ok := podSpecPath(o.GetKind())
+		if !ok || len(t.kept) == 0 {
+			continue
+		}
+		sa, _, _ := unstructured.NestedString(o.Object, append(append([]string{}, base...), "serviceAccountName")...)
+		if sa == "" {
+			sa = "default"
+		}
+		id, kept := t.kept[o.GetNamespace()+"/"+sa]
+		if !kept {
+			continue
+		}
+		// invoking patchOf to add to the object's patch, or start one, its defined below
+		i := t.patchOf(o)
+		// invoking injectFederation to add the token and environment, its defined in identity.go
+		t.injectFederation(&r.Patches[i], o, id)
+	}
+	r.Patches = slices.DeleteFunc(r.Patches, func(p Patch) bool { return len(p.Ops) == 0 && !p.Delete })
+	for _, id := range t.kept {
+		r.Identities = append(r.Identities, id)
+	}
+	sort.Slice(r.Identities, func(i, j int) bool {
+		return r.Identities[i].Namespace+"/"+r.Identities[i].ServiceAccount < r.Identities[j].Namespace+"/"+r.Identities[j].ServiceAccount
+	})
 	// checking each choice is one its feature offers, a choice that doesnt fit must not pass as decided
 	var bad []string
 	seen := map[string]bool{}
@@ -145,6 +174,21 @@ type translator struct {
 	tgt      *capability.Platform
 	chosen   map[string]string
 	r        *Result
+	region   string
+	// kept are the cloud identities kept, by namespace/serviceaccount
+	kept map[string]Identity
+}
+
+// patchOf gives back the index of the object's patch, starting one when it has none yet
+func (t *translator) patchOf(o *unstructured.Unstructured) int {
+	gvk := o.GroupVersionKind()
+	for i, p := range t.r.Patches {
+		if p.Group == gvk.Group && p.Kind == gvk.Kind && p.Namespace == o.GetNamespace() && p.Name == o.GetName() {
+			return i
+		}
+	}
+	t.r.Patches = append(t.r.Patches, Patch{Group: gvk.Group, Version: gvk.Version, Kind: gvk.Kind, Namespace: o.GetNamespace(), Name: o.GetName()})
+	return len(t.r.Patches) - 1
 }
 
 // decide records a decision and gives back what to act on, the earlier choice when there was one, else the default
@@ -373,7 +417,11 @@ func (t *translator) identity(ref string, o *unstructured.Unstructured) {
 		src, dst := clouds(t.m, owners), clouds(t.m, []platform.Distribution{t.to})
 		what := fmt.Sprintf("%s uses the %s identity %s (%s), and its Pods call %s services with it. keep-source federates the %s cluster to that identity, so the same calls work unchanged. Moving to %s services and a %s identity is a change to the app, outside SetDrift", ref, src, o.GetAnnotations()[k], k, src, t.tgt.Name, dst, dst)
 		if t.decide(Decision{Feature: "identity/" + qualified(o), What: what, Options: []string{KeepSource, LeaveOut}, Default: KeepSource}) == KeepSource {
-			t.r.Notes = append(t.r.Notes, fmt.Sprintf("%s keeps its %s identity: in %s IAM, trust the %s cluster's OIDC issuer for it", ref, src, src, t.tgt.Name))
+			// invoking keptIdentity to read the identity, its defined in identity.go
+			if id, ok := keptIdentity(o); ok {
+				t.kept[o.GetNamespace()+"/"+o.GetName()] = id
+			}
+			t.r.Notes = append(t.r.Notes, fmt.Sprintf("%s keeps its %s identity: in %s, trust the %s cluster's OIDC issuer for it, as RESTORE.md shows", ref, src, src, t.tgt.Name))
 		}
 	}
 }

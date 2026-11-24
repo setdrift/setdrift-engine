@@ -96,8 +96,13 @@ func (o *translateOptions) run(cmd *cobra.Command, dir string) error {
 	if err != nil {
 		return err
 	}
+	region := ""
+	// checking if the export recorded the source's region, if so a kept AWS identity's SDK is given it
+	if info != nil {
+		region = info.Region
+	}
 	// invoking translate.Translate to work out the patches and decisions, its defined in pkg/translate/translate.go
-	r, err := translate.Translate(objs, from, to, m, earlier)
+	r, err := translate.Translate(objs, from, to, m, earlier, region)
 	if err != nil {
 		return err
 	}
@@ -109,7 +114,7 @@ func (o *translateOptions) run(cmd *cobra.Command, dir string) error {
 			}
 		}
 		// working the translation out again, so the choices take effect
-		r, err = translate.Translate(objs, from, to, m, r.Decisions)
+		r, err = translate.Translate(objs, from, to, m, r.Decisions, region)
 		if err != nil {
 			return err
 		}
@@ -138,7 +143,14 @@ func (o *translateOptions) run(cmd *cobra.Command, dir string) error {
 		fmt.Fprintf(cmd.ErrOrStderr(), "Dropped %s from %s, for what the export no longer has: %s\n", text.Plural(len(r.Stale), "decision", "decisions"), translate.DecisionsFile, strings.Join(r.Stale, ", "))
 	}
 	// invoking translate.Write to write the overlay, its defined in pkg/translate/write.go
-	if err := translate.Write(root, r, res, version.Version); err != nil {
+	ri := translate.RestoreInfo{Cluster: filepath.Base(root)}
+	// checking if the export recorded the source, if so RESTORE.md names its cluster and version
+	if info != nil {
+		ri.Cluster, ri.SourceVersion = info.Cluster, info.KubernetesVersion
+	}
+	// invoking volumeClaims to list the claims whose disks stay on the source cloud, its defined below
+	ri.Volumes = volumeClaims(root)
+	if err := translate.Write(root, r, res, version.Version, ri); err != nil {
 		return err
 	}
 	src := "a cluster on no known cloud"
@@ -186,6 +198,24 @@ func checkExportPath(dir string) error {
 		return fmt.Errorf("%s is a snapshot, and translate works on an export, the directory setdrift export writes (setdrift export -o DIR). A snapshot can be compared with setdrift diff", dir)
 	}
 	return fmt.Errorf("%s is a file: give the directory setdrift export wrote", dir)
+}
+
+// volumeClaims lists the claims the export pre-binds a volume for, restore/volumes/<namespace>/<claim>.yaml, as namespace/claim
+func volumeClaims(root string) []string {
+	var out []string
+	nss, _ := os.ReadDir(filepath.Join(root, "restore", "volumes"))
+	for _, ns := range nss {
+		if !ns.IsDir() {
+			continue
+		}
+		files, _ := os.ReadDir(filepath.Join(root, "restore", "volumes", ns.Name()))
+		for _, f := range files {
+			if name, ok := strings.CutSuffix(f.Name(), ".yaml"); ok {
+				out = append(out, ns.Name()+"/"+name)
+			}
+		}
+	}
+	return out
 }
 
 // rootResources reads the resources the cluster's kustomization.yaml lists, the generic set's directories

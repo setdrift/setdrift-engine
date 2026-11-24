@@ -62,7 +62,7 @@ metadata:
     storageclass.kubernetes.io/is-default-class: "true"
 provisioner: ebs.csi.eks.amazonaws.com
 parameters:
-  type: gp3`)}, platform.EKS, platform.GKE, load(t), nil)
+  type: gp3`)}, platform.EKS, platform.GKE, load(t), nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +88,7 @@ apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata: {name: managed-csi}
 provisioner: disk.csi.azure.com
-parameters: {skuname: StandardSSD_LRS}`)}, platform.AKS, platform.EKS, load(t), nil)
+parameters: {skuname: StandardSSD_LRS}`)}, platform.AKS, platform.EKS, load(t), nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +111,7 @@ metadata:
     service.beta.kubernetes.io/aws-load-balancer-scheme: internal
 spec:
   type: LoadBalancer
-  loadBalancerClass: eks.amazonaws.com/nlb`)}, platform.EKS, platform.AKS, load(t), nil)
+  loadBalancerClass: eks.amazonaws.com/nlb`)}, platform.EKS, platform.AKS, load(t), nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +135,7 @@ func TestLoadBalancerClassDefaultInternal(t *testing.T) {
 apiVersion: v1
 kind: Service
 metadata: {name: api, namespace: shop}
-spec: {type: LoadBalancer, loadBalancerClass: eks.amazonaws.com/nlb}`)}, platform.EKS, platform.GKE, load(t), nil)
+spec: {type: LoadBalancer, loadBalancerClass: eks.amazonaws.com/nlb}`)}, platform.EKS, platform.GKE, load(t), nil, "")
 	p := patchFor(r, "Service", "api")
 	if p == nil || opAt(p, "/metadata/annotations/networking.gke.io~1load-balancer-type") == nil {
 		t.Fatalf("internal not kept: %+v", p)
@@ -155,7 +155,7 @@ spec:
         eks.amazonaws.com/capacityType: SPOT
         eks.amazonaws.com/nodegroup: batch
         kubernetes.io/arch: arm64
-      containers: [{name: w, image: w}]`)}, platform.EKS, platform.GKE, load(t), nil)
+      containers: [{name: w, image: w}]`)}, platform.EKS, platform.GKE, load(t), nil, "")
 	p := patchFor(r, "Deployment", "worker")
 	if p == nil {
 		t.Fatal("no patch")
@@ -183,11 +183,11 @@ apiVersion: s3.services.k8s.aws/v1alpha1
 kind: Bucket
 metadata: {name: acme-orders, namespace: shop}
 spec: {name: acme-orders}`)
-	r, _ := Translate([]*unstructured.Unstructured{bucket}, platform.EKS, platform.GKE, load(t), nil)
+	r, _ := Translate([]*unstructured.Unstructured{bucket}, platform.EKS, platform.GKE, load(t), nil, "")
 	if len(r.Undecided()) != 1 {
 		t.Fatalf("undecided %+v", r.Decisions)
 	}
-	r, _ = Translate([]*unstructured.Unstructured{bucket}, platform.EKS, platform.GKE, load(t), []Decision{{Feature: "object/Bucket/shop/acme-orders", Choose: KeepSource}})
+	r, _ = Translate([]*unstructured.Unstructured{bucket}, platform.EKS, platform.GKE, load(t), []Decision{{Feature: "object/Bucket/shop/acme-orders", Choose: KeepSource}}, "")
 	if len(r.Undecided()) != 0 || patchFor(r, "Bucket", "acme-orders") == nil || !patchFor(r, "Bucket", "acme-orders").Delete {
 		t.Errorf("keep-source should leave it to the source cluster: %+v", r)
 	}
@@ -202,7 +202,7 @@ metadata:
   name: orders
   namespace: shop
   annotations: {eks.amazonaws.com/role-arn: "arn:aws:iam::111111111111:role/orders"}`)
-	r, _ := Translate([]*unstructured.Unstructured{sa}, platform.EKS, platform.GKE, load(t), nil)
+	r, _ := Translate([]*unstructured.Unstructured{sa}, platform.EKS, platform.GKE, load(t), nil, "")
 	got := Explainer(r.Decisions)(sa)
 	if !strings.Contains(got, "identity/shop/orders is keep-source (the default)") {
 		t.Errorf("got %q", got)
@@ -210,7 +210,7 @@ metadata:
 }
 
 func TestSamePlatformRefused(t *testing.T) {
-	if _, err := Translate(nil, platform.GKE, platform.GKE, load(t), nil); err == nil {
+	if _, err := Translate(nil, platform.GKE, platform.GKE, load(t), nil, ""); err == nil {
 		t.Error("translating GKE for GKE should be refused")
 	}
 }
@@ -224,11 +224,11 @@ metadata:
   name: orders
   namespace: shop
   annotations: {eks.amazonaws.com/role-arn: "arn:aws:iam::111111111111:role/orders"}`)
-	_, err := Translate([]*unstructured.Unstructured{sa}, platform.EKS, platform.GKE, load(t), []Decision{{Feature: "identity/shop/orders", Choose: Equivalent}})
+	_, err := Translate([]*unstructured.Unstructured{sa}, platform.EKS, platform.GKE, load(t), []Decision{{Feature: "identity/shop/orders", Choose: Equivalent}}, "")
 	if err == nil || !strings.Contains(err.Error(), "isn't an option here") {
 		t.Errorf("got %v", err)
 	}
-	r, err := Translate([]*unstructured.Unstructured{sa}, platform.EKS, platform.GKE, load(t), []Decision{{Feature: "identity/shop/gone", Choose: LeaveOut}})
+	r, err := Translate([]*unstructured.Unstructured{sa}, platform.EKS, platform.GKE, load(t), []Decision{{Feature: "identity/shop/gone", Choose: LeaveOut}}, "")
 	if err != nil || len(r.Stale) != 1 || r.Stale[0] != "identity/shop/gone" {
 		t.Errorf("stale %v, %v", r, err)
 	}
@@ -251,6 +251,103 @@ func TestReadDecisionsPlainErrors(t *testing.T) {
 	}
 	if ds, err := ReadDecisions(t.TempDir()); err != nil || ds != nil {
 		t.Errorf("no file: %v, %v", ds, err)
+	}
+}
+
+// a Pod template using a kept AWS identity gets what EKS's webhook gives, appended to what it has, without overriding its own variables
+func TestKeptIdentityInjected(t *testing.T) {
+	sa := u(t, `
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: orders
+  namespace: shop
+  annotations: {eks.amazonaws.com/role-arn: "arn:aws:iam::111111111111:role/orders"}`)
+	dep := u(t, `
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: orders, namespace: shop}
+spec:
+  template:
+    spec:
+      serviceAccountName: orders
+      volumes: [{name: cache, emptyDir: {}}]
+      containers:
+      - name: app
+        image: app
+        env: [{name: AWS_REGION, value: us-west-2}]
+        volumeMounts: [{name: cache, mountPath: /cache}]
+      - name: sidecar
+        image: sidecar`)
+	other := u(t, `
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: web, namespace: shop}
+spec: {template: {spec: {containers: [{name: web, image: web}]}}}`)
+	r, err := Translate([]*unstructured.Unstructured{dep, other, sa}, platform.EKS, platform.GKE, load(t), nil, "us-east-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Identities) != 1 || r.Identities[0].Cloud != "aws" {
+		t.Fatalf("identities %+v", r.Identities)
+	}
+	if patchFor(r, "Deployment", "web") != nil {
+		t.Error("a Deployment using another ServiceAccount was changed")
+	}
+	p := patchFor(r, "Deployment", "orders")
+	if p == nil {
+		t.Fatal("no patch for the Deployment using the identity")
+	}
+	paths := map[string]int{}
+	var roleSet, regionOverridden bool
+	for _, op := range p.Ops {
+		paths[op.Path]++
+		if m, ok := op.Value.(map[string]any); ok {
+			if m["name"] == "AWS_ROLE_ARN" {
+				roleSet = true
+			}
+			if m["name"] == "AWS_REGION" && strings.HasSuffix(op.Path, "/0/env/-") {
+				regionOverridden = true
+			}
+		}
+	}
+	for _, want := range []string{"/spec/template/spec/volumes/-", "/spec/template/spec/containers/0/volumeMounts/-", "/spec/template/spec/containers/1/volumeMounts", "/spec/template/spec/containers/1/env"} {
+		if paths[want] == 0 {
+			t.Errorf("no op at %s: %v", want, paths)
+		}
+	}
+	if !roleSet || regionOverridden {
+		t.Errorf("role set %v, app's own AWS_REGION overridden %v", roleSet, regionOverridden)
+	}
+}
+
+// the translation's RESTORE.md says what doesnt come over and why, the source version, and the trust steps for a kept identity
+func TestRestoreSaysWhatStaysBehind(t *testing.T) {
+	sa := u(t, `
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: orders
+  namespace: shop
+  annotations: {eks.amazonaws.com/role-arn: "arn:aws:iam::111111111111:role/orders"}`)
+	r, err := Translate([]*unstructured.Unstructured{sa}, platform.EKS, platform.GKE, load(t), nil, "us-east-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := restore(r, RestoreInfo{Cluster: "prod", SourceVersion: "v1.37.1", Volumes: []string{"shop/data-db-0"}})
+	for _, want := range []string{
+		"# Restoring prod on GKE",
+		"The data in claim shop/data-db-0 | Its disk is an AWS EBS volume, and a GKE node can't attach it",
+		"The source ran Kubernetes v1.37.1",
+		"gcloud container clusters describe <new cluster>",
+		"aws iam create-open-id-connect-provider",
+		"system:serviceaccount:shop:orders",
+		"apply --server-side -k platform/gcp/gke",
+		"Bring the data over",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("RESTORE.md lacks %q", want)
+		}
 	}
 }
 

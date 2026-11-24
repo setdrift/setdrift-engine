@@ -132,7 +132,7 @@ func WriteDecisions(dir string, ds []Decision) error {
 // Write writes the translation's overlay into the cluster's directory root, at r.Dir
 // resources are the generic set's directories, as the cluster's kustomization.yaml lists them
 // it refuses a directory that isnt a translation, like the export's own platform set
-func Write(root string, r *Result, resources []string, version string) error {
+func Write(root string, r *Result, resources []string, version string, ri RestoreInfo) error {
 	dir := filepath.Join(root, filepath.FromSlash(r.Dir))
 	// checking if the directory exists without a stamp, if so translate didnt write it and leaves it as it is
 	if _, err := os.Stat(dir); err == nil {
@@ -179,6 +179,10 @@ func Write(root string, r *Result, resources []string, version string) error {
 	}
 	// invoking readme to write what the translation changed and what to do, its defined below
 	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte(readme(r)), 0o600); err != nil {
+		return err
+	}
+	// invoking restore to write the cross-cloud RESTORE.md, its defined in restore.go
+	if err := os.WriteFile(filepath.Join(dir, "RESTORE.md"), []byte(restore(r, ri)), 0o600); err != nil {
 		return err
 	}
 	return WriteDecisions(dir, r.Decisions)

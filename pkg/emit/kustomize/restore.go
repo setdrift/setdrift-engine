@@ -340,7 +340,9 @@ func (d *restoreData) platformSteps(p *playbook) {
 	p.section(name + " settings")
 	p.printf("The source ran on %s. **If the new cluster is %s too**, follow these now; on\n"+
 		"another platform skip them: the steps here cover what Kubernetes needs, and\n"+
-		"its own identity, storage and secret services take their place.\n\n", d.cls.Summary(), name)
+		"its own identity, storage and secret services take their place. For EKS, AKS or\n"+
+		"GKE, `setdrift translate --to <platform>` writes this export for it, with its own\n"+
+		"RESTORE.md to follow instead of this one.\n\n", d.cls.Summary(), name)
 	// checking if the EKS playbook has steps, if so its linked with their titles, lowerList is defined below
 	if d.eksp != nil && len(d.eksp.steps) > 0 {
 		p.printf("- [%s/RESTORE.md](%s/RESTORE.md): %s\n", d.platDir, d.platDir, lowerList(d.eksp.titles()))
