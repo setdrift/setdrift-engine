@@ -116,7 +116,7 @@ setdrift export --snapshot ~/snapshots/ --snapshot-json prod.json
 # Only export the resources that are not identified as being managed, e.g. no helm indicators
 # Resolve false positives from CI/CD pipelines by stamping the setdrift.io/source-*
 # annotations on what each pipeline deploys: see
-# https://setdrift.io/docs/cli/source-annotations/, e.g. setdrift.io/source-repo: github.com/setdrift/setdrift-engine
+# https://setdrift.io/docs/cli/pipeline-integration/source-annotations/, e.g. setdrift.io/source-repo: github.com/setdrift/setdrift-engine
 setdrift export -o ./out --unmanaged-only
 
 # Choose the secret manager the ExternalSecrets read from (auto, generic, aws-secrets-manager, aws-parameter-store or none), the store's name and the remote key names: see https://setdrift.io/docs/cli/secrets/#secret-managers. On Azure Key Vault or Google Secret Manager, set a key template without slashes
@@ -154,13 +154,13 @@ setdrift snapshot json ./out/snapshots/2026-11-16T090000Z-prod.pb
 
 ## Further Reading
 
-- **Which comparison?** When to compare a cluster with its own snapshot, two clusters with each other, or an export with a cluster. See [Which comparison?](https://setdrift.io/docs/cli/which-comparison/).
+- **Which comparison?** When to compare a cluster with its own snapshot, two clusters with each other, or an export with a cluster. See [Choose a comparison](https://setdrift.io/docs/cli/which-comparison/).
 - **What `diff A B` Reads.** How `diff` tells a kubeconfig context from a snapshot file or a directory, and what it does when a name is both. See [setdrift diff](https://setdrift.io/docs/cli/commands/diff/#inputs).
 - **Snapshots.** What each export saves to `snapshots/`, why it stays out of Git, and how to compare against it later. See [Snapshots](https://setdrift.io/docs/cli/snapshots/).
 - **Output.** The layout of an export, platform identification, CRDs, Helm, storage, and exporting again. See [Output](https://setdrift.io/docs/cli/output/).
 - **Secrets.** How every secret value is dropped right after it is read and never stored, and the secret managers the ExternalSecrets can read from. See [Secrets](https://setdrift.io/docs/cli/secrets/).
 - **Permissions.** Every permission each command uses, down to each Kubernetes verb and cloud action, with a page each for [Kubernetes](https://setdrift.io/docs/cli/permissions/kubernetes/), [AWS](https://setdrift.io/docs/cli/permissions/aws/), [Azure](https://setdrift.io/docs/cli/permissions/azure/) and [Google Cloud](https://setdrift.io/docs/cli/permissions/gcp/), templates to apply in [deploy/permissions](https://github.com/setdrift/setdrift-engine/tree/main/deploy/permissions), and what happens with limited access. See [Permissions](https://setdrift.io/docs/cli/permissions/).
-- **Source Annotations.** The annotations a CI/CD pipeline stamps so its resources are not taken for ones applied by hand. See [Source Annotations](https://setdrift.io/docs/cli/source-annotations/).
+- **Source annotations.** The annotations a CI/CD pipeline stamps so its resources are not taken for ones applied by hand. See [Source annotations](https://setdrift.io/docs/cli/pipeline-integration/source-annotations/).
 - **How it works.** The pipeline from collect to emit, and what each package does. See [How it works](https://setdrift.io/docs/cli/how-it-works/).
 - **Development.** Building, testing, golden and race tests. See [Development](https://setdrift.io/docs/cli/development/).
 - **Releasing.** Tagging a release, and what the release workflow publishes. See [Releasing](https://setdrift.io/docs/cli/releasing/).

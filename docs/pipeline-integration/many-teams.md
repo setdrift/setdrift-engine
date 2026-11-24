@@ -18,7 +18,7 @@ Each team adds the annotations to its own manifests, as in [Annotations in Git](
 
 ## Each team adds the shared action
 
-Each team adds one step to its deploy workflow and pipes its deploy through it, as in [Script Annotations](script-annotations.md). Every team uses the same action from SetDrift's repository, pinned to a release, so there's one script to keep up, not one per repository.
+Each team adds one step to its deploy workflow and pipes its deploy through it, as in [Script annotations](script-annotations.md). Every team uses the same action from SetDrift's repository, pinned to a release, so there's one script to keep up, not one per repository.
 
 ```yaml
 - uses: setdrift/setdrift-engine/scripts/ci/setdrift-annotate@v0.2.0

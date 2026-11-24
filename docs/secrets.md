@@ -1,4 +1,4 @@
-# Secrets
+# Handle secrets
 
 Secret values never reach the export, the snapshot, Git or anywhere else: SetDrift never copies them.
 

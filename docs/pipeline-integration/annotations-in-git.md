@@ -1,6 +1,6 @@
 # Annotations in Git
 
-SetDrift treats a resource as your pipeline's when it has the annotation `setdrift.io/source-repo`, set to the Git repository it's deployed from. A second annotation, `setdrift.io/source-path`, is optional and names the directory in that repository. ([Source annotations](../source-annotations.md) lists them all.)
+SetDrift treats a resource as your pipeline's when it has the annotation `setdrift.io/source-repo`, set to the Git repository it's deployed from. A second annotation, `setdrift.io/source-path`, is optional and names the directory in that repository. ([Source annotations](source-annotations.md) lists them all.)
 
 ```yaml
 metadata:

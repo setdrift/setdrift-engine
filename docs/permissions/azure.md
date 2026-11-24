@@ -1,4 +1,4 @@
-# Azure Permissions
+# Azure permissions
 
 SetDrift calls no Azure API: on AKS it reads the cluster through the Kubernetes API only, with the kubeconfig you give it. What it needs on Azure is a way to get that kubeconfig, and the [Kubernetes permissions](kubernetes.md), which AKS grants in one of two ways depending on how the cluster is set up.
 
