@@ -31,11 +31,15 @@ Write-Output 'Denying all new resources'
 $keep = @($guard, 'azure-signup-rg')
 # a group with no tags at all has a null Tags, which can't be indexed
 $doomed = Get-AzResourceGroup | Where-Object { $_.ResourceGroupName -notin $keep -and -not ($_.Tags -and $_.Tags['setdrift-keep'] -eq 'true') }
-$jobs = foreach ($rg in $doomed) {
+# the jobs go in a list of their own, a message written inside the loop would land in it too
+$jobs = @()
+foreach ($rg in $doomed) {
   Write-Output "Deleting resource group $($rg.ResourceGroupName)"
-  Remove-AzResourceGroup -Name $rg.ResourceGroupName -Force -AsJob
+  $jobs += Remove-AzResourceGroup -Name $rg.ResourceGroupName -Force -AsJob
 }
-$jobs | Wait-Job | Receive-Job
+if ($jobs.Count -gt 0) {
+  $jobs | Wait-Job | Receive-Job
+}
 Write-Output 'Done'
 
 # Copyright The SetDrift Authors
