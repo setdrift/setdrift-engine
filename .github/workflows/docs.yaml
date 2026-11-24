@@ -9,7 +9,8 @@ name: docs
 
 on:
   push:
-    branches: [main]
+    # a release branch (release-v0.2) holds the docs fixes to a released version
+    branches: [main, "release-v*"]
     paths: ["docs/**", "README.md"]
 
 permissions:
