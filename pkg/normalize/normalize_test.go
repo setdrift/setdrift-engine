@@ -346,8 +346,10 @@ func TestFieldManagersKept(t *testing.T) {
 	u.SetNamespace("shop")
 	u.SetName("web")
 	late, early := metav1.NewTime(time.Date(2026, 11, 24, 6, 0, 0, 0, time.UTC)), metav1.NewTime(time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC))
+	fields := &metav1.FieldsV1{}
+	fields.SetRawBytes([]byte(`{"f:data":{}}`))
 	u.SetManagedFields([]metav1.ManagedFieldsEntry{
-		{Manager: "kubectl-edit", Operation: metav1.ManagedFieldsOperationUpdate, Time: &late, FieldsType: "FieldsV1", FieldsV1: &metav1.FieldsV1{Raw: []byte(`{"f:data":{}}`)}},
+		{Manager: "kubectl-edit", Operation: metav1.ManagedFieldsOperationUpdate, Time: &late, FieldsType: "FieldsV1", FieldsV1: fields},
 		{Manager: "helm", Operation: metav1.ManagedFieldsOperationApply, Time: &early},
 	})
 	o := resource.New(u)

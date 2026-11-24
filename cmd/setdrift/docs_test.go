@@ -218,37 +218,43 @@ func TestCommandPagesFlags(t *testing.T) {
 				t.Errorf("%s does not link %s", name, pageName(sub))
 			}
 		}
-		lines := strings.Split(page, "\n")
-		seen, parentSection := map[string]bool{}, ""
-		for i, line := range lines {
-			m := flagHeading.FindStringSubmatch(line)
-			if m == nil {
-				continue
-			}
-			fname := strings.TrimPrefix(m[2], "--")
-			if m[1] == "###" {
-				parentSection = fname
-			}
-			f := c.Flags().Lookup(fname)
-			if f == nil {
-				t.Errorf("%s documents %s, which %s does not have", name, m[2], c.CommandPath())
-				continue
-			}
-			seen[fname] = true
-			if line != heading(f) {
-				t.Errorf("%s: %q should read %q", name, line, heading(f))
-			}
-			if p := parentOf(f); p != "" && parentSection != p {
-				t.Errorf("%s: --%s belongs under --%s's section", name, fname, p)
-			}
-			if i+2 >= len(lines) || lines[i+2] != typeLine(f) {
-				t.Errorf("%s: under %s, want the line %q", name, m[2], typeLine(f))
-			}
+		// invoking checkFlagSections to check each flag section on the page, its defined below
+		checkFlagSections(t, c, name, page)
+	}
+}
+
+// checkFlagSections takes a command and its page and checks every flag section is a real flag, at the right level, with the right heading and type line, and every flag has a section
+func checkFlagSections(t *testing.T, c *cobra.Command, name, page string) {
+	lines := strings.Split(page, "\n")
+	seen, parentSection := map[string]bool{}, ""
+	for i, line := range lines {
+		m := flagHeading.FindStringSubmatch(line)
+		if m == nil {
+			continue
 		}
-		for _, f := range flagsOf(c) {
-			if !seen[f.Name] {
-				t.Errorf("%s has no section for --%s (make docs adds one to fill in)", name, f.Name)
-			}
+		fname := strings.TrimPrefix(m[2], "--")
+		if m[1] == "###" {
+			parentSection = fname
+		}
+		f := c.Flags().Lookup(fname)
+		if f == nil {
+			t.Errorf("%s documents %s, which %s does not have", name, m[2], c.CommandPath())
+			continue
+		}
+		seen[fname] = true
+		if line != heading(f) {
+			t.Errorf("%s: %q should read %q", name, line, heading(f))
+		}
+		if p := parentOf(f); p != "" && parentSection != p {
+			t.Errorf("%s: --%s belongs under --%s's section", name, fname, p)
+		}
+		if i+2 >= len(lines) || lines[i+2] != typeLine(f) {
+			t.Errorf("%s: under %s, want the line %q", name, m[2], typeLine(f))
+		}
+	}
+	for _, f := range flagsOf(c) {
+		if !seen[f.Name] {
+			t.Errorf("%s has no section for --%s (make docs adds one to fill in)", name, f.Name)
 		}
 	}
 }
