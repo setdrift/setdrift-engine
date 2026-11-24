@@ -29,6 +29,8 @@ What has no 1:1 equivalent is a decision, kept in `translate-decisions.yaml` in 
 | `equivalent` | The target's nearest equivalent, where SetDrift knows one |
 | `leave-out` | Leave it out of the translation |
 
+A choice must be one its entry offers, and translate refuses a file it can't read, saying what's wrong. A decision for something the export no longer has, like an object deleted since, is dropped, and translate says so.
+
 Where there's a safe default, like `keep-source` for a cloud identity or an External Secrets store, translate takes it and lists it. Where there isn't, like an object that creates cloud resources, translate stops and writes the file for you to fill in. Run translate again after choosing, and your choices carry over to every later run.
 
 `setdrift verify` on a cluster of the target platform checks the translation, and counts what was decided in the file as explained.
@@ -66,7 +68,7 @@ Prints the command's help.
 
 *text · default none*
 
-The platform to translate for, `eks`, `aks` or `gke`. Required. An export can hold a translation for each, and translating for the platform it came from is refused.
+The platform to translate for, `eks`, `aks` or `gke`, or its cloud's name, `aws`, `azure` or `gcp`. Required. An export can hold a translation for each, and translating for the platform it came from is refused.
 
 ### `--unmatched`
 
