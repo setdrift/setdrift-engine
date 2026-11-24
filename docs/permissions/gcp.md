@@ -1,4 +1,4 @@
-# Google Cloud Permissions
+# Google Cloud permissions
 
 SetDrift calls no Google Cloud API: on GKE it reads the cluster through the Kubernetes API only, with the kubeconfig you give it. What it needs on Google Cloud is a way to get that kubeconfig, and the [Kubernetes permissions](kubernetes.md), which GKE grants through Kubernetes RBAC, IAM, or both: a request is allowed when either allows it.
 

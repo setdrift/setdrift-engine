@@ -2,7 +2,7 @@
 
 Reads a cluster, or a directory of manifests, and writes its configuration as a Kustomize repository you can review, commit and apply elsewhere. It only reads, and the cluster is not changed.
 
-Each export also saves a snapshot of everything it read, which [`diff`](diff.md) can compare later, and writes a README of what it found, a RESTORE.md playbook for recreating the cluster, and a [cluster profile](../output.md#cluster-profile). Secret values never leave the cluster, see [Secrets](../secrets.md).
+Each export also saves a snapshot of everything it read, which [`diff`](diff.md) can compare later, and writes a README of what it found, a RESTORE.md playbook for recreating the cluster, and a [cluster profile](../output.md#cluster-profile). Secret values never leave the cluster, see [Handle secrets](../secrets.md).
 
 Use it to see what is in a cluster and who manages each part, to adopt what nothing manages into Git (`--unmanaged-only`), or to recreate a cluster somewhere else. To check an export against a cluster afterwards, use [`verify`](verify.md).
 
@@ -202,7 +202,7 @@ setdrift export -o ./out --no-snapshot
 
 *on/off · default off*
 
-Writes only the resources nothing manages, no GitOps tool, Helm, operator or CI/CD pipeline, to adopt into Git. The snapshot still holds everything. Check what counts as applied by hand first, since a pipeline's `kubectl apply` looks the same unless it marks its resources, see [Source Annotations](../source-annotations.md).
+Writes only the resources nothing manages, no GitOps tool, Helm, operator or CI/CD pipeline, to adopt into Git. The snapshot still holds everything. Check what counts as applied by hand first, since a pipeline's `kubectl apply` looks the same unless it marks its resources, see [Source annotations](../pipeline-integration/source-annotations.md).
 
 ```sh
 setdrift export --unmanaged-only -o ./adopt
@@ -345,7 +345,7 @@ The terminal shows what was applied by hand, by namespace, then where the README
 ## See also
 
 - [Output](../output.md), everything the export writes
-- [Secrets](../secrets.md), how secret values are dropped and how ExternalSecrets rebuild them
+- [Handle secrets](../secrets.md), how secret values are dropped and how ExternalSecrets rebuild them
 - [Snapshots](../snapshots.md)
 - [`verify`](verify.md), whether the export applies cleanly to a cluster
 - [`diff`](diff.md), comparing exports and clusters

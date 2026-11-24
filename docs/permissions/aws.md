@@ -1,4 +1,4 @@
-# AWS Permissions
+# AWS permissions
 
 What SetDrift needs on AWS, at the level of each IAM action, with the feature each one feeds. There are two parts, the AWS API calls `export --aws` makes and how EKS gives the [Kubernetes permissions](kubernetes.md) every command needs.
 

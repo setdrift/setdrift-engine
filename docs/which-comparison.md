@@ -1,4 +1,4 @@
-# Which comparison?
+# Choose a comparison
 
 A difference comes from time (a cluster changed) or
 from location (two clusters are set up differently); each comparison holds one

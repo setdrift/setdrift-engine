@@ -36,11 +36,11 @@ Argo CD, Flux, Helm and operators each leave a marker on the resources they mana
 
 ## How to fix it
 
-Give the resource a marker that SetDrift recognizes, the `setdrift.io/source-repo` annotation ([Source annotations](../source-annotations.md) lists it and the optional ones). There are two ways to add it.
+Give the resource a marker that SetDrift recognizes, the `setdrift.io/source-repo` annotation ([Source annotations](source-annotations.md) lists it and the optional ones). There are two ways to add it.
 
 | Fix | What you change | SetDrift shows |
 |---|---|---|
 | [Annotations in Git](annotations-in-git.md) | A file committed next to your manifests, no pipeline change | `CI/CD <repo>//<path>` |
-| [Script Annotations](script-annotations.md) | One pipe in the deploy step | `CI/CD <repo>//<path>`, plus the branch, commit and run |
+| [Script annotations](script-annotations.md) | One pipe in the deploy step | `CI/CD <repo>//<path>`, plus the branch, commit and run |
 
 Teams can use different ones, SetDrift reads both. With many teams deploying to one cluster, see [Many teams, one cluster](many-teams.md).

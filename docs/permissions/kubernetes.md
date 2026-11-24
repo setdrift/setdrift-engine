@@ -1,4 +1,4 @@
-# Kubernetes Permissions
+# Kubernetes permissions
 
 Every Kubernetes API request SetDrift makes, by API group, resource and verb, with the command that makes it, what it feeds and what happens without it. This applies to any cluster; on EKS, AKS and GKE the cloud's own access controls can grant the same permissions (see [AWS](aws.md), [Azure](azure.md) and [Google Cloud](gcp.md)).
 

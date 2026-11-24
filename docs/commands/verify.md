@@ -177,4 +177,4 @@ A resource `verify` may not get, or may not patch for the dry-run, counts as not
 
 - [`export`](export.md), which writes what `verify` checks
 - [`diff`](diff.md), comparing two clusters or a cluster with its snapshot
-- [Which comparison?](../which-comparison.md)
+- [Choose a comparison](../which-comparison.md)

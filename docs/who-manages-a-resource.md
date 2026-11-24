@@ -14,7 +14,7 @@ SetDrift checks for these in order, and the first one found decides.
 | 4 | Helm | The annotation `meta.helm.sh/release-name`, which `helm install` and `helm upgrade` write | `Helm <namespace>/<release>` |
 | 5 | Argo CD | A custom tracking label, if you name one with [`--argocd-instance-label`](commands/export.md#--argocd-instance-label) | `Argo CD <app>` |
 | 6 | An operator | An owner reference to a custom resource | `operator <Kind>/<name>` |
-| 7 | A pipeline | The annotation `setdrift.io/source-repo`, see [Source annotations](source-annotations.md) | `CI/CD <repo>//<path>` |
+| 7 | A pipeline | The annotation `setdrift.io/source-repo`, see [Source annotations](pipeline-integration/source-annotations.md) | `CI/CD <repo>//<path>` |
 | — | Nothing | None of the above | applied by hand |
 
 A pipeline's annotations only decide when nothing above them does. On a resource Argo CD, Flux, Helm or an operator manages, SetDrift keeps them in the snapshot as extra evidence.
