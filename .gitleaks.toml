@@ -66,11 +66,12 @@ keywords = ["account"]
 regexTarget = "secret"
 regexes = ['''^(?:0{12}|1{12}|2{12}|3{12}|111122223333|123456789012|210987654321)$''']
 
-# An Azure subscription or tenant ID, in a resource ID or next to its name.
+# An Azure subscription, tenant or management group ID, in a resource ID or next
+# to its name, like AZURE_SUBSCRIPTION=... or "tenantId": "...".
 [[rules]]
 id = "azure-subscription-id"
 description = "An Azure subscription or tenant ID other than a placeholder"
-regex = '''(?i)(?:/subscriptions/|subscription[_ -]?id["':= ]+|tenant[_ -]?id["':= ]+)([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})'''
+regex = '''(?i)(?:/subscriptions/|/managementGroups/|subscription(?:[_ -]?id)?["':= ]+|tenant(?:[_ -]?id)?["':= ]+|management[_ -]?group(?:[_ -]?id)?["':= ]+)([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})'''
 secretGroup = 1
 keywords = ["subscription", "tenant"]
 [[rules.allowlists]]

@@ -2,8 +2,9 @@
 # starts through a webhook. It stops all spending in the test subscription:
 # first a policy that denies creating or changing any resource, then it deletes
 # every resource group except the guard's own (setdrift-guard), so the kill
-# switch and the reaper survive. It runs as the Automation account's managed
-# identity. Undo with remove-kill-switch in setup.sh.
+# switch and the reaper survive, Azure's own azure-signup-rg, which holds the
+# account's free services, and any group tagged setdrift-keep=true. It runs
+# as the Automation account's managed identity. Undo with remove-kill-switch in setup.sh.
 param([object] $WebhookData)
 
 $ErrorActionPreference = 'Stop'
@@ -25,8 +26,11 @@ if (-not (Get-AzPolicyAssignment -Name 'setdrift-deny-all' -Scope "/subscription
 }
 Write-Output 'Denying all new resources'
 
-# Delete every other resource group, in parallel.
-$jobs = foreach ($rg in Get-AzResourceGroup | Where-Object ResourceGroupName -ne $guard) {
+# Delete every other resource group, in parallel, keeping the guard's, Azure's
+# signup group and any tagged setdrift-keep=true.
+$keep = @($guard, 'azure-signup-rg')
+$doomed = Get-AzResourceGroup | Where-Object { $_.ResourceGroupName -notin $keep -and $_.Tags['setdrift-keep'] -ne 'true' }
+$jobs = foreach ($rg in $doomed) {
   Write-Output "Deleting resource group $($rg.ResourceGroupName)"
   Remove-AzResourceGroup -Name $rg.ResourceGroupName -Force -AsJob
 }
