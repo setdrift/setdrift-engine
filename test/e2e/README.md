@@ -39,7 +39,7 @@ any command that fails, other than "already exists" for settings the
 target's own stack made.
 
 Right after the export it checks the least-privilege IAM policy in
-[docs/permissions-aws.md](../../docs/permissions-aws.md): IAM's policy simulator must
+[docs/permissions/aws.md](../../docs/permissions/aws.md): IAM's policy simulator must
 allow every call `export --aws` makes on the source cluster's real resources
 (the cluster, its access entries, Pod Identity associations, add-ons and their
 roles), and must not allow `iam:GetRole` on another account's role. Nothing is

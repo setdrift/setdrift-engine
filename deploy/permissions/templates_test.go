@@ -67,7 +67,7 @@ func read(t *testing.T, path string) []byte {
 	return b
 }
 
-// check that the IAM policy file allows exactly the calls export --aws makes, and is the policy docs/permissions-aws.md shows
+// check that the IAM policy file allows exactly the calls export --aws makes, and is the policy docs/permissions/aws.md shows
 func TestAWSPolicy(t *testing.T) {
 	var p struct{ Statement []statement }
 	file := read(t, "aws/setdrift-export-iam-policy.json")
@@ -77,13 +77,13 @@ func TestAWSPolicy(t *testing.T) {
 	if got := actions(t, p.Statement); !slices.Equal(got, awsCalls()) {
 		t.Errorf("the policy allows %v, the code calls %v", got, awsCalls())
 	}
-	m := regexp.MustCompile("(?s)```json\n(.*?)\n```").FindSubmatch(read(t, "../../docs/permissions-aws.md"))
+	m := regexp.MustCompile("(?s)```json\n(.*?)\n```").FindSubmatch(read(t, "../../docs/permissions/aws.md"))
 	if m == nil {
-		t.Fatal("docs/permissions-aws.md has no policy")
+		t.Fatal("docs/permissions/aws.md has no policy")
 	}
 	var inDoc, inFile any
 	if json.Unmarshal(m[1], &inDoc) != nil || json.Unmarshal(file, &inFile) != nil || !reflect.DeepEqual(inDoc, inFile) {
-		t.Error("aws/setdrift-export-iam-policy.json differs from the policy in docs/permissions-aws.md")
+		t.Error("aws/setdrift-export-iam-policy.json differs from the policy in docs/permissions/aws.md")
 	}
 }
 
@@ -150,7 +150,7 @@ func TestKubernetesRoles(t *testing.T) {
 	}
 }
 
-// check that the Azure roles grant the kubeconfig actions, that only verify can write, and that each data action is one docs/permissions-azure.md lists
+// check that the Azure roles grant the kubeconfig actions, that only verify can write, and that each data action is one docs/permissions/azure.md lists
 func TestAzureRoles(t *testing.T) {
 	var arm struct {
 		Variables map[string][]string
@@ -170,13 +170,13 @@ func TestAzureRoles(t *testing.T) {
 	if !slices.Equal(arm.Variables["clusterAccess"], []string{"Microsoft.ContainerService/managedClusters/read", "Microsoft.ContainerService/managedClusters/listClusterUserCredential/action"}) {
 		t.Errorf("kubeconfig actions %v", arm.Variables["clusterAccess"])
 	}
-	doc := string(read(t, "../../docs/permissions-azure.md"))
+	doc := string(read(t, "../../docs/permissions/azure.md"))
 	roles := map[string][]string{}
 	for _, r := range arm.Resources {
 		roles[r.Properties.RoleName] = r.Properties.Permissions[0].DataActions
 		for _, a := range r.Properties.Permissions[0].DataActions {
 			if !strings.Contains(doc, "`"+a+"`") {
-				t.Errorf("%s's data action %s is not in docs/permissions-azure.md", r.Properties.RoleName, a)
+				t.Errorf("%s's data action %s is not in docs/permissions/azure.md", r.Properties.RoleName, a)
 			}
 		}
 	}
@@ -185,9 +185,9 @@ func TestAzureRoles(t *testing.T) {
 	}
 }
 
-// check that each Google Cloud role holds only permissions docs/permissions-gcp.md lists
+// check that each Google Cloud role holds only permissions docs/permissions/gcp.md lists
 func TestGCPRoles(t *testing.T) {
-	doc := string(read(t, "../../docs/permissions-gcp.md"))
+	doc := string(read(t, "../../docs/permissions/gcp.md"))
 	for file, want := range map[string][]string{
 		"gcp/setdrift-cluster-access-role.yaml": {"container.clusters.get"},
 		"gcp/setdrift-secrets-reader-role.yaml": {"container.secrets.list"},
@@ -204,7 +204,7 @@ func TestGCPRoles(t *testing.T) {
 		}
 		for _, p := range role.IncludedPermissions {
 			if !strings.Contains(doc, "`"+p+"`") {
-				t.Errorf("%s's %s is not in docs/permissions-gcp.md", file, p)
+				t.Errorf("%s's %s is not in docs/permissions/gcp.md", file, p)
 			}
 		}
 	}
@@ -213,14 +213,14 @@ func TestGCPRoles(t *testing.T) {
 // check that the docs link to every template, so none is left for a reader to find alone
 func TestDocsLinkEveryTemplate(t *testing.T) {
 	var docs string
-	pages, _ := filepath.Glob("../../docs/permissions*.md")
+	pages, _ := filepath.Glob("../../docs/permissions/*.md")
 	for _, p := range pages {
 		docs += string(read(t, p))
 	}
 	files, _ := filepath.Glob("*/*")
 	for _, f := range files {
 		if !strings.Contains(docs, "deploy/permissions/"+filepath.ToSlash(f)) {
-			t.Errorf("no docs/permissions*.md page links deploy/permissions/%s", f)
+			t.Errorf("no docs/permissions/*.md page links deploy/permissions/%s", f)
 		}
 	}
 }

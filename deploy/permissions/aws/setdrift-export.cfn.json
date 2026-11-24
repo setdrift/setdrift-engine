@@ -1,6 +1,6 @@
 {
   "AWSTemplateFormatVersion": "2010-09-09",
-  "Description": "SetDrift: the IAM policy setdrift export --aws needs for one EKS cluster, and optionally an EKS access entry giving a principal the setdrift-export or setdrift-verify Kubernetes group (apply deploy/permissions/kubernetes/ in the cluster for the group's role). See docs/permissions-aws.md.",
+  "Description": "SetDrift: the IAM policy setdrift export --aws needs for one EKS cluster, and optionally an EKS access entry giving a principal the setdrift-export or setdrift-verify Kubernetes group (apply deploy/permissions/kubernetes/ in the cluster for the group's role). See docs/permissions/aws.md.",
   "Parameters": {
     "ClusterName": {
       "Type": "String",

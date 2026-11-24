@@ -1,5 +1,5 @@
 # The Kubernetes permissions setdrift verify uses, across the cluster
-# (docs/permissions-kubernetes.md): get and list, and patch for the
+# (docs/permissions/kubernetes.md): get and list, and patch for the
 # server-side apply with dryRun=All, which changes nothing but which the API
 # server checks as it would a real apply. It also covers export and diff.
 #

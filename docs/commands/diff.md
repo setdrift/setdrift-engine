@@ -30,7 +30,7 @@ setdrift diff A B [flags]
 
 Exports are often named after their cluster (`setdrift export --context prod -o prod`), so in that directory `prod` would be ambiguous. Rather than pick one silently, `diff` asks. Both arguments are checked before either is read, and every problem is reported at once.
 
-- **A context** is read the way `export` reads it, with the same [permissions](../permissions-kubernetes.md). Two contexts is the same as exporting both now and comparing the snapshots.
+- **A context** is read the way `export` reads it, with the same [permissions](../permissions/kubernetes.md). Two contexts is the same as exporting both now and comparing the snapshots.
 - **A snapshot file** is one `export` saved in its `snapshots/` directory, `.pb` or `.json`. Its capture time is shown, so you can tell how old it is.
 - **A directory** is read as manifests, like `export --from-dir`, either an export's cluster directory or a folder of YAML. Its records (`snapshots/`, `verify/`, `cluster_profile/`) are left out.
 - **The same argument twice** compares one cluster or snapshot with itself, which needs `--map-namespace` to pair two of its namespaces.
@@ -217,7 +217,7 @@ When one side read less, some namespaces or a type it could not list, the other 
 
 ## Permissions
 
-For each live side, what [`export`](export.md) needs, `get` and `list` on what it reads. A snapshot or a directory needs none. Every verb is in [Kubernetes permissions](../permissions-kubernetes.md).
+For each live side, what [`export`](export.md) needs, `get` and `list` on what it reads. A snapshot or a directory needs none. Every verb is in [Kubernetes permissions](../permissions/kubernetes.md).
 
 ## See also
 

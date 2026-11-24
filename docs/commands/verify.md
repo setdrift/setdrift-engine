@@ -171,7 +171,7 @@ A resource `verify` may not get, or may not patch for the dry-run, counts as not
 
 ## Permissions
 
-`get` and `patch` on what the export holds, the dry-run changes nothing but the API server checks `patch` as it would for a real apply. Every verb is in [Kubernetes permissions](../permissions-kubernetes.md), and [deploy/permissions](https://github.com/setdrift/setdrift-engine/tree/main/deploy/permissions/kubernetes) has a `setdrift-verify` role to apply.
+`get` and `patch` on what the export holds, the dry-run changes nothing but the API server checks `patch` as it would for a real apply. Every verb is in [Kubernetes permissions](../permissions/kubernetes.md), and [deploy/permissions](https://github.com/setdrift/setdrift-engine/tree/main/deploy/permissions/kubernetes) has a `setdrift-verify` role to apply.
 
 ## See also
 

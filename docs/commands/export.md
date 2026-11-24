@@ -102,7 +102,7 @@ setdrift export --kubeconfig ~/.kube/prod --context prod
 
 *list · default none · not with `--from-dir`*
 
-Reads only these namespaces, and leaves out cluster-scoped resources (ClusterRoles, CRDs, StorageClasses) except the Namespace objects themselves. Repeat it or separate names with commas, as in `-n payments -n checkout` or `-n payments,checkout`. Each one must exist and be readable, which is checked before anything is read, so a typo writes nothing. Without it, every namespace you can read is read, see [Permissions](../permissions.md) for what happens with access to some namespaces only.
+Reads only these namespaces, and leaves out cluster-scoped resources (ClusterRoles, CRDs, StorageClasses) except the Namespace objects themselves. Repeat it or separate names with commas, as in `-n payments -n checkout` or `-n payments,checkout`. Each one must exist and be readable, which is checked before anything is read, so a typo writes nothing. Without it, every namespace you can read is read, see [Permissions](../permissions/index.md) for what happens with access to some namespaces only.
 
 ```sh
 setdrift export -n payments -n checkout
@@ -294,7 +294,7 @@ setdrift export --external-secrets generic --secret-key-template '{{.Cluster}}-{
 
 *on/off · default off · not with `--from-dir`*
 
-On EKS, also reads the settings AWS holds about the cluster, read-only and with your AWS credentials. That's Pod Identity associations, the trust of IRSA roles, access entries, add-ons, EBS volumes, and the VPC and subnets for the cluster profile. RESTORE.md then covers recreating them. Every AWS call it makes is in [AWS permissions](../permissions-aws.md). The cluster's name and region come from the context, or from the two flags below.
+On EKS, also reads the settings AWS holds about the cluster, read-only and with your AWS credentials. That's Pod Identity associations, the trust of IRSA roles, access entries, add-ons, EBS volumes, and the VPC and subnets for the cluster profile. RESTORE.md then covers recreating them. Every AWS call it makes is in [AWS permissions](../permissions/aws.md). The cluster's name and region come from the context, or from the two flags below.
 
 ```sh
 setdrift export --context prod --aws
@@ -340,7 +340,7 @@ The terminal shows what was applied by hand, by namespace, then where the README
 
 ## Permissions
 
-`get` and `list` on what it exports, and optionally `list` on Secrets, namespaces and nodes. With `--aws`, the AWS calls in [AWS permissions](../permissions-aws.md). Every verb is in [Kubernetes permissions](../permissions-kubernetes.md).
+`get` and `list` on what it exports, and optionally `list` on Secrets, namespaces and nodes. With `--aws`, the AWS calls in [AWS permissions](../permissions/aws.md). Every verb is in [Kubernetes permissions](../permissions/kubernetes.md).
 
 ## See also
 

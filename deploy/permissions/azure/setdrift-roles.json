@@ -2,7 +2,7 @@
   "$schema": "https://schema.management.azure.com/schemas/2018-05-01/subscriptionDeploymentTemplate.json#",
   "contentVersion": "1.0.0.0",
   "metadata": {
-    "description": "SetDrift: custom roles for running setdrift against AKS clusters in this subscription (docs/permissions-azure.md). SetDrift Cluster Access gets a kubeconfig, for clusters with Kubernetes RBAC (apply deploy/permissions/kubernetes/ there). SetDrift Export and SetDrift Verify also grant the Kubernetes access, for clusters with Azure RBAC for Kubernetes."
+    "description": "SetDrift: custom roles for running setdrift against AKS clusters in this subscription (docs/permissions/azure.md). SetDrift Cluster Access gets a kubeconfig, for clusters with Kubernetes RBAC (apply deploy/permissions/kubernetes/ there). SetDrift Export and SetDrift Verify also grant the Kubernetes access, for clusters with Azure RBAC for Kubernetes."
   },
   "variables": {
     "clusterAccess": [

@@ -1,6 +1,6 @@
 # Azure Permissions
 
-SetDrift calls no Azure API: on AKS it reads the cluster through the Kubernetes API only, with the kubeconfig you give it. What it needs on Azure is a way to get that kubeconfig, and the [Kubernetes permissions](permissions-kubernetes.md), which AKS grants in one of two ways depending on how the cluster is set up.
+SetDrift calls no Azure API: on AKS it reads the cluster through the Kubernetes API only, with the kubeconfig you give it. What it needs on Azure is a way to get that kubeconfig, and the [Kubernetes permissions](kubernetes.md), which AKS grants in one of two ways depending on how the cluster is set up.
 
 ## Getting a kubeconfig
 
@@ -15,7 +15,7 @@ The built-in role **Azure Kubernetes Service Cluster User Role** has exactly the
 
 ## Kubernetes access on AKS
 
-- **A cluster with Kubernetes RBAC (the default) -** bind your Entra ID user or group to `setdrift-export` or `setdrift-verify` from the [Kubernetes page](permissions-kubernetes.md) with a ClusterRoleBinding. Nothing else on Azure is needed.
+- **A cluster with Kubernetes RBAC (the default) -** bind your Entra ID user or group to `setdrift-export` or `setdrift-verify` from the [Kubernetes page](kubernetes.md) with a ClusterRoleBinding. Nothing else on Azure is needed.
 - **A cluster with Azure RBAC for Kubernetes -** Azure decides each Kubernetes request as a data action, named `Microsoft.ContainerService/managedClusters/[<group>/]<resource>/<read|write>`. `read` is what a `get` or `list` needs, and `write` what a `patch` needs. For what SetDrift uses:
 
 | Data action | Kubernetes request | For |
@@ -40,7 +40,7 @@ Azure does not say whether it treats a dry-run `patch` differently from any othe
 
 | Role | Actions | Data actions | For |
 |---|---|---|---|
-| SetDrift Cluster Access | the kubeconfig actions | none | clusters with Kubernetes RBAC, with the [Kubernetes templates](permissions-kubernetes.md#templates) applied in the cluster |
+| SetDrift Cluster Access | the kubeconfig actions | none | clusters with Kubernetes RBAC, with the [Kubernetes templates](kubernetes.md#templates) applied in the cluster |
 | SetDrift Export | the kubeconfig actions | `*/read` | `export` and `diff` on clusters with Azure RBAC for Kubernetes |
 | SetDrift Verify | the kubeconfig actions | `*/read`, `*/write` | `verify` on clusters with Azure RBAC for Kubernetes |
 

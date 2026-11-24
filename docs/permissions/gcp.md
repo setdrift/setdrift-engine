@@ -1,6 +1,6 @@
 # Google Cloud Permissions
 
-SetDrift calls no Google Cloud API: on GKE it reads the cluster through the Kubernetes API only, with the kubeconfig you give it. What it needs on Google Cloud is a way to get that kubeconfig, and the [Kubernetes permissions](permissions-kubernetes.md), which GKE grants through Kubernetes RBAC, IAM, or both: a request is allowed when either allows it.
+SetDrift calls no Google Cloud API: on GKE it reads the cluster through the Kubernetes API only, with the kubeconfig you give it. What it needs on Google Cloud is a way to get that kubeconfig, and the [Kubernetes permissions](kubernetes.md), which GKE grants through Kubernetes RBAC, IAM, or both: a request is allowed when either allows it.
 
 ## Getting a kubeconfig
 
@@ -14,7 +14,7 @@ The predefined role **Kubernetes Engine Cluster Viewer** (`roles/container.clust
 
 ## Kubernetes access on GKE
 
-- **With Kubernetes RBAC (the narrowest) -** give the account only `roles/container.clusterViewer` in IAM, and bind it to `setdrift-export` or `setdrift-verify` from the [Kubernetes page](permissions-kubernetes.md) with a ClusterRoleBinding (the subject is the account's email, or a Google Group with Google Groups for RBAC).
+- **With Kubernetes RBAC (the narrowest) -** give the account only `roles/container.clusterViewer` in IAM, and bind it to `setdrift-export` or `setdrift-verify` from the [Kubernetes page](kubernetes.md) with a ClusterRoleBinding (the subject is the account's email, or a Google Group with Google Groups for RBAC).
 - **With IAM -** GKE turns each Kubernetes request into an IAM permission named `container.<resource>.<verb>`. A `get` of one object needs `.get`, a `list` needs `.list`, and a `patch` needs `.update`. For what SetDrift uses:
 
 | Permission | Kubernetes request | For |
@@ -39,7 +39,7 @@ Custom role files for `gcloud iam roles create`, in [deploy/permissions/gcp/](ht
 
 | Template | Holds | For |
 |---|---|---|
-| [setdrift-cluster-access-role.yaml](https://github.com/setdrift/setdrift-engine/blob/main/deploy/permissions/gcp/setdrift-cluster-access-role.yaml) | `container.clusters.get` | the kubeconfig, with the [Kubernetes templates](permissions-kubernetes.md#templates) applied in the cluster: the narrowest setup |
+| [setdrift-cluster-access-role.yaml](https://github.com/setdrift/setdrift-engine/blob/main/deploy/permissions/gcp/setdrift-cluster-access-role.yaml) | `container.clusters.get` | the kubeconfig, with the [Kubernetes templates](kubernetes.md#templates) applied in the cluster: the narrowest setup |
 | [setdrift-secrets-reader-role.yaml](https://github.com/setdrift/setdrift-engine/blob/main/deploy/permissions/gcp/setdrift-secrets-reader-role.yaml) | `container.secrets.list` | with `roles/container.viewer`, `export` and `diff` through IAM, Secrets included |
 
 ```sh
