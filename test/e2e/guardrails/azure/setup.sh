@@ -137,6 +137,10 @@ status() {
 }
 
 test_kill() {
+  # a deny-all policy left from an earlier run would refuse the test's own resource group
+  if az policy assignment show --name setdrift-deny-all --scope "/subscriptions/$sub" --output none 2>/dev/null; then
+    die "the kill switch's deny-all policy is still assigned from an earlier run; lift it with setup.sh remove-kill-switch, then run test again"
+  fi
   say "this fires the kill switch: every resource group in $name is deleted, except $guard, azure-signup-rg and any tagged setdrift-keep=true"
   read -r -p "type the subscription name to go on: " answer
   [[ $answer == "$name" ]] || die "not confirmed"
@@ -162,7 +166,13 @@ test_kill() {
 }
 
 remove_kill_switch() {
-  az policy assignment delete --name setdrift-deny-all --scope "/subscriptions/$sub" --output none 2>/dev/null || true
+  # checking if the deny-all policy is there at all, if not theres nothing to lift
+  if ! az policy assignment show --name setdrift-deny-all --scope "/subscriptions/$sub" --output none 2>/dev/null; then
+    say "the deny-all policy is not assigned; new resources are allowed"
+    return
+  fi
+  az policy assignment delete --name setdrift-deny-all --scope "/subscriptions/$sub" --output none
+  ! az policy assignment show --name setdrift-deny-all --scope "/subscriptions/$sub" --output none 2>/dev/null || die "the deny-all policy is still assigned"
   say "new resources are allowed again"
 }
 
