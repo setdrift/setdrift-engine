@@ -38,8 +38,15 @@ func ReadDecisions(dir string) ([]Decision, error) {
 		return nil, err
 	}
 	var ds []Decision
+	// invoking yaml.UnmarshalStrict so a misspelled key fails instead of passing as undecided
 	if err := yaml.UnmarshalStrict(b, &ds); err != nil {
-		return nil, fmt.Errorf("%s: %w", DecisionsFile, err)
+		// invoking plainYAMLError to say what's wrong without the library's wording, its defined below
+		return nil, fmt.Errorf("%s isn't valid: %s. Fix it, or delete it to start over", filepath.Join(dir, DecisionsFile), plainYAMLError(err))
+	}
+	for _, d := range ds {
+		if d.Feature == "" {
+			return nil, fmt.Errorf("%s: an entry has no feature. Fix it, or delete the file to start over", filepath.Join(dir, DecisionsFile))
+		}
 	}
 	for _, d := range ds {
 		// checking each choice is one of the three, a typo must not pass as undecided
@@ -69,6 +76,20 @@ func Explainer(ds []Decision) func(*unstructured.Unstructured) string {
 		}
 		return ""
 	}
+}
+
+// plainYAMLError rewords the yaml library's errors, which speak of JSON since it converts YAML to JSON first
+func plainYAMLError(err error) string {
+	msg := err.Error()
+	// checking if its a key the file shouldnt have, if so it names the key and the ones it may have
+	if i := strings.Index(msg, `unknown field "`); i >= 0 {
+		key := strings.SplitN(msg[i+len(`unknown field "`):], `"`, 2)[0]
+		return fmt.Sprintf("it has an unknown key %q (an entry has feature, what, options, default and choose)", key)
+	}
+	for _, p := range []string{"error converting YAML to JSON: ", "error unmarshaling JSON: while decoding JSON: ", "yaml: "} {
+		msg = strings.ReplaceAll(msg, p, "")
+	}
+	return "it isn't readable YAML (" + msg + ")"
 }
 
 // WriteDecisions writes the decisions file in dir, with a header saying how to use it
@@ -113,14 +134,14 @@ func WriteDecisions(dir string, ds []Decision) error {
 // it refuses a directory that isnt a translation, like the export's own platform set
 func Write(root string, r *Result, resources []string, version string) error {
 	dir := filepath.Join(root, filepath.FromSlash(r.Dir))
-	// checking if the directory exists without a stamp, if so its the export's own platform set and stays as it is
+	// checking if the directory exists without a stamp, if so translate didnt write it and leaves it as it is
 	if _, err := os.Stat(dir); err == nil {
 		if _, err := os.Stat(filepath.Join(dir, StampFile)); err != nil {
-			return fmt.Errorf("%s exists and isn't a translation (no %s): it's this export's own platform set", r.Dir, StampFile)
+			return fmt.Errorf("%s exists and wasn't written by setdrift translate (it has no %s). If it's this export's own platform set, the export is already for %s; otherwise move it aside and run translate again", dir, StampFile, r.To.Name())
 		}
 	}
 	if err := os.MkdirAll(dir, 0o750); err != nil {
-		return err
+		return fmt.Errorf("translate writes into the export and couldn't: %w", err)
 	}
 	up := strings.Repeat("../", strings.Count(r.Dir, "/")+1)
 	k := map[string]any{"apiVersion": "kustomize.config.k8s.io/v1beta1", "kind": "Kustomization"}

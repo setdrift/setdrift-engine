@@ -49,9 +49,14 @@ func newTranslateCmd() *cobra.Command {
 
 // run translates the export at dir
 func (o *translateOptions) run(cmd *cobra.Command, dir string) error {
-	to := platform.Distribution(strings.ToLower(o.to))
-	if to != platform.EKS && to != platform.AKS && to != platform.GKE {
-		return fmt.Errorf("--to must be eks, aks or gke, not %q", o.to)
+	// invoking targetPlatform to read --to, a platform or its cloud's name, its defined below
+	to, err := targetPlatform(o.to)
+	if err != nil {
+		return err
+	}
+	// invoking checkExportPath to say plainly when dir isnt an export, its defined below
+	if err := checkExportPath(dir); err != nil {
+		return err
 	}
 	if o.unmatched != "" && o.unmatched != translate.KeepSource && o.unmatched != translate.LeaveOut {
 		return fmt.Errorf("--unmatched must be keep-source or leave-out, not %q", o.unmatched)
@@ -128,6 +133,10 @@ func (o *translateOptions) run(cmd *cobra.Command, dir string) error {
 	if err != nil {
 		return err
 	}
+	// checking if earlier decisions name what the export no longer has, if so theyre dropped and said
+	if len(r.Stale) > 0 {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Dropped %s from %s, for what the export no longer has: %s\n", text.Plural(len(r.Stale), "decision", "decisions"), translate.DecisionsFile, strings.Join(r.Stale, ", "))
+	}
 	// invoking translate.Write to write the overlay, its defined in pkg/translate/write.go
 	if err := translate.Write(root, r, res, version.Version); err != nil {
 		return err
@@ -143,6 +152,40 @@ func (o *translateOptions) run(cmd *cobra.Command, dir string) error {
 	}
 	fmt.Fprintf(w, "Apply it on %s with: kubectl apply --server-side -k %s\n", tgt.Name, outDir)
 	return nil
+}
+
+// targetPlatform reads --to, eks, aks or gke, or the cloud's name, aws, azure or gcp, without regard to case
+func targetPlatform(s string) (platform.Distribution, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "":
+		return platform.Unknown, errors.New("--to is required: the platform to translate for, eks, aks or gke")
+	case "eks", "aws":
+		return platform.EKS, nil
+	case "aks", "azure":
+		return platform.AKS, nil
+	case "gke", "gcp", "google", "google-cloud":
+		return platform.GKE, nil
+	}
+	return platform.Unknown, fmt.Errorf("--to must be eks, aks or gke (or aws, azure, gcp), not %q", s)
+}
+
+// checkExportPath says plainly what dir is when its no export, missing, a snapshot file or another file
+func checkExportPath(dir string) error {
+	fi, err := os.Stat(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("%s doesn't exist: give the directory setdrift export wrote", dir)
+	}
+	if err != nil {
+		return err
+	}
+	if fi.IsDir() {
+		return nil
+	}
+	// checking if its a snapshot, by its name, if so it says what to use instead
+	if strings.HasSuffix(dir, ".pb") || strings.HasSuffix(dir, ".json") {
+		return fmt.Errorf("%s is a snapshot, and translate works on an export, the directory setdrift export writes (setdrift export -o DIR). A snapshot can be compared with setdrift diff", dir)
+	}
+	return fmt.Errorf("%s is a file: give the directory setdrift export wrote", dir)
 }
 
 // rootResources reads the resources the cluster's kustomization.yaml lists, the generic set's directories

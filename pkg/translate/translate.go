@@ -75,6 +75,8 @@ type Result struct {
 	Decisions []Decision
 	// Notes are what the user should know, like a placement that was relaxed
 	Notes []string
+	// Stale are the features of earlier decisions with nothing left to decide in the export, like an object deleted since, theyre dropped
+	Stale []string
 }
 
 // Undecided gives back the decisions with neither a choice nor a default, which stop a translation
@@ -108,6 +110,24 @@ func Translate(objs []*unstructured.Unstructured, from, to platform.Distribution
 	for _, o := range objs {
 		// invoking object to work out one object's patch and decisions, its defined below
 		t.object(o)
+	}
+	// checking each choice is one its feature offers, a choice that doesnt fit must not pass as decided
+	var bad []string
+	seen := map[string]bool{}
+	for _, d := range r.Decisions {
+		seen[d.Feature] = true
+		if d.Choose != "" && !slices.Contains(d.Options, d.Choose) {
+			bad = append(bad, fmt.Sprintf("%s: %s isn't an option here, choose %s", d.Feature, d.Choose, strings.Join(d.Options, " or ")))
+		}
+	}
+	if len(bad) > 0 {
+		return nil, fmt.Errorf("%s: %s", DecisionsFile, strings.Join(bad, "; "))
+	}
+	// the earlier decisions with nothing left to decide are dropped and reported
+	for _, d := range earlier {
+		if !seen[d.Feature] {
+			r.Stale = append(r.Stale, d.Feature)
+		}
 	}
 	sort.Slice(r.Patches, func(i, j int) bool { return patchKey(r.Patches[i]) < patchKey(r.Patches[j]) })
 	sort.Slice(r.Decisions, func(i, j int) bool { return r.Decisions[i].Feature < r.Decisions[j].Feature })

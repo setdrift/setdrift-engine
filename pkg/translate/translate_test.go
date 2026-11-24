@@ -1,6 +1,8 @@
 package translate
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -210,6 +212,45 @@ metadata:
 func TestSamePlatformRefused(t *testing.T) {
 	if _, err := Translate(nil, platform.GKE, platform.GKE, load(t), nil); err == nil {
 		t.Error("translating GKE for GKE should be refused")
+	}
+}
+
+// a choice its feature doesnt offer is refused, a decision for what the export no longer has is dropped and reported
+func TestEarlierDecisionsChecked(t *testing.T) {
+	sa := u(t, `
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: orders
+  namespace: shop
+  annotations: {eks.amazonaws.com/role-arn: "arn:aws:iam::111111111111:role/orders"}`)
+	_, err := Translate([]*unstructured.Unstructured{sa}, platform.EKS, platform.GKE, load(t), []Decision{{Feature: "identity/shop/orders", Choose: Equivalent}})
+	if err == nil || !strings.Contains(err.Error(), "isn't an option here") {
+		t.Errorf("got %v", err)
+	}
+	r, err := Translate([]*unstructured.Unstructured{sa}, platform.EKS, platform.GKE, load(t), []Decision{{Feature: "identity/shop/gone", Choose: LeaveOut}})
+	if err != nil || len(r.Stale) != 1 || r.Stale[0] != "identity/shop/gone" {
+		t.Errorf("stale %v, %v", r, err)
+	}
+}
+
+func TestReadDecisionsPlainErrors(t *testing.T) {
+	for doc, want := range map[string]string{
+		"this: [is: not valid":                 "isn't readable YAML",
+		"- feature: a\n  chose: keep-source\n": `unknown key "chose"`,
+		"- feature: a\n  choose: kep-source\n": "choose must be keep-source",
+		"- choose: keep-source\n":              "has no feature",
+	} {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, DecisionsFile), []byte(strings.ReplaceAll(doc, `\n`, "\n")), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ReadDecisions(dir); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%q: got %v, want %q", doc, err, want)
+		}
+	}
+	if ds, err := ReadDecisions(t.TempDir()); err != nil || ds != nil {
+		t.Errorf("no file: %v, %v", ds, err)
 	}
 }
 
