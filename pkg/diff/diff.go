@@ -17,7 +17,9 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 
 	"setdrift.io/setdrift-engine/internal/kube"
+	"setdrift.io/setdrift-engine/pkg/capability"
 	"setdrift.io/setdrift-engine/pkg/normalize"
+	"setdrift.io/setdrift-engine/pkg/platform"
 	"setdrift.io/setdrift-engine/pkg/snapshot"
 	snapshotv1alpha1 "setdrift.io/setdrift-engine/pkg/snapshot/v1alpha1"
 )
@@ -31,6 +33,8 @@ type Options struct {
 	ValueMap map[string]string
 	// LabelA and LabelB name the sides in the result and its reasons, by default the cluster names, with the capture times when they match
 	LabelA, LabelB string
+	// Capability is the capability map, each side's objects are checked against its own platform with it, nil skips the check
+	Capability *capability.Map
 }
 
 // Key identifies a resource across the two snapshots, by its namespace in the first
@@ -109,6 +113,17 @@ type Result struct {
 	// Limited says what the comparison left out because a side read only some namespaces
 	// only what both read is compared, so nothing shows as in one side only for not having been read in the other
 	Limited []string `json:"limited,omitempty"`
+	// WontWork are the resources that name another platform's features than their own side's, like an EKS load balancer class in a GKE cluster
+	// a migration can look identical and not work, so they count as differences for Same
+	WontWork []WontWork `json:"wontWork,omitempty"`
+}
+
+// WontWork is a resource on one side that names features its side's platform doesnt have, from the capability map
+type WontWork struct {
+	// Side is the label of the side its on
+	Side    string   `json:"side"`
+	Object  Object   `json:"object"`
+	Reasons []string `json:"reasons"`
 }
 
 // NodeChange is one way the clusters' nodes differ, what differs and its value on each side
@@ -120,8 +135,8 @@ type NodeChange struct {
 
 // Same tells if the snapshots match, apart from the clusters' own values
 func (r Result) Same() bool {
-	// checking if any resource is in one side only, if so they dont match
-	if len(r.OnlyA) > 0 || len(r.OnlyB) > 0 {
+	// checking if any resource is in one side only, or wont work on its side, if so they dont match
+	if len(r.OnlyA) > 0 || len(r.OnlyB) > 0 || len(r.WontWork) > 0 {
 		return false
 	}
 	// going through the changed resources, looking for one that differs beyond the clusters' own values
@@ -263,7 +278,40 @@ func Compare(a, b *snapshotv1alpha1.Snapshot, opts Options) (Result, error) {
 			res.OnlyB = append(res.OnlyB, bs[k].obj)
 		}
 	}
+	// invoking wontWork to check each side's resources against its own platform, its defined below
+	res.WontWork = append(wontWork(opts.Capability, a, as, res.A.Label), wontWork(opts.Capability, b, bs, res.B.Label)...)
 	return res, nil
+}
+
+// wontWork checks one side's resources against its own platform, classified with confidence, and gives back those naming another platform's features
+func wontWork(m *capability.Map, s *snapshotv1alpha1.Snapshot, es map[Key]entry, label string) []WontWork {
+	if m == nil {
+		return nil
+	}
+	// invoking platform.FromProto to read the side's classification, its defined in pkg/platform/probe.go
+	cls := platform.FromProto(s.GetCluster().GetClassification())
+	// checking if the platform is known with confidence, a guess would flag the user's objects
+	if !cls.Is(cls.Distribution) || cls.Distribution == platform.Unknown {
+		return nil
+	}
+	var objs []capability.Object
+	byRef := map[string]Object{}
+	for _, k := range sortedKeys(es) {
+		e := es[k]
+		c, _ := e.manifest.(map[string]any)
+		ref := k.Kind + " " + k.Name
+		if e.obj.Namespace != "" {
+			ref = k.Kind + " " + e.obj.Namespace + "/" + k.Name
+		}
+		objs = append(objs, capability.Object{Ref: ref, Group: k.Group, Kind: k.Kind, Content: c})
+		byRef[ref] = e.obj
+	}
+	var out []WontWork
+	// invoking Misfits to find what names another platform's features, its defined in pkg/capability/capability.go
+	for _, mf := range m.Misfits(objs, cls.Distribution) {
+		out = append(out, WontWork{Side: label, Object: byRef[mf.Ref], Reasons: mf.Reasons})
+	}
+	return out
 }
 
 // side takes a snapshot and describes it, its cluster, when it was taken, platform, region and account

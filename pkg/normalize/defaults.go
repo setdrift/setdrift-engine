@@ -338,6 +338,20 @@ func serviceDefaults(o *resource.Object) {
 	if !ok {
 		return
 	}
+	// checking if GKE gave the Service its automatic NEG annotation, if so it goes, GKE adds it to every Service on a VPC-native cluster
+	// a NEG annotation someone set on purpose has another value and stays
+	if ann := o.GetAnnotations(); ann["cloud.google.com/neg"] == `{"ingress":true}` {
+		delete(ann, "cloud.google.com/neg")
+		o.SetAnnotations(ann)
+	}
+	// dropping the finalizers a load balancer controller adds, Kubernetes' own and each cloud's, the target's controller adds its own
+	// an exported one only hurts, on another platform nothing would remove it and the Service could never be deleted
+	for _, f := range o.GetFinalizers() {
+		if strings.HasPrefix(f, "service.kubernetes.io/") || strings.HasPrefix(f, "service.eks.amazonaws.com/") || strings.HasPrefix(f, "service.k8s.aws/") || strings.HasPrefix(f, "gke.networking.io/") || strings.HasPrefix(f, "networking.gke.io/") {
+			// invoking dropFinalizer to remove it, its defined below
+			dropFinalizer(o, f)
+		}
+	}
 	// invoking nodePorts to remove the node ports the cluster assigned, its defined below
 	// it runs before the protocol default below is removed, since the protocol is part of each port's key in managedFields
 	nodePorts(o, spec)

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"setdrift.io/setdrift-engine/pkg/capability"
 	snapshotv1alpha1 "setdrift.io/setdrift-engine/pkg/snapshot/v1alpha1"
 )
 
@@ -340,6 +341,34 @@ func TestCompareFullAgainstNamespaces(t *testing.T) {
 		if !strings.Contains(notes, "compared namespaces shop only") || !strings.Contains(notes, "2 resources outside them were left out") {
 			t.Errorf("%s against %s: notes %q", order[0].Cluster.Name, order[1].Cluster.Name, notes)
 		}
+	}
+}
+
+// check that an object naming another platform's features than its side's counts as a difference, so a migration that looks identical but wouldnt work isnt called the same
+func TestWontWorkOnItsSide(t *testing.T) {
+	m, err := capability.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	lb := `{"apiVersion":"v1","kind":"Service","metadata":{"name":"web-lb","namespace":"shop"},"spec":{"type":"LoadBalancer","loadBalancerClass":"eks.amazonaws.com/nlb"}}`
+	a := snap("eks-prod", "", "us-east-2", res("v1", "Service", "shop", "web-lb", lb, unmanaged, ""))
+	b := snap("gke-prod", "", "us-central1", res("v1", "Service", "shop", "web-lb", lb, unmanaged, ""))
+	a.Cluster.Classification.Distribution, a.Cluster.Classification.Confidence = "eks", "high"
+	b.Cluster.Classification.Distribution, b.Cluster.Classification.Confidence = "gke", "high"
+	r, err := Compare(a, b, Options{Capability: m})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Identical != 1 || len(r.WontWork) != 1 || r.WontWork[0].Side != "gke-prod" || r.Same() {
+		t.Fatalf("identical %d, wont work %+v, same %v", r.Identical, r.WontWork, r.Same())
+	}
+	if !strings.Contains(strings.Join(r.WontWork[0].Reasons, " "), "eks.amazonaws.com/nlb belongs to EKS") {
+		t.Errorf("reasons %v", r.WontWork[0].Reasons)
+	}
+	// without a confident platform, nothing is checked
+	b.Cluster.Classification.Confidence = "low"
+	if r, _ := Compare(a, b, Options{Capability: m}); len(r.WontWork) != 0 || !r.Same() {
+		t.Errorf("checked a guessed platform: %+v", r.WontWork)
 	}
 }
 

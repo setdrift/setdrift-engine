@@ -326,12 +326,26 @@ var aksManagers = map[string]bool{"eno": true, "eno-reconciler": true, "live-pat
 // gkeManagers are the field managers of the components GKE runs in the cluster, its add-on manager, its common webhooks, the load balancer controller (glbc), the GCP controller manager, the volume populator and its managed cluster autoscaler
 var gkeManagers = map[string]bool{
 	"kube-addon-manager": true, "gke-common-webhooks": true, "glbc": true, "gcp-controller-manager": true, "gke-volume-populator": true, "cluster-autoscaler": true,
+	// kube-dns's autoscaler and the metrics-server's APIService minder, seen writing kube-dns-autoscaler and v1beta1.metrics.k8s.io (M1 of v0.3.0)
+	"cluster-proportional-autoscaler": true, "api-service-nanny": true,
+}
+
+// gkeNamespaceManagers are field managers that are GKE's only in their namespace, Managed Prometheus's operator is named just operator, too common a name to trust anywhere else
+// an object there written only by these and gkeManagers is GKE's, so OperatorConfig gmp-public/config stays the user's once anyone else edits it
+var gkeNamespaceManagers = map[string]map[string]bool{
+	"gmp-system": {"operator": true},
+	"gmp-public": {"operator": true},
 }
 
 // gkeUnmarked are GKE's own objects that carry no label and no field manager, so nothing on them says GKE wrote them, keyed by namespace/kind/name
 // the rule is to recognize a platform's objects by the markers it writes, these are the known exceptions, named and checked only on GKE
 // gke-common-webhook-heartbeat is a ConfigMap GKE rewrites constantly, so left in it shows as a difference in every verify
-var gkeUnmarked = map[string]bool{"kube-system/ConfigMap/gke-common-webhook-heartbeat": true}
+// system:gke-kcm-ccm-leader-election is a Role and RoleBinding GKE creates with kubectl, the same field manager a person's commands have
+var gkeUnmarked = map[string]bool{
+	"kube-system/ConfigMap/gke-common-webhook-heartbeat":         true,
+	"kube-system/Role/system:gke-kcm-ccm-leader-election":        true,
+	"kube-system/RoleBinding/system:gke-kcm-ccm-leader-election": true,
+}
 
 // the labels a platform's add-on manager and AKS put on the objects they own
 const (
@@ -383,6 +397,15 @@ func platformObject(o *resource.Object, cls *platform.Classification) (string, m
 		// invoking onlyManagers to check every writer is one of GKE's, its defined below
 		if ev := onlyManagers(o, gkeManagers); ev != nil {
 			return "gke", ev
+		}
+		// checking if its in a namespace with GKE managers of its own, like Managed Prometheus's operator, if so those count too
+		if extra, ok := gkeNamespaceManagers[o.GetNamespace()]; ok {
+			both := maps.Clone(gkeManagers)
+			maps.Copy(both, extra)
+			// invoking onlyManagers with the namespace's managers added, its defined below
+			if ev := onlyManagers(o, both); ev != nil {
+				return "gke", ev
+			}
 		}
 		// checking if its one of GKE's known objects that carry no marker at all, if so its GKE's by name
 		if gkeUnmarked[o.GetNamespace()+"/"+o.GroupVersionKind().Kind+"/"+o.GetName()] {

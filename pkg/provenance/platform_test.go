@@ -149,6 +149,12 @@ func TestAKSAndGKE(t *testing.T) {
 	on := func(d platform.Distribution) *platform.Stage {
 		return &platform.Stage{Result: &platform.Classification{Distribution: d, Confidence: platform.HighConfidence}}
 	}
+	// in moves an object to another namespace and kind, for the cases that need them
+	in := func(o *resource.Object, ns, kind string) *resource.Object {
+		o.SetNamespace(ns)
+		o.SetKind(kind)
+		return o
+	}
 	reconcile := map[string]string{addonModeLabel: "Reconcile"}
 	ensure := map[string]string{addonModeLabel: "EnsureExists"}
 	for _, tc := range []struct {
@@ -172,6 +178,14 @@ func TestAKSAndGKE(t *testing.T) {
 		{"GKE's heartbeat, with no marker, on GKE", mk("gke-common-webhook-heartbeat", nil), on(platform.GKE), "gke", false},
 		{"the same name on AKS isnt GKE's", mk("gke-common-webhook-heartbeat", nil), on(platform.AKS), "", false},
 		{"eno and a user", mk("settings", nil, "eno", "kubectl-edit"), on(platform.AKS), "", false},
+		// GKE's objects found in M1 of v0.3.0
+		{"Managed Prometheus's operator in gmp-system", in(mk("collector", nil, "operator"), "gmp-system", "ConfigMap"), on(platform.GKE), "gke", false},
+		{"a manager named operator elsewhere isnt GKE's", in(mk("settings", nil, "operator"), "shop", "ConfigMap"), on(platform.GKE), "", false},
+		{"Managed Prometheus's OperatorConfig as GKE wrote it", in(mk("config", nil, "kube-addon-manager", "operator"), "gmp-public", "OperatorConfig"), on(platform.GKE), "gke", false},
+		{"Managed Prometheus's OperatorConfig once you edit it", in(mk("config", nil, "kube-addon-manager", "operator", "kubectl-edit"), "gmp-public", "OperatorConfig"), on(platform.GKE), "", false},
+		{"kube-dns's autoscaler", mk("kube-dns-autoscaler", nil, "cluster-proportional-autoscaler"), on(platform.GKE), "gke", false},
+		{"GKE's leader election Role, written with kubectl", in(mk("system:gke-kcm-ccm-leader-election", nil, "kubectl"), "kube-system", "Role"), on(platform.GKE), "gke", false},
+		{"the same Role name on AKS isnt GKE's", in(mk("system:gke-kcm-ccm-leader-election", nil, "kubectl"), "kube-system", "Role"), on(platform.AKS), "", false},
 	} {
 		p := LabelClassifier{Platform: tc.cluster}.Classify(tc.o)
 		got := ""
