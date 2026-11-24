@@ -107,7 +107,7 @@ setup() {
   unset url
   group=$(az monitor action-group show --resource-group "$guard" --name setdrift-kill --query id -o tsv)
 
-  say "budget setdrift-monthly: $budget a month, emails at 25% and 75%, kill switch at $kill%"
+  say "budget setdrift-monthly: $budget a month, an email at 25%, the kill switch at $kill%, an email when the month is forecast to pass the budget"
   first=$(date -u +%Y-%m-01T00:00:00Z)
   put "$arm/subscriptions/$sub/providers/Microsoft.Consumption/budgets/setdrift-monthly?api-version=2023-05-01" "$(cat <<JSON
 {"properties": {
