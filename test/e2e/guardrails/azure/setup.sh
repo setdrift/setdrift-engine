@@ -95,8 +95,10 @@ setup() {
 
   # The webhook's URL is its secret: it goes straight into the action group
   # and is never printed. Azure shows it only once, so a new one is made each
-  # time setup runs, and the action group gets the new one.
+  # time setup runs, replacing the old webhook, and the action group gets it.
   say "webhook for the kill switch"
+  # a webhook's URL can't be changed, so one from an earlier run is deleted first
+  az rest --method delete --url "$aa/webhooks/budget?api-version=2015-10-31" --output none 2>/dev/null || true
   url=$(az rest --method post --url "$aa/webhooks/generateUri?api-version=2015-10-31" -o tsv)
   put "$aa/webhooks/budget?api-version=2015-10-31" \
     "{\"name\": \"budget\", \"properties\": {\"isEnabled\": true, \"uri\": \"$url\", \"expiryTime\": \"2036-01-01T00:00:00Z\", \"runbook\": {\"name\": \"kill-switch\"}}}"
