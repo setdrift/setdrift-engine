@@ -1,6 +1,6 @@
 # Kubernetes Permissions
 
-Every Kubernetes API request SetDrift makes, by API group, resource and verb, with the command that makes it, what it feeds and what happens without it. This applies to any cluster; on EKS, AKS and GKE the cloud's own access controls can grant the same permissions (see [AWS](permissions-aws.md), [Azure](permissions-azure.md) and [Google Cloud](permissions-gcp.md)).
+Every Kubernetes API request SetDrift makes, by API group, resource and verb, with the command that makes it, what it feeds and what happens without it. This applies to any cluster; on EKS, AKS and GKE the cloud's own access controls can grant the same permissions (see [AWS](aws.md), [Azure](azure.md) and [Google Cloud](gcp.md)).
 
 SetDrift only reads, except `verify`'s server-side apply with `dryRun=All`, which the API server checks and then discards, so the cluster changes nothing. No command uses `watch`, `create` (other than the self-review requests below, which store nothing), `update` or `delete`.
 
@@ -107,4 +107,4 @@ kubectl apply -f https://raw.githubusercontent.com/setdrift/setdrift-engine/main
 kubectl apply -n shop -f https://raw.githubusercontent.com/setdrift/setdrift-engine/main/deploy/permissions/kubernetes/setdrift-export-namespace.yaml
 ```
 
-Put the people or pipelines who run SetDrift in the group, or change the binding's subject to name them. On EKS, name the group in their access entry ([AWS](permissions-aws.md)); on GKE, use a Google Group or an email ([Google Cloud](permissions-gcp.md)); on AKS, an Entra ID group's object ID ([Azure](permissions-azure.md)).
+Put the people or pipelines who run SetDrift in the group, or change the binding's subject to name them. On EKS, name the group in their access entry ([AWS](aws.md)); on GKE, use a Google Group or an email ([Google Cloud](gcp.md)); on AKS, an Entra ID group's object ID ([Azure](azure.md)).

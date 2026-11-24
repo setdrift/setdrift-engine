@@ -1,6 +1,6 @@
 # AWS Permissions
 
-What SetDrift needs on AWS, at the level of each IAM action, with the feature each one feeds. There are two parts, the AWS API calls `export --aws` makes and how EKS gives the [Kubernetes permissions](permissions-kubernetes.md) every command needs.
+What SetDrift needs on AWS, at the level of each IAM action, with the feature each one feeds. There are two parts, the AWS API calls `export --aws` makes and how EKS gives the [Kubernetes permissions](kubernetes.md) every command needs.
 
 ## AWS API calls
 
@@ -63,7 +63,7 @@ A policy with only those, for one cluster (replace `REGION`, `ACCOUNT` and `CLUS
 
 ## Kubernetes access on EKS
 
-EKS turns an IAM identity into a Kubernetes user through an access entry (or, on older clusters, the `aws-auth` ConfigMap). What that user may do is the [Kubernetes permissions](permissions-kubernetes.md), granted in one of two ways.
+EKS turns an IAM identity into a Kubernetes user through an access entry (or, on older clusters, the `aws-auth` ConfigMap). What that user may do is the [Kubernetes permissions](kubernetes.md), granted in one of two ways.
 
 - **An access policy** on the access entry, cluster-wide or for some namespaces. EKS defines these, and their contents can't be changed and you can't make your own.
 
@@ -74,7 +74,7 @@ EKS turns an IAM identity into a Kubernetes user through an access entry (or, on
   | `AmazonEKSSecretReaderPolicy` | Secrets only, so with `AmazonEKSViewPolicy` `export` reads Secrets too |
   | `AmazonEKSEditPolicy` | `verify` (it allows `patch`), except RBAC objects |
 
-- **Kubernetes groups** on the access entry, bound with a RoleBinding or ClusterRoleBinding to a role of your own, such as `setdrift-export` or `setdrift-verify` from the [Kubernetes page](permissions-kubernetes.md). This is the way to grant exactly what SetDrift uses and nothing more.
+- **Kubernetes groups** on the access entry, bound with a RoleBinding or ClusterRoleBinding to a role of your own, such as `setdrift-export` or `setdrift-verify` from the [Kubernetes page](kubernetes.md). This is the way to grant exactly what SetDrift uses and nothing more.
 
 Getting a kubeconfig with `aws eks update-kubeconfig` needs `eks:DescribeCluster` on the cluster, the same permission `export --aws` checks first. SetDrift then signs in with the kubeconfig's `aws eks get-token` credentials, which need no further IAM permission.
 
@@ -93,4 +93,4 @@ aws cloudformation deploy --stack-name setdrift-export --template-file setdrift-
   --parameter-overrides ClusterName=prod RoleName=platform-ci PrincipalArn=arn:aws:iam::111122223333:role/platform-ci
 ```
 
-The access entry gives the group; apply the group's role in the cluster from the [Kubernetes templates](permissions-kubernetes.md#templates). A principal that already has an access entry can't get a second one, so add the group to its existing entry instead.
+The access entry gives the group; apply the group's role in the cluster from the [Kubernetes templates](kubernetes.md#templates). A principal that already has an access entry can't get a second one, so add the group to its existing entry instead.

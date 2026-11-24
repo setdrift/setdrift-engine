@@ -1,5 +1,5 @@
 # The Kubernetes permissions setdrift export and diff use, across the cluster
-# (docs/permissions-kubernetes.md): get and list on every type, Secrets
+# (docs/permissions/kubernetes.md): get and list on every type, Secrets
 # included, whose values SetDrift drops as soon as it reads them.
 #
 #   kubectl apply -f setdrift-export.yaml

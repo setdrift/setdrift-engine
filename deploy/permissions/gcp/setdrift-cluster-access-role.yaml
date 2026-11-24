@@ -1,5 +1,5 @@
 # A Google Cloud custom role with only what getting a GKE kubeconfig needs
-# (docs/permissions-gcp.md), for granting the Kubernetes access with
+# (docs/permissions/gcp.md), for granting the Kubernetes access with
 # Kubernetes RBAC (deploy/permissions/kubernetes/) instead of IAM. The same as
 # the predefined roles/container.clusterViewer.
 #
