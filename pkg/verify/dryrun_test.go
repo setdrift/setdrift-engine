@@ -435,7 +435,7 @@ func (a accessCluster) CanPatch(_ context.Context, _ schema.GroupVersionResource
 	return a.allowed[namespace], nil
 }
 
-// check that verify stops at once with ErrNoPatch when the credentials may patch nothing in the export, goes on when they may patch something, and asks about each type and namespace once
+// check that verify stops at once with errNoPatch when the credentials may patch nothing in the export, goes on when they may patch something, and asks about each type and namespace once
 func TestPatchPreflight(t *testing.T) {
 	repo := writeRepo(t, map[string]string{
 		"kustomization.yaml": kustomization("a.yaml", "b.yaml"),
@@ -445,8 +445,8 @@ func TestPatchPreflight(t *testing.T) {
 	live := map[string]*unstructured.Unstructured{"a": cm("a", "k", "v"), "b": cm("b", "k", "v")}
 	asked := 0
 	none := accessCluster{fakeCluster: fakeCluster{live: live, results: live}, asked: &asked}
-	if _, err := (DryRunVerifier{Cluster: none, Mapper: mapper()}).Verify(context.Background(), repo); !errors.Is(err, ErrNoPatch) {
-		t.Errorf("no patch anywhere: err %v, want ErrNoPatch", err)
+	if _, err := (DryRunVerifier{Cluster: none, Mapper: mapper()}).Verify(context.Background(), repo); !errors.Is(err, errNoPatch) {
+		t.Errorf("no patch anywhere: err %v, want errNoPatch", err)
 	}
 	if asked != 1 {
 		t.Errorf("asked %d times about one type in one namespace, want 1", asked)

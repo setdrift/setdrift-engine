@@ -56,8 +56,8 @@ type AccessChecker interface {
 	CanPatch(ctx context.Context, gvr schema.GroupVersionResource, namespace string) (bool, error)
 }
 
-// ErrNoPatch is the error verify gives back when the credentials may patch nothing in the export
-var ErrNoPatch = errors.New("these credentials may not patch anything in the export, and verify needs patch for its dry-run apply (it changes nothing); " +
+// errNoPatch is the error verify gives back when the credentials may patch nothing in the export
+var errNoPatch = errors.New("these credentials may not patch anything in the export, and verify needs patch for its dry-run apply (it changes nothing); " +
 	"bind them to the setdrift-verify role in deploy/permissions/kubernetes/setdrift-verify.yaml, or setdrift-verify-namespace.yaml for some namespaces")
 
 // CanPatch asks the API server with a SelfSubjectAccessReview whether these credentials may patch gvr in namespace, for AccessChecker
@@ -224,7 +224,7 @@ func (v DryRunVerifier) Verify(ctx context.Context, repoDir string) (*Report, er
 	if ok, err := v.canPatchAny(ctx, objs); err != nil {
 		return nil, err
 	} else if !ok {
-		return nil, ErrNoPatch
+		return nil, errNoPatch
 	}
 
 	n := v.Concurrency
