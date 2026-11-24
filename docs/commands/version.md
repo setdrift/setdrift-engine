@@ -30,5 +30,6 @@ Prints the command's help.
 
 ## See also
 
-- [Install](../install.md), and how to upgrade
+- [Install](../install.md)
+- [Upgrade](../upgrade.md)
 - [Releasing](../releasing.md), how versions are numbered
