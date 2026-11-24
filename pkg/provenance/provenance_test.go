@@ -25,7 +25,7 @@ func object(apiVersion, kind, ns, name string, labels, ann map[string]string) *r
 	return resource.New(u)
 }
 
-// check that the strongest marker wins when an object carries several, Flux and Argo CD over Helm, and the weak ones get low confidence
+// check that the strongest marker wins when an object carries several, Flux and Argo CD over Helm, and the labels every chart sets count for nothing
 func TestClassifyPrecedence(t *testing.T) {
 	const (
 		argo  = snapshotv1alpha1.Source_SOURCE_ARGO_CD
@@ -40,7 +40,6 @@ func TestClassifyPrecedence(t *testing.T) {
 		labels, ann map[string]string
 		source      snapshotv1alpha1.Source
 		manager     string
-		low         bool
 	}{
 		{name: "no markers", source: unman},
 		{name: "flux kustomization over helm",
@@ -61,15 +60,15 @@ func TestClassifyPrecedence(t *testing.T) {
 		{name: "helm annotations", ann: helmAnn, source: helm, manager: "shop/web"},
 		{name: "helm annotation without namespace uses the object's",
 			ann: map[string]string{helmReleaseName: "web"}, source: helm, manager: "shop/web"},
-		{name: "argo label tracking of a helm-templated chart is argo, not helm",
-			labels: map[string]string{DefaultArgoInstanceLabel: "billing", managedByLabel: "Helm"},
-			source: argo, manager: "billing", low: true},
+		{name: "a chart's labels alone are unmanaged, helm template | kubectl apply",
+			labels: map[string]string{DefaultArgoInstanceLabel: "billing", managedByLabel: "Helm"}, source: unman},
+		{name: "the default instance label is never read, even when named",
+			classifier: LabelClassifier{ArgoInstanceLabel: DefaultArgoInstanceLabel},
+			labels:     map[string]string{DefaultArgoInstanceLabel: "billing"}, source: unman},
 		{name: "custom argo instance label",
 			classifier: LabelClassifier{ArgoInstanceLabel: "argocd.argoproj.io/instance"},
 			labels:     map[string]string{"argocd.argoproj.io/instance": "billing", DefaultArgoInstanceLabel: "chart-default"},
-			source:     argo, manager: "billing", low: true},
-		{name: "managed-by helm label alone is weak",
-			labels: map[string]string{managedByLabel: "Helm"}, source: helm, low: true},
+			source:     argo, manager: "billing"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			o := object("apps/v1", "Deployment", "shop", "web", tc.labels, tc.ann)
@@ -77,8 +76,8 @@ func TestClassifyPrecedence(t *testing.T) {
 			if p.Source != tc.source || p.Manager != tc.manager {
 				t.Errorf("got %s %q, want %s %q", p.Source, p.Manager, tc.source, tc.manager)
 			}
-			if low := p.Evidence[confidenceKey] == lowConfidence; low != tc.low {
-				t.Errorf("low confidence = %v, want %v", low, tc.low)
+			if p.Evidence["confidence"] != "" {
+				t.Errorf("confidence %q, want none", p.Evidence["confidence"])
 			}
 		})
 	}
@@ -167,7 +166,7 @@ func TestCIPipeline(t *testing.T) {
 		SourceTagAnnotation:      "v1.4.2",
 		SourceRevisionAnnotation: "3f2c1a9",
 	}
-	c := LabelClassifier{CIFieldManagers: []string{"github-actions"}}
+	c := LabelClassifier{}
 
 	p := c.Classify(object("v1", "ConfigMap", "shop", "a", nil, src))
 	if p.Source != snapshotv1alpha1.Source_SOURCE_CI_CD || p.Manager != "https://github.com/acme/shop//deploy/prod" ||
@@ -176,7 +175,7 @@ func TestCIPipeline(t *testing.T) {
 		t.Errorf("annotated: %+v", p)
 	}
 
-	// helm template | kubectl apply leaves only Helm's label, so the pipeline wins
+	// helm template | kubectl apply leaves only the chart's labels, which count for nothing, so the pipeline's annotations decide
 	p = c.Classify(object("v1", "ConfigMap", "shop", "b", map[string]string{"app.kubernetes.io/managed-by": "Helm"}, src))
 	if p.Source != snapshotv1alpha1.Source_SOURCE_CI_CD {
 		t.Errorf("Helm label and annotations: %+v", p)
@@ -192,18 +191,11 @@ func TestCIPipeline(t *testing.T) {
 		t.Errorf("Argo CD and annotations: %+v", p)
 	}
 
-	// the field manager counts only when asked for
-	withManager := func() *resource.Object {
-		o := object("v1", "ConfigMap", "shop", "d", nil, nil)
-		o.SetManagedFields([]metav1.ManagedFieldsEntry{{Manager: "github-actions", Operation: metav1.ManagedFieldsOperationApply}})
-		return o
-	}
-	p = c.Classify(withManager())
-	if p.Source != snapshotv1alpha1.Source_SOURCE_CI_CD || p.Evidence["fieldManager"] != "github-actions" || p.Evidence["confidence"] != "low" {
-		t.Errorf("field manager: %+v", p)
-	}
-	if p = (LabelClassifier{}).Classify(withManager()); p.Source != snapshotv1alpha1.Source_SOURCE_UNMANAGED {
-		t.Errorf("field manager not asked for: %+v", p)
+	// a pipeline's field manager alone says nothing about the repository, so it doesnt make an object the pipeline's
+	o := object("v1", "ConfigMap", "shop", "d", map[string]string{"app.kubernetes.io/managed-by": "Helm"}, nil)
+	o.SetManagedFields([]metav1.ManagedFieldsEntry{{Manager: "github-actions", Operation: metav1.ManagedFieldsOperationApply}})
+	if p = c.Classify(o); p.Source != snapshotv1alpha1.Source_SOURCE_UNMANAGED {
+		t.Errorf("field manager only: %+v", p)
 	}
 }
 

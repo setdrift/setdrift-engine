@@ -208,21 +208,13 @@ Writes only the resources nothing manages, no GitOps tool, Helm, operator or CI/
 setdrift export --unmanaged-only -o ./adopt
 ```
 
-### `--ci-field-manager`
-
-*list · default none*
-
-The kubectl field manager a CI/CD pipeline applies with (`kubectl apply --field-manager=github-actions`). What such a pipeline wrote counts as deployed from Git instead of applied by hand. Repeat it for more pipelines. [Source Annotations](../source-annotations.md) are the stronger way to mark a pipeline's resources, as they also say which repository and path they come from.
-
-```sh
-setdrift export --ci-field-manager github-actions --ci-field-manager gitlab-ci
-```
-
 ### `--argocd-instance-label`
 
 *text · default `app.kubernetes.io/instance`*
 
-The label Argo CD's label tracking uses, for a cluster whose `argocd-cm` sets `application.instanceLabelKey` to something else. Resources with that label count as managed by Argo CD.
+A custom label Argo CD's label tracking uses, for an Argo CD whose `argocd-cm` sets `application.instanceLabelKey`. Resources with that label count as managed by Argo CD.
+
+Argo CD tracks by annotation (`argocd.argoproj.io/tracking-id`) by default since 3.0, which SetDrift reads without this flag. Label tracking with the default label, `app.kubernetes.io/instance`, isn't read at all, even when this flag names it. Every Helm chart sets that label to its release name, so it can't tell Argo CD's resources from a chart's, and SetDrift doesn't guess. An Argo CD that still tracks by the default label can switch to annotation tracking (`application.resourceTrackingMethod: annotation` in `argocd-cm`) or to a custom label, and its resources count as Argo CD's after its next sync.
 
 ```sh
 setdrift export --argocd-instance-label argocd.argoproj.io/instance

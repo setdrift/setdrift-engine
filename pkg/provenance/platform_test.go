@@ -56,7 +56,7 @@ func TestPlatform(t *testing.T) {
 	}
 }
 
-// check that an instance label with no such Application, while Argo CD runs here, isnt taken for Argo CD's, and a matching one gets its namespace
+// check that the default instance label counts for nothing even with an Application of that name, every Helm chart sets it, and a custom one finds its Application's namespace
 func TestInstanceLabelWithoutApplication(t *testing.T) {
 	mk := func(apiVersion, kind, ns, name string, labels map[string]string) *resource.Object {
 		u := &unstructured.Unstructured{Object: map[string]any{"apiVersion": apiVersion, "kind": kind}}
@@ -65,15 +65,20 @@ func TestInstanceLabelWithoutApplication(t *testing.T) {
 		u.SetLabels(labels)
 		return resource.New(u)
 	}
+	const custom = "argocd.argoproj.io/instance"
 	app := mk("argoproj.io/v1alpha1", "Application", "argocd", "guestbook", nil)
-	tracked := mk("v1", "ConfigMap", "shop", "ui", map[string]string{DefaultArgoInstanceLabel: "guestbook"})
+	chart := mk("v1", "ConfigMap", "shop", "ui", map[string]string{DefaultArgoInstanceLabel: "guestbook"})
+	tracked := mk("v1", "ConfigMap", "shop", "api", map[string]string{custom: "guestbook"})
 	flux := mk("apps/v1", "Deployment", "flux-system", "source-controller", map[string]string{DefaultArgoInstanceLabel: "flux-system"})
-	out, _, err := LabelClassifier{}.Process(context.Background(), []*resource.Object{app, tracked, flux})
-	if err != nil || len(out) != 3 {
+	out, _, err := LabelClassifier{ArgoInstanceLabel: custom}.Process(context.Background(), []*resource.Object{app, chart, tracked, flux})
+	if err != nil || len(out) != 4 {
 		t.Fatal(err)
 	}
+	if chart.Provenance.Source != snapshotv1alpha1.Source_SOURCE_UNMANAGED {
+		t.Errorf("default label: %v", chart.Provenance)
+	}
 	if tracked.Provenance.Source != snapshotv1alpha1.Source_SOURCE_ARGO_CD || tracked.Provenance.Manager != "argocd/guestbook" {
-		t.Errorf("tracked: %v", tracked.Provenance)
+		t.Errorf("custom label: %v", tracked.Provenance)
 	}
 	if flux.Provenance.Source != snapshotv1alpha1.Source_SOURCE_UNMANAGED || len(flux.Findings) != 0 {
 		t.Errorf("flux: %v %v", flux.Provenance, flux.Findings)

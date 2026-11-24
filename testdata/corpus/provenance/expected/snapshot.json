@@ -37,12 +37,7 @@
       "name": "billing",
       "namespace": "apps",
       "provenance": {
-        "source": "SOURCE_ARGO_CD",
-        "manager": "argocd/billing",
-        "evidence": {
-          "app.kubernetes.io/instance": "billing",
-          "confidence": "low"
-        }
+        "source": "SOURCE_UNMANAGED"
       },
       "sourceUid": "e0000000-0000-0000-0000-000000000022"
     },
@@ -313,11 +308,7 @@
       "name": "static",
       "namespace": "apps",
       "provenance": {
-        "source": "SOURCE_HELM",
-        "evidence": {
-          "app.kubernetes.io/managed-by": "Helm",
-          "confidence": "low"
-        }
+        "source": "SOURCE_UNMANAGED"
       },
       "sourceUid": "e0000000-0000-0000-0000-000000000055"
     },

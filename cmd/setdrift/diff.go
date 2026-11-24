@@ -40,8 +40,6 @@ type diffOptions struct {
 	exitCode bool
 	// how many fields the text output shows per resource
 	maxFields int
-	// the field managers of ci/cd pipelines, used when reading a live side
-	ciFieldManagers []string
 }
 
 // exitError ends the cli with a chosen exit status, main.go reads it
@@ -129,7 +127,6 @@ with --map-namespace: setdrift diff prod prod --map-namespace shop=shop-prod.`,
 	f.StringVar(&o.format, "format", "text", "output format: text, or json for every field")
 	f.BoolVar(&o.exitCode, "exit-code", false, "exit 1 when A and B differ beyond each cluster's own values, 2 on error")
 	f.IntVar(&o.maxFields, "max-fields", 5, "fields shown per resource in text output")
-	f.StringSliceVar(&o.ciFieldManagers, "ci-field-manager", nil, "kubectl field manager of a CI/CD pipeline, as for export (repeatable)")
 	return cmd
 }
 
@@ -383,7 +380,7 @@ func (o *diffOptions) read(cmd *cobra.Command, sd side, namespaces []string) (*s
 		return nil, false, fmt.Errorf("context %s: %w", sd.context, err)
 	}
 	// invoking capture to read the cluster into a snapshot the way export does, its defined in export.go
-	s, err := capture(cmd.Context(), src, captureSettings{ciFieldManagers: o.ciFieldManagers}, now().UTC())
+	s, err := capture(cmd.Context(), src, captureSettings{}, now().UTC())
 	if err != nil {
 		return nil, false, fmt.Errorf("context %s: %w", sd.context, err)
 	}

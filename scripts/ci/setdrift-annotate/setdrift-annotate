@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# this adds setdrift's source annotations to the manifests on stdin and writes them to stdout, for a github actions deploy step
+# with them setdrift shows what the workflow deploys as ci/cd from this repository, instead of applied by hand
+# it goes between rendering the manifests and applying them, like
+#   kubectl kustomize deploy/overlays/prod | setdrift-annotate deploy/overlays/prod | kubectl apply -f -
+# the one argument is optional, the path in the repository being deployed
+# every value comes from the variables github sets on the runner, so outside github actions it stops with an error instead of applying unannotated manifests
+# kubectl annotate --local only edits the manifests its given, it never contacts the cluster, and it annotates each resource's own metadata, never a pod template, so pods dont restart
+set -euo pipefail
+
+path=${1:-}
+revision=$GITHUB_SHA
+# checking if its a pull request, if so the pull request's own head commit is used, GITHUB_SHA is github's test merge commit there
+if [[ $GITHUB_EVENT_NAME == pull_request* ]]; then
+  revision=$(jq -r .pull_request.head.sha "$GITHUB_EVENT_PATH")
+fi
+# checking if a tag was pushed, if so the tag is recorded, otherwise the branch
+if [[ $GITHUB_REF_TYPE == tag ]]; then
+  ref="setdrift.io/source-tag=$GITHUB_REF_NAME"
+else
+  ref="setdrift.io/source-branch=${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}"
+fi
+
+kubectl annotate --local --overwrite -f - -o yaml \
+  "setdrift.io/source-repo=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+  ${path:+"setdrift.io/source-path=$path"} \
+  "$ref" \
+  "setdrift.io/source-revision=$revision" \
+  "setdrift.io/deployed-by=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+
+# Copyright The SetDrift Authors
+# SPDX-License-Identifier: Apache-2.0

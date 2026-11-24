@@ -198,16 +198,6 @@ The kubeconfig file the contexts come from. Without it the `KUBECONFIG` variable
 setdrift diff east west --kubeconfig ~/.kube/multi-region
 ```
 
-### `--ci-field-manager`
-
-*list · default none*
-
-The kubectl field manager a CI/CD pipeline applies with (`kubectl apply --field-manager=github-actions`), as for [`export`](export.md). A resource such a pipeline wrote shows as managed by CI/CD instead of applied by hand. It applies to a live side only, since a snapshot keeps what was decided when it was taken. Repeat it for more pipelines.
-
-```sh
-setdrift diff east west --ci-field-manager github-actions --ci-field-manager argo-workflows
-```
-
 ### `--help`, `-h`
 
 *on/off · default off*
@@ -219,7 +209,7 @@ Prints the command's help.
 The text output names both sides, counts what is in both (identical or not) and what is only in one, then lists these.
 
 - **Differ -** Each resource that differs beyond the clusters' own values, with who manages it on each side and up to `--max-fields` fields as `path: A -> B`. Secret values show as `(redacted)`.
-- **Only in A, Only in B -** By namespace and manager.
+- **Only in A, Only in B -** By namespace and manager. A resource `helm template | kubectl apply` deployed is applied by hand, see [Pipeline resources showing as unmanaged](../ci-integration/unmanaged-pipeline-resources.md).
 - **Differ only in each cluster's own values -** Resources whose every difference is a cluster's name, region, account or mapped namespace.
 - **Nodes -** The shape of each side's nodes (count, instance types, zones), shown but never counted as a difference.
 

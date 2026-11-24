@@ -106,8 +106,8 @@ Check it works with `setdrift version`
 # using the default config and default context, export all namespaces into ./setdrift-export
 setdrift export
 
-# Using kubeconfig foo, use context prod, export namespaces payments and checkout only, into ./out
-setdrift export --kubeconfig ~/foo --context prod -n payments -n checkout -o ./out
+# Using the kubeconfig ~/.kube/prod-clusters, use context prod, export namespaces payments and checkout only, into ./out
+setdrift export --kubeconfig ~/.kube/prod-clusters --context prod -n payments -n checkout -o ./out
 
 # Choose where the snapshot goes: a named file, or a directory 
 # default format: ./setdrift-export/snapshots/<time>-<cluster>.pb and .json --no-snapshot for none)

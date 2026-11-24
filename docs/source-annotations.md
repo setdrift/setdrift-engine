@@ -30,9 +30,9 @@ The value to set each one to, in GitHub Actions and in GitLab CI:
 | `deployed-by` | `$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID` | `$CI_JOB_URL` |
 
 `source-repo` alone ends the false positives. It is read in any common form:
-`https://github.com/foo/bar`, `github.com/foo/bar`, `github/foo/bar`,
-`https://github.com/foo/bar.git` and `git@github.com:foo/bar.git` are all
-`https://github.com/foo/bar` (also `gitlab/` and `bitbucket/` shorthands),
+`https://github.com/acme/shop`, `github.com/acme/shop`, `github/acme/shop`,
+`https://github.com/acme/shop.git` and `git@github.com:acme/shop.git` are all
+`https://github.com/acme/shop` (also `gitlab/` and `bitbucket/` shorthands),
 and credentials in the URL are dropped. The others say what to compare and
 where a fix goes:
 
@@ -45,7 +45,7 @@ where a fix goes:
   another (pre-prod to prod) carries the same commit, so `setdrift diff
   preprod prod` can tell a cluster that is behind from one edited by hand.
 
-For example, for `github.com/foo/bar`, where feature branches deploy to a
+For example, for `github.com/acme/shop`, where feature branches deploy to a
 dev cluster and `main` deploys to pre-prod, then to prod after UAT:
 
 | Cluster | `source-path` | `source-branch` | `source-revision` |
@@ -56,51 +56,19 @@ dev cluster and `main` deploys to pre-prod, then to prod after UAT:
 
 ## What SetDrift does with them
 
-It shows such a resource as
-`CI/CD <repo>//<path>`, leaves it out of `--unmanaged-only` and of "Applied
-by hand", and keeps the annotations in the snapshot as evidence. The
-exported manifests drop them: they change with every deploy and between
-clusters. Argo CD, Flux and Helm markers still win where present (the
-annotations are then kept as extra evidence), except Helm's label alone,
-which `helm template | kubectl apply` leaves behind.
+It shows such a resource as `CI/CD <repo>//<path>`, leaves it out of `--unmanaged-only` and of "Applied by hand", and keeps the annotations in the snapshot as evidence. The exported manifests drop them, since they change with every deploy and between clusters.
+
+The markers a tool writes itself still win where present, Argo CD's tracking id, Flux's labels, Helm's `meta.helm.sh/release-name` annotation, and the annotations are then kept as extra evidence. The labels a chart's templates set count for nothing, `app.kubernetes.io/managed-by: Helm` and `app.kubernetes.io/instance`. They're on every object a chart renders, whoever applies it, so after `helm template | kubectl apply` the resources are applied by hand until the annotations say otherwise.
 
 ## Adding them
 
-With kustomize, in the pipeline step that deploys, before
-`kubectl apply -k`:
-
-```yaml
-- name: Deploy
-  env:
-    OVERLAY: deploy/overlays/${{ inputs.environment }}   # dev, preprod or prod
-  run: |
-    cd "$OVERLAY"
-    kustomize edit add annotation \
-      "setdrift.io/source-repo:$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
-      "setdrift.io/source-path:$OVERLAY" \
-      "setdrift.io/source-branch:${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}" \
-      "setdrift.io/source-revision:$GITHUB_SHA" \
-      "setdrift.io/deployed-by:$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-    kubectl apply -k .
-```
-
-With plain manifests:
+Pipe the rendered manifests through `kubectl annotate --local` before `kubectl apply`, so the annotations go on each object's own metadata. [Pipeline resources showing as unmanaged](ci-integration/unmanaged-pipeline-resources.md) has the ways to add them, committed in Git or in a GitHub Actions workflow.
 
 ```sh
-kubectl annotate --local -f deploy/prod -o yaml \
+kubectl kustomize deploy/overlays/prod | kubectl annotate --local --overwrite -f - -o yaml \
   "setdrift.io/source-repo=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
-  "setdrift.io/source-branch=$GITHUB_REF_NAME" \
+  "setdrift.io/source-path=deploy/overlays/prod" \
   "setdrift.io/source-revision=$GITHUB_SHA" | kubectl apply -f -
 ```
 
-For a release from a tag, replace `source-branch` with
-`"setdrift.io/source-tag:$GITHUB_REF_NAME"` in the step that runs on tag
-pushes.
-
-## Without annotations
-
-A pipeline can name its kubectl field manager:
-`kubectl apply --field-manager=github-actions` in the pipeline, and
-`setdrift export --ci-field-manager github-actions` (also on `diff`). The
-resources it wrote then count as CI/CD, with low confidence and no
-repository. Helm releases need neither: Helm's own markers identify them.
+Don't add them with kustomize's `commonAnnotations` or `kustomize edit add annotation`. Kustomize copies those into every pod template, so `source-revision` and `deployed-by`, which change on every deploy, would restart every pod each time.

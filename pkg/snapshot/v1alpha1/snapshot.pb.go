@@ -37,7 +37,7 @@ const (
 	// creates it again in a new cluster; in the snapshot, not in the export
 	Source_SOURCE_PLATFORM Source = 6
 	// deployed by a CI/CD pipeline: the setdrift.io/source-* annotations it
-	// stamps, or its kubectl field manager (setdrift export --ci-field-manager)
+	// stamps (snapshots from before v0.2.0 may also name a kubectl field manager)
 	Source_SOURCE_CI_CD Source = 7
 )
 
