@@ -1,4 +1,4 @@
-# Script Annotations
+# Script annotations
 
 ## What the script does
 

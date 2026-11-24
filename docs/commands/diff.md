@@ -2,7 +2,7 @@
 
 Compares two clusters, or one cluster with an earlier snapshot of itself, and says what differs and what it can tell about why. For each difference it shows who manages the resource on each side, whether a Helm chart version differs, and which differences are only each cluster's own values (its name, region, account). It only reads, and neither side is changed.
 
-Each comparison answers one of two questions by holding one thing fixed (see [Which comparison?](../which-comparison.md)).
+Each comparison answers one of two questions by holding one thing fixed (see [Choose a comparison](../which-comparison.md)).
 
 - **Across locations -** How do `east` and `west` differ right now? Before a release, for DR readiness, or between blue and green.
 - **Across time -** What changed in `prod` since Monday's snapshot, and who changed it?
@@ -234,7 +234,7 @@ For each live side, what [`export`](export.md) needs, `get` and `list` on what i
 
 ## See also
 
-- [Which comparison?](../which-comparison.md), when to compare across time or across locations
+- [Choose a comparison](../which-comparison.md), when to compare across time or across locations
 - [`export`](export.md), which saves the snapshots `diff` reads
 - [`verify`](verify.md), whether an export applies cleanly to a cluster
 - [Snapshots](../snapshots.md)
