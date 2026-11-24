@@ -38,7 +38,7 @@ esac
 # what checks 2 and 3 read: the added lines, and the commits
 case $mode in
 staged) added() { git diff --cached --no-color --unified=0 | grep '^+' | grep -v '^+++' || true; }; commits="" ;;
-range) added() { git log -p --no-color --unified=0 "$2" | grep '^+' | grep -v '^+++' || true; }; commits=$2 ;;
+range) added() { git log -p --no-color --unified=0 "$commits" | grep '^+' | grep -v '^+++' || true; }; commits=$2 ;;
 all) added() { git log -p --all --no-color --unified=0 | grep '^+' | grep -v '^+++' || true; }; commits="--all" ;;
 esac
 
