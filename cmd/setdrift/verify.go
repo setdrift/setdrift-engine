@@ -18,6 +18,7 @@ import (
 
 	"setdrift.io/setdrift-engine/internal/discover"
 	"setdrift.io/setdrift-engine/internal/text"
+	"setdrift.io/setdrift-engine/pkg/capability"
 	"setdrift.io/setdrift-engine/pkg/collect"
 	"setdrift.io/setdrift-engine/pkg/emit/kustomize"
 	"setdrift.io/setdrift-engine/pkg/platform"
@@ -166,8 +167,25 @@ func (o *verifyOptions) run(cmd *cobra.Command, dir string) error {
 		}
 	}
 	started := time.Now().UTC()
+	// classifying this cluster once, for the set to check and for the capability check
+	// invoking platform.FromKubeconfig to read the hints the kubeconfig gives, its defined in pkg/platform/signals.go
+	signals := platform.FromKubeconfig(kc.platform)
+	// invoking platform.Probe to ask the cluster itself, its defined in pkg/platform/probe.go
+	probed, _ := platform.Probe(cmd.Context(), dc, dyn)
+	// invoking platform.Decide to weigh both into one classification, its defined in pkg/platform/platform.go
+	cls := platform.Decide(append(signals, probed...))
+	// checking if the classification is confident, if so the capability check holds the export to this cluster's platform
+	// a guess could flag a user's objects as not working here, so with weak evidence nothing is checked
+	if cls.Confidence == platform.HighConfidence || cls.Confidence == platform.MediumConfidence {
+		// invoking capability.Load to read the capability map built into the binary, its defined in pkg/capability/capability.go
+		capMap, err := capability.Load()
+		if err != nil {
+			return err
+		}
+		v.Target, v.Capability = cls.Distribution, capMap
+	}
 	// invoking chooseSet to pick the part of the export to check and say why, its defined below
-	set, why, err := o.chooseSet(cmd.Context(), info, kc, dc, dyn)
+	set, why, err := o.chooseSet(info, cls)
 	if err != nil {
 		return err
 	}
@@ -263,7 +281,7 @@ var namespacesGVR = schema.GroupVersionResource{Version: "v1", Resource: "namesp
 
 // chooseSet takes the --set flag and the cluster and decides which part of the export to check, and says why
 // with auto its the platform set when this cluster is classified as the export's platform, like platform/aws/eks, otherwise the generic set that fits any cluster
-func (o *verifyOptions) chooseSet(ctx context.Context, info *kustomize.ExportInfo, kc *kubeContext, dc discover.Interface, dyn dynamic.Interface) (set, why string, err error) {
+func (o *verifyOptions) chooseSet(info *kustomize.ExportInfo, cls *platform.Classification) (set, why string, err error) {
 	platDir := ""
 	// checking if the export recorded its platform set, if so thats the one auto and platform can pick
 	if info != nil {
@@ -287,12 +305,6 @@ func (o *verifyOptions) chooseSet(ctx context.Context, info *kustomize.ExportInf
 	if platDir == "" {
 		return "", "the generic set; the export has no platform set", nil
 	}
-	// invoking platform.FromKubeconfig to read the hints the kubeconfig gives, its defined in pkg/platform/signals.go
-	signals := platform.FromKubeconfig(kc.platform)
-	// invoking platform.Probe to ask the cluster itself, its defined in pkg/platform/probe.go
-	probed, _ := platform.Probe(ctx, dc, dyn)
-	// invoking platform.Decide to weigh both into one classification, its defined in pkg/platform/platform.go
-	cls := platform.Decide(append(signals, probed...))
 	// checking if this cluster is on the export's platform, if so its platform set is the one to check
 	if cls.Dir() == platDir {
 		return platDir, "the " + platDir + " set: this cluster is " + cls.Summary(), nil

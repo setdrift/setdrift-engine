@@ -1,0 +1,44 @@
+# What belongs to Amazon EKS: names and markers that only EKS, or AWS's own
+# controllers on it, act on. An object naming one of them works on EKS and
+# nowhere else (see docs/capability-map-draft.md, M0 of v0.3.0).
+distribution: eks
+name: EKS
+markers:
+  loadBalancerClasses:
+    - service.k8s.aws/nlb
+    - eks.amazonaws.com/nlb
+  serviceAnnotationPrefixes:
+    - service.beta.kubernetes.io/aws-load-balancer-
+  ingressControllers:
+    - ingress.k8s.aws/alb
+    - eks.amazonaws.com/alb
+  ingressAnnotationPrefixes:
+    - alb.ingress.kubernetes.io/
+  ingressClassAnnotations:
+    - alb
+  gatewayControllerPrefixes:
+    - gateway.k8s.aws/
+    - application-networking.k8s.aws/
+  storageProvisioners:
+    - ebs.csi.aws.com
+    - ebs.csi.eks.amazonaws.com
+    - efs.csi.aws.com
+    - s3.csi.aws.com
+    - fsx.csi.aws.com
+    - kubernetes.io/aws-ebs
+  serviceAccountAnnotations:
+    - eks.amazonaws.com/role-arn
+  nodeLabelPrefixes:
+    - eks.amazonaws.com/
+    - karpenter.k8s.aws/
+    - karpenter.sh/
+  secretStoreProviders:
+    - aws
+  secretProviderClassProviders:
+    - aws
+  apiGroupSuffixes:
+    - karpenter.sh
+    - karpenter.k8s.aws
+    - eks.amazonaws.com
+    - elbv2.k8s.aws
+    - services.k8s.aws

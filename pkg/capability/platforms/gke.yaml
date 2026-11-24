@@ -1,0 +1,43 @@
+# What belongs to GKE: names and markers that only GKE, or Google Cloud's
+# own controllers on it, act on.
+distribution: gke
+name: GKE
+markers:
+  loadBalancerClasses:
+    - networking.gke.io/l4-regional-internal
+    - networking.gke.io/l4-regional-external
+    - networking.gke.io/l4-regional-external-legacy
+  serviceAnnotationPrefixes:
+    - networking.gke.io/
+    - cloud.google.com/l4-rbs
+    - cloud.google.com/backend-config
+  ingressAnnotationPrefixes:
+    - networking.gke.io/
+    - ingress.gcp.kubernetes.io/
+    - kubernetes.io/ingress.global-static-ip-name
+  ingressClassAnnotations:
+    - gce
+    - gce-internal
+  gatewayControllerPrefixes:
+    - networking.gke.io/
+  storageProvisioners:
+    - pd.csi.storage.gke.io
+    - filestore.csi.storage.gke.io
+    - gcsfuse.csi.storage.gke.io
+    - kubernetes.io/gce-pd
+  serviceAccountAnnotations:
+    - iam.gke.io/gcp-service-account
+  podAnnotations:
+    - gke-gcsfuse/volumes
+  nodeLabelPrefixes:
+    - cloud.google.com/
+  secretStoreProviders:
+    - gcpsm
+  secretProviderClassProviders:
+    - gcp
+    - gke
+  apiGroupSuffixes:
+    - cloud.google.com
+    - networking.gke.io
+    - cnrm.cloud.google.com
+    - monitoring.googleapis.com

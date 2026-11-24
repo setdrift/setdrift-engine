@@ -1,0 +1,42 @@
+# What belongs to AKS: names and markers that only AKS, or Azure's own
+# controllers on it, act on. Karpenter's own names are shared with EKS: AKS
+# Node Auto Provisioning runs Karpenter.
+distribution: aks
+name: AKS
+markers:
+  serviceAnnotationPrefixes:
+    - service.beta.kubernetes.io/azure-
+  ingressControllers:
+    - azure/application-gateway
+    - webapprouting.kubernetes.azure.com/nginx
+  ingressAnnotationPrefixes:
+    - appgw.ingress.kubernetes.io/
+  ingressClassAnnotations:
+    - azure/application-gateway
+    - webapprouting.kubernetes.azure.com
+  gatewayControllerPrefixes:
+    - alb.networking.azure.io/
+  storageProvisioners:
+    - disk.csi.azure.com
+    - file.csi.azure.com
+    - blob.csi.azure.com
+    - kubernetes.io/azure-disk
+    - kubernetes.io/azure-file
+  serviceAccountAnnotations:
+    - azure.workload.identity/client-id
+  podLabels:
+    - azure.workload.identity/use
+  nodeLabelPrefixes:
+    - kubernetes.azure.com/
+    - karpenter.azure.com/
+    - karpenter.sh/
+  secretStoreProviders:
+    - azurekv
+  secretProviderClassProviders:
+    - azure
+  apiGroupSuffixes:
+    - karpenter.sh
+    - karpenter.azure.com
+    - approuting.kubernetes.azure.com
+    - alb.networking.azure.io
+    - azure.com
