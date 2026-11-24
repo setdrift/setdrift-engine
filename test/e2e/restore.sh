@@ -69,14 +69,14 @@ setdrift export --context "$SRC" --cluster-name "$source_cluster" --aws -o "$wor
   { cat "$work/export.log"; exit 1; }
 root=$work/export/clusters/$source_cluster
 
-# checks the least-privilege IAM policy in docs/permissions-aws.md against the source cluster's real resources
+# checks the least-privilege IAM policy in docs/permissions/aws.md against the source cluster's real resources
 # it asks IAM's policy simulator whether the policy allows each call export --aws makes, on each resource it makes it on, nothing is created
 # the actions themselves are kept in step with the code by pkg/awsinventory's TestPermissionsDocMatchesCalls
 check_least_privilege() {
   local account policy cluster_arn decision pairs=() p action resource arn
   account=$(aws sts get-caller-identity --query Account --output text)
   # the policy from the doc, with this cluster's region, account and name filled in
-  policy=$(awk '/^```json$/ { f = 1; next } /^```$/ { f = 0 } f' "$repo/docs/permissions-aws.md" |
+  policy=$(awk '/^```json$/ { f = 1; next } /^```$/ { f = 0 } f' "$repo/docs/permissions/aws.md" |
     sed "s/REGION/$region/g; s/ACCOUNT/$account/g; s/CLUSTER/$source_cluster/g")
   cluster_arn=$(aws eks describe-cluster --region "$region" --name "$source_cluster" --query cluster.arn --output text)
   for action in DescribeCluster ListPodIdentityAssociations ListAccessEntries ListAddons; do
@@ -103,12 +103,12 @@ check_least_privilege() {
     action=${p%% *} resource=${p#* }
     decision=$(aws iam simulate-custom-policy --policy-input-list "$policy" --action-names "$action" --resource-arns "$resource" \
       --query 'EvaluationResults[0].EvalDecision' --output text)
-    [[ $decision == allowed ]] || fail "docs/permissions-aws.md's policy does not allow $action on $resource ($decision)"
+    [[ $decision == allowed ]] || fail "docs/permissions/aws.md's policy does not allow $action on $resource ($decision)"
   done
   # and a role in another account stays out of reach, as the doc says
   decision=$(aws iam simulate-custom-policy --policy-input-list "$policy" --action-names iam:GetRole \
     --resource-arns "arn:aws:iam::000000000000:role/other" --query 'EvaluationResults[0].EvalDecision' --output text)
-  [[ $decision != allowed ]] || fail "docs/permissions-aws.md's policy allows iam:GetRole on another account's role"
+  [[ $decision != allowed ]] || fail "docs/permissions/aws.md's policy allows iam:GetRole on another account's role"
   echo "   least-privilege policy: ${#pairs[@]} calls allowed on the cluster's resources" >&2
 }
 say "least-privilege IAM policy ($(elapsed))"
