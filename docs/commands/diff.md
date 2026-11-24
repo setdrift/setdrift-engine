@@ -150,6 +150,19 @@ setdrift diff staging prod --map-namespace shop-staging=shop --map-namespace bil
 setdrift diff prod prod --map-namespace shop=shop-canary
 ```
 
+### `--map-value`
+
+*list · default none*
+
+Sets apart a value that each cluster has its own of, written `A_VALUE=B_VALUE`, so fields differing only in it count as the clusters' own values, like their names and regions. Use it for what holds none of the cluster's name, region or account, like a registry host or a domain. Repeat it for more pairs.
+
+Each value must be at least 3 characters, so a short one doesn't match inside other words. A value matches only with a character other than a letter or digit, or the string's edge, on each side, so `shop` doesn't match inside `shopping`.
+
+```sh
+setdrift diff east west --map-value harbor-east.acme.com=harbor-west.acme.com
+setdrift diff staging prod --map-value staging.acme.com=acme.com --map-value mirror-staging=mirror
+```
+
 ### `--format`
 
 *text · default `text`*
@@ -172,7 +185,7 @@ Sets the exit status by the result, for CI.
 | `1` | They differ beyond those |
 | `2` | An error, like an argument that can't be read or a refused read |
 
-Without it, `diff` exits `0` whatever it finds, and `1` on an error. Differences only in each cluster's own values (its name, region, account or a mapped namespace) never count.
+Without it, `diff` exits `0` whatever it finds, and `1` on an error. Differences only in each cluster's own values (its name, region, account, a mapped namespace or a mapped value) never count.
 
 ```sh
 setdrift diff context:east context:west --exit-code || echo "east and west have drifted"

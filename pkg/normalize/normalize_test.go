@@ -366,5 +366,31 @@ func TestFieldManagersKept(t *testing.T) {
 	}
 }
 
+// check that an Argo CD Application's operation, written only while it syncs, is removed and its spec kept, and a field named operation on another kind isnt touched
+func TestArgoOperation(t *testing.T) {
+	app := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "argoproj.io/v1alpha1", "kind": "Application", "metadata": map[string]any{"name": "shop", "namespace": "argocd"},
+		"spec":      map[string]any{"project": "default"},
+		"operation": map[string]any{"sync": map[string]any{"revision": "abc"}, "initiatedBy": map[string]any{"automated": true}},
+	}}
+	other := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "example.com/v1", "kind": "Job", "metadata": map[string]any{"name": "j", "namespace": "shop"},
+		"operation": "migrate",
+	}}
+	objs := []*resource.Object{resource.New(app), resource.New(other)}
+	if _, _, err := (Normalizer{}).Process(context.Background(), objs); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := app.Object["operation"]; ok {
+		t.Errorf("the Application's operation was kept")
+	}
+	if app.Object["spec"] == nil {
+		t.Errorf("the Application's spec was removed")
+	}
+	if other.Object["operation"] != "migrate" {
+		t.Errorf("another kind's operation field was removed")
+	}
+}
+
 // Copyright The SetDrift Authors
 // SPDX-License-Identifier: Apache-2.0

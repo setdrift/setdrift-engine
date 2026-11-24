@@ -135,6 +135,26 @@ func TestNamespaceMap(t *testing.T) {
 	}
 }
 
+// check that --map-value sets apart a value each cluster has its own of, like a registry host, so it differs only in the clusters' own values, and without it its a difference
+func TestValueMap(t *testing.T) {
+	a := snap("a", "", "",
+		res("apps/v1", "Deployment", "shop", "web", `{"metadata":{"name":"web","namespace":"shop"},"spec":{"template":{"spec":{"containers":[{"name":"web","image":"harbor-a.acme.com/shop/web:1.4"}]}}}}`, unmanaged, ""),
+	)
+	b := snap("b", "", "",
+		res("apps/v1", "Deployment", "shop", "web", `{"metadata":{"name":"web","namespace":"shop"},"spec":{"template":{"spec":{"containers":[{"name":"web","image":"harbor-b.acme.com/shop/web:1.4"}]}}}}`, unmanaged, ""),
+	)
+	if r := mustCompare(t, a, b, Options{}); r.Same() {
+		t.Errorf("without the map, the registry hosts should differ")
+	}
+	r := mustCompare(t, a, b, Options{ValueMap: map[string]string{"harbor-a.acme.com": "harbor-b.acme.com"}})
+	if !r.Same() {
+		t.Errorf("mapped registry hosts should leave no differences: %+v", r.Changed)
+	}
+	if d, e := r.Counts(); d != 0 || e != 1 {
+		t.Errorf("counts = %d, %d; want 0, 1", d, e)
+	}
+}
+
 // check that a Helm chart version difference is given as the reason, and the same chart points at the values or a change after install
 func TestHelmChartReason(t *testing.T) {
 	helm := snapshotv1alpha1.Source_SOURCE_HELM
@@ -155,7 +175,7 @@ func TestHelmChartReason(t *testing.T) {
 
 // check that a cluster's own values are replaced only as separate words, between non-alphanumeric boundaries, and short values are left alone
 func TestSubstitutionBoundaries(t *testing.T) {
-	sub := substitutions(Side{Cluster: "prod", Region: "us-east-1"}, map[string]string{"shop-staging": "shop"}, false)
+	sub := substitutions(Side{Cluster: "prod", Region: "us-east-1"}, map[string]string{"shop-staging": "shop"}, nil, false)
 	for in, want := range map[string]string{
 		"prod":                 "\x00\x01\x01\x01\x00",
 		"production":           "production", // a longer word, not the name on its own
@@ -168,7 +188,7 @@ func TestSubstitutionBoundaries(t *testing.T) {
 		}
 	}
 	// values too short to tell apart from other words are left alone
-	if got := substitutions(Side{Cluster: "a"}, nil, true).apply("a-b"); got != "a-b" {
+	if got := substitutions(Side{Cluster: "a"}, nil, nil, true).apply("a-b"); got != "a-b" {
 		t.Errorf("short cluster name substituted: %q", got)
 	}
 }

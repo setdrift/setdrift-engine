@@ -56,6 +56,16 @@ var rules = map[schema.GroupKind][]rule{
 	validatingGK:  {injectedCABundles},
 	apiServiceGK:  {injectedCABundles},
 	crdGK:         {injectedCABundles},
+	argoAppGK:     {argoOperation},
+}
+
+// argoAppGK is the GroupKind of an Argo CD Application, for looking up its rules above
+var argoAppGK = schema.GroupKind{Group: "argoproj.io", Kind: "Application"}
+
+// argoOperation removes an Argo CD Application's operation, which the application controller writes while it syncs and removes once done
+// an export taken during a sync captures it, and it would show in verify and diff as a difference a moment later, like status
+func argoOperation(o *resource.Object) {
+	unstructured.RemoveNestedField(o.Object, "operation")
 }
 
 // secretGK is the GroupKind of a Secret, for looking up its rules above

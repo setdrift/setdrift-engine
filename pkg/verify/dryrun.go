@@ -6,6 +6,7 @@ package verify
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"maps"
@@ -47,6 +48,69 @@ type Cluster interface {
 	Get(ctx context.Context, gvr schema.GroupVersionResource, namespace, name string) (*unstructured.Unstructured, error)
 	// DryRunApply server-side applies obj with dryRun=All and gives back the result
 	DryRunApply(ctx context.Context, gvr schema.GroupVersionResource, obj *unstructured.Unstructured) (*unstructured.Unstructured, error)
+}
+
+// AccessChecker is what a Cluster can also do, ask the API server whether these credentials may patch a type in a namespace, so verify can stop at once when they may patch nothing
+type AccessChecker interface {
+	// CanPatch tells if the credentials may patch the resource type in the namespace, "" for cluster-scoped
+	CanPatch(ctx context.Context, gvr schema.GroupVersionResource, namespace string) (bool, error)
+}
+
+// ErrNoPatch is the error verify gives back when the credentials may patch nothing in the export
+var ErrNoPatch = errors.New("these credentials may not patch anything in the export, and verify needs patch for its dry-run apply (it changes nothing); " +
+	"bind them to the setdrift-verify role in deploy/permissions/kubernetes/setdrift-verify.yaml, or setdrift-verify-namespace.yaml for some namespaces")
+
+// CanPatch asks the API server with a SelfSubjectAccessReview whether these credentials may patch gvr in namespace, for AccessChecker
+func (c DynamicCluster) CanPatch(ctx context.Context, gvr schema.GroupVersionResource, namespace string) (bool, error) {
+	review := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "authorization.k8s.io/v1", "kind": "SelfSubjectAccessReview",
+		"spec": map[string]any{"resourceAttributes": map[string]any{
+			"verb": "patch", "group": gvr.Group, "resource": gvr.Resource, "namespace": namespace,
+		}},
+	}}
+	ssar := schema.GroupVersionResource{Group: "authorization.k8s.io", Version: "v1", Resource: "selfsubjectaccessreviews"}
+	out, err := c.Client.Resource(ssar).Create(ctx, review, metav1.CreateOptions{})
+	if err != nil {
+		return false, err
+	}
+	allowed, _, _ := unstructured.NestedBool(out.Object, "status", "allowed")
+	return allowed, nil
+}
+
+// canPatchAny takes the export's objects and tells if the credentials may patch at least one of their types, in its namespace
+// each type and namespace is asked about once, and it stops at the first one allowed, so a cluster that allows patch is asked once or a few times
+// a cluster that cant answer, or a type the cluster doesnt serve, counts as allowed, so verify goes on and reports each resource as it does without the check
+func (v DryRunVerifier) canPatchAny(ctx context.Context, objs []*unstructured.Unstructured) (bool, error) {
+	ac, ok := v.Cluster.(AccessChecker)
+	// checking if the cluster can be asked at all, a fake one in tests may not
+	if !ok || len(objs) == 0 {
+		return true, nil
+	}
+	asked := map[string]bool{}
+	// going through the objects, asking about each type and namespace once
+	for _, o := range objs {
+		gvk := o.GroupVersionKind()
+		mapping, err := v.Mapper.RESTMapping(gvk.GroupKind(), gvk.Version)
+		// checking if the cluster doesnt serve the type, if so its not asked about, check reports it
+		if err != nil {
+			continue
+		}
+		key := mapping.Resource.String() + "/" + o.GetNamespace()
+		if asked[key] {
+			continue
+		}
+		asked[key] = true
+		allowed, err := ac.CanPatch(ctx, mapping.Resource, o.GetNamespace())
+		// checking if the API server couldnt answer, if so verify goes on without the check
+		if err != nil {
+			return true, nil
+		}
+		if allowed {
+			return true, nil
+		}
+	}
+	// checking if anything was asked, if not theres nothing to say
+	return len(asked) == 0, nil
 }
 
 // DynamicCluster is the real Cluster, reaching the API server through a dynamic client
@@ -156,6 +220,12 @@ func (v DryRunVerifier) Verify(ctx context.Context, repoDir string) (*Report, er
 		return nil, err
 	}
 	report.MissingCRDs = slices.Sorted(maps.Values(missing))
+	// invoking canPatchAny to stop at once when the credentials may patch nothing, rather than dry-run every resource to be refused, its defined above
+	if ok, err := v.canPatchAny(ctx, objs); err != nil {
+		return nil, err
+	} else if !ok {
+		return nil, ErrNoPatch
+	}
 
 	n := v.Concurrency
 	// checking if no concurrency was set, if so 8 resources are checked at once

@@ -422,5 +422,40 @@ func TestBuildIsSealed(t *testing.T) {
 	}
 }
 
+// accessCluster is a fakeCluster that also answers whether patch is allowed, per namespace
+type accessCluster struct {
+	fakeCluster
+	allowed map[string]bool
+	asked   *int
+}
+
+// CanPatch answers from allowed, for AccessChecker
+func (a accessCluster) CanPatch(_ context.Context, _ schema.GroupVersionResource, namespace string) (bool, error) {
+	*a.asked++
+	return a.allowed[namespace], nil
+}
+
+// check that verify stops at once with ErrNoPatch when the credentials may patch nothing in the export, goes on when they may patch something, and asks about each type and namespace once
+func TestPatchPreflight(t *testing.T) {
+	repo := writeRepo(t, map[string]string{
+		"kustomization.yaml": kustomization("a.yaml", "b.yaml"),
+		"a.yaml":             manifest("ConfigMap", "a"),
+		"b.yaml":             manifest("ConfigMap", "b"),
+	})
+	live := map[string]*unstructured.Unstructured{"a": cm("a", "k", "v"), "b": cm("b", "k", "v")}
+	asked := 0
+	none := accessCluster{fakeCluster: fakeCluster{live: live, results: live}, asked: &asked}
+	if _, err := (DryRunVerifier{Cluster: none, Mapper: mapper()}).Verify(context.Background(), repo); !errors.Is(err, ErrNoPatch) {
+		t.Errorf("no patch anywhere: err %v, want ErrNoPatch", err)
+	}
+	if asked != 1 {
+		t.Errorf("asked %d times about one type in one namespace, want 1", asked)
+	}
+	some := accessCluster{fakeCluster: fakeCluster{live: live, results: live}, allowed: map[string]bool{"shop": true}, asked: &asked}
+	if report, err := (DryRunVerifier{Cluster: some, Mapper: mapper()}).Verify(context.Background(), repo); err != nil || report.Clean != 2 {
+		t.Errorf("patch allowed: %v %+v", err, report)
+	}
+}
+
 // Copyright The SetDrift Authors
 // SPDX-License-Identifier: Apache-2.0
