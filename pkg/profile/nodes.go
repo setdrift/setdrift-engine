@@ -26,7 +26,8 @@ func AddNodes(p *snapshotv1alpha1.Profile, nodes []unstructured.Unstructured) *s
 	addrs := map[string][]netip.Prefix{}
 	// going through each node for what it says about the cluster
 	for _, n := range nodes {
-		zone := n.GetLabels()["topology.kubernetes.io/zone"]
+		// invoking nodeZone to read the node's zone, its defined below
+		zone := nodeZone(n.GetLabels())
 		// checking if the node has a zone, if so the cloud lists it
 		if zone != "" && !slices.Contains(b.p.Cloud.Zones, zone) {
 			b.p.Cloud.Zones = append(b.p.Cloud.Zones, zone)
@@ -89,8 +90,9 @@ func (b *builder) nodePodRanges(ranges []netip.Prefix) {
 	for _, c := range covering(ranges) {
 		b.found("node pod ranges within "+c.String(), nodesSource+" (spec.podCIDR)")
 		// checking if no component named the pod network, if so this range stands in for it
-		if len(b.p.Network.PodCidrs) == 0 {
+		if len(b.p.Network.PodCidrs) == 0 || b.p.Network.PodCidrsFromNodes {
 			b.p.Network.PodCidrs = append(b.p.Network.PodCidrs, c.String())
+			b.p.Network.PodCidrsFromNodes = true
 		}
 	}
 }
@@ -256,6 +258,17 @@ func AddVpcCidrs(p *snapshotv1alpha1.Profile, vpcID string, cidrs []string) *sna
 func stringOf(obj map[string]any, path ...string) string {
 	s, _, _ := unstructured.NestedString(obj, path...)
 	return s
+}
+
+// nodeZone takes a node's labels and gives back its zone, "" when it has none
+// aks labels a node outside any zone with its fault domain, a bare number like "0", which isnt a zone, real zones are named like eastus-1
+func nodeZone(labels map[string]string) string {
+	zone := labels["topology.kubernetes.io/zone"]
+	// checking if the zone is only digits, if so its a fault domain and the node has no zone
+	if zone != "" && strings.Trim(zone, "0123456789") == "" {
+		return ""
+	}
+	return zone
 }
 
 // zoneSuffix gives back " (zone)" for a zone, or "" when theres none

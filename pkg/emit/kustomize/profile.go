@@ -105,7 +105,12 @@ func profileReadme(s *snapshotv1alpha1.Snapshot) string {
 	n := p.GetNetwork()
 	section(&b, "Network")
 	dist := knownDistribution(c.GetClassification())
-	row(&b, "Pod network", orDefault(strings.Join(n.GetPodCidrs(), ", "), dist, "pod network"))
+	pods := strings.Join(n.GetPodCidrs(), ", ")
+	// checking if the pod network is only what the nodes use now, if so it reads as a lower bound
+	if n.GetPodCidrsFromNodes() && pods != "" {
+		pods = "within " + pods + " (the nodes' pod ranges; the pod network is that size or larger)"
+	}
+	row(&b, "Pod network", orDefault(pods, dist, "pod network"))
 	// checking if the node pod range is known
 	if n.GetNodePodPrefix() > 0 {
 		row(&b, "Each node's pod range", "/"+strconv.Itoa(int(n.GetNodePodPrefix())))

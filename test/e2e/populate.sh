@@ -10,12 +10,15 @@ here=$(cd "$(dirname "$0")" && pwd)
 context=${E2E_CONTEXT:-$("$here/cluster.sh" context)}
 region=${E2E_REGION:-${AWS_REGION:-us-east-2}}
 k() { kubectl --context "$context" "$@"; }
+# touch records use of the EKS cluster for its reaper; the AKS and GKE runs
+# (aks.sh, gke.sh) delete their cluster themselves and set E2E_NO_TOUCH
+touch_cluster() { [[ -n ${E2E_NO_TOUCH:-} ]] || "$here/cluster.sh" touch; }
 
 ARGOCD_VERSION=v3.6.1
 FLUX_VERSION=v2.10.0
 ESO_CHART_VERSION=2.15.0
 
-"$here/cluster.sh" touch
+touch_cluster
 
 # GitOps tools and External Secrets Operator.
 k create namespace argocd --dry-run=client -o yaml | k apply -f -
@@ -78,7 +81,7 @@ if ! helm --kube-context "$context" status sd-chart -n sd-helm >/dev/null 2>&1; 
   rm -rf "$chart"
 fi
 
-"$here/cluster.sh" touch
+touch_cluster
 echo "Populated $context"
 
 # Copyright The SetDrift Authors
