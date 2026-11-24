@@ -67,7 +67,7 @@ func newRootCmd() *cobra.Command {
 
 	// invoking each newXCmd function to add the subcommands, theyre defined in export.go, verify.go, diff.go, snapshot.go and helm.go
 	// version is small enough to define right here
-	root.AddCommand(newExportCmd(), newVerifyCmd(), newDiffCmd(), newSnapshotCmd(), newHelmPostRenderCmd(), &cobra.Command{
+	root.AddCommand(newExportCmd(), newVerifyCmd(), newDiffCmd(), newTranslateCmd(), newSnapshotCmd(), newHelmPostRenderCmd(), &cobra.Command{
 		Use:   "version",
 		Short: "Print the version",
 		Run: func(cmd *cobra.Command, _ []string) {

@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -15,6 +16,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
+	"sigs.k8s.io/yaml"
 
 	"setdrift.io/setdrift-engine/internal/discover"
 	"setdrift.io/setdrift-engine/internal/text"
@@ -23,6 +25,7 @@ import (
 	"setdrift.io/setdrift-engine/pkg/emit/kustomize"
 	"setdrift.io/setdrift-engine/pkg/platform"
 	snapshotv1alpha1 "setdrift.io/setdrift-engine/pkg/snapshot/v1alpha1"
+	"setdrift.io/setdrift-engine/pkg/translate"
 	"setdrift.io/setdrift-engine/pkg/verify"
 )
 
@@ -186,6 +189,23 @@ func (o *verifyOptions) run(cmd *cobra.Command, dir string) error {
 	}
 	// invoking chooseSet to pick the part of the export to check and say why, its defined below
 	set, why, err := o.chooseSet(info, cls)
+	// checking if auto picked no platform set, if so a translation for this cluster's platform is the one to check
+	if err == nil && o.set == "auto" && set == "" {
+		// invoking translationFor to find the export's translations and the one for this cluster, its defined below
+		tdir, tstamp, others := translationFor(root, cls)
+		switch {
+		case tdir != "":
+			set, why = tdir, fmt.Sprintf("the %s translation (from %s): this cluster is %s", tstamp.To, tstamp.From, cls.Summary())
+			// invoking translate.ReadDecisions to read the choices made for it, its defined in pkg/translate/write.go
+			ds, derr := translate.ReadDecisions(filepath.Join(root, filepath.FromSlash(tdir)))
+			if derr != nil {
+				return derr
+			}
+			v.Explain = translate.Explainer(ds)
+		case len(others) > 0:
+			why += fmt.Sprintf(". This export also has a translation for %s, and this cluster is %s: run setdrift translate --to %s, or verify against a %s cluster", strings.Join(others, " and "), cls.Summary(), cls.Distribution, strings.Join(others, " or "))
+		}
+	}
 	if err != nil {
 		return err
 	}
@@ -310,6 +330,32 @@ func (o *verifyOptions) chooseSet(info *kustomize.ExportInfo, cls *platform.Clas
 		return platDir, "the " + platDir + " set: this cluster is " + cls.Summary(), nil
 	}
 	return "", "the generic set: the export's platform set is " + platDir + ", and this cluster is " + cls.Summary(), nil
+}
+
+// translationFor finds the translations written into the export, the one for this cluster's platform when theres one, with its stamp, and the platforms of the others
+func translationFor(root string, cls *platform.Classification) (dir string, stamp *translate.Stamp, others []string) {
+	m, err := capability.Load()
+	if err != nil {
+		return "", nil, nil
+	}
+	for _, p := range m.Platforms {
+		d := p.Translate.Dir
+		b, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(d), translate.StampFile)) //#nosec G304 -- inside the export directory the user named
+		if err != nil {
+			continue
+		}
+		var st translate.Stamp
+		if yaml.Unmarshal(b, &st) != nil {
+			continue
+		}
+		// checking if its this cluster's platform, classified with confidence, if so its the set to check
+		if cls != nil && cls.Is(p.Distribution) && cls.Distribution == p.Distribution {
+			dir, stamp = d, &st
+			continue
+		}
+		others = append(others, p.Name)
+	}
+	return dir, stamp, others
 }
 
 // sameCluster tells if the cluster being verified is the one the export came from, by comparing their kube-system namespace uids

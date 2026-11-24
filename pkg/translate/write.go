@@ -1,0 +1,239 @@
+package translate
+
+import (
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"sigs.k8s.io/yaml"
+)
+
+// the files a translation writes in its platform directory
+const (
+	// DecisionsFile holds the decisions for features with no 1:1 equivalent, the user edits it and runs translate again
+	DecisionsFile = "translate-decisions.yaml"
+	// StampFile records that the directory is a translation, from which platform to which, so verify can say so
+	StampFile = "translation.yaml"
+)
+
+// Stamp is what StampFile holds
+type Stamp struct {
+	From         string `json:"from"`
+	To           string `json:"to"`
+	TranslatedAt string `json:"translatedAt"`
+	SetDrift     string `json:"setdriftVersion,omitempty"`
+}
+
+// ReadDecisions reads the decisions file in dir, none when it doesnt exist yet
+func ReadDecisions(dir string) ([]Decision, error) {
+	b, err := os.ReadFile(filepath.Join(dir, DecisionsFile)) //#nosec G304 -- the export directory the user named
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var ds []Decision
+	if err := yaml.UnmarshalStrict(b, &ds); err != nil {
+		return nil, fmt.Errorf("%s: %w", DecisionsFile, err)
+	}
+	for _, d := range ds {
+		// checking each choice is one of the three, a typo must not pass as undecided
+		if d.Choose != "" && d.Choose != KeepSource && d.Choose != Equivalent && d.Choose != LeaveOut {
+			return nil, fmt.Errorf("%s: %s: choose must be keep-source, equivalent or leave-out, not %q", DecisionsFile, d.Feature, d.Choose)
+		}
+	}
+	return ds, nil
+}
+
+// Explainer gives back a function telling verify why an object of the translation names the source platform on purpose, the user's or the default choice for it
+func Explainer(ds []Decision) func(*unstructured.Unstructured) string {
+	byFeature := map[string]Decision{}
+	for _, d := range ds {
+		byFeature[d.Feature] = d
+	}
+	return func(o *unstructured.Unstructured) string {
+		q := qualified(o)
+		for _, f := range []string{"identity/" + q, "secret-store/" + q, "object/" + o.GetKind() + "/" + q, "storage/" + q} {
+			if d, ok := byFeature[f]; ok && d.choice() != "" {
+				how := "as chosen"
+				if d.Choose == "" {
+					how = "the default"
+				}
+				return fmt.Sprintf("decided in %s: %s is %s (%s)", DecisionsFile, f, d.choice(), how)
+			}
+		}
+		return ""
+	}
+}
+
+// WriteDecisions writes the decisions file in dir, with a header saying how to use it
+func WriteDecisions(dir string, ds []Decision) error {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return err
+	}
+	// written by hand so each entry reads in the order a person uses it, what it is, the options, then the choice
+	var b []byte
+	for _, d := range ds {
+		entry := []struct {
+			k string
+			v any
+		}{{"feature", d.Feature}, {"what", d.What}, {"options", d.Options}, {"default", d.Default}, {"choose", d.Choose}}
+		for i, kv := range entry {
+			if kv.k == "default" && d.Default == "" {
+				continue
+			}
+			vb, err := yaml.Marshal(map[string]any{kv.k: kv.v})
+			if err != nil {
+				return err
+			}
+			lines := strings.Split(strings.TrimRight(string(vb), "\n"), "\n")
+			for j, l := range lines {
+				prefix := "  "
+				if i == 0 && j == 0 {
+					prefix = "- "
+				}
+				b = append(b, []byte(prefix+l+"\n")...)
+			}
+		}
+	}
+	head := "# Written by setdrift translate: what has no 1:1 equivalent on the target.\n" +
+		"# For each, set choose to keep-source, equivalent or leave-out (from its options),\n" +
+		"# then run setdrift translate again. An empty choose takes the default where there\n" +
+		"# is one; with no default, translate stops until you choose.\n"
+	return os.WriteFile(filepath.Join(dir, DecisionsFile), append([]byte(head), b...), 0o600)
+}
+
+// Write writes the translation's overlay into the cluster's directory root, at r.Dir
+// resources are the generic set's directories, as the cluster's kustomization.yaml lists them
+// it refuses a directory that isnt a translation, like the export's own platform set
+func Write(root string, r *Result, resources []string, version string) error {
+	dir := filepath.Join(root, filepath.FromSlash(r.Dir))
+	// checking if the directory exists without a stamp, if so its the export's own platform set and stays as it is
+	if _, err := os.Stat(dir); err == nil {
+		if _, err := os.Stat(filepath.Join(dir, StampFile)); err != nil {
+			return fmt.Errorf("%s exists and isn't a translation (no %s): it's this export's own platform set", r.Dir, StampFile)
+		}
+	}
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return err
+	}
+	up := strings.Repeat("../", strings.Count(r.Dir, "/")+1)
+	k := map[string]any{"apiVersion": "kustomize.config.k8s.io/v1beta1", "kind": "Kustomization"}
+	var res []string
+	for _, rsc := range resources {
+		res = append(res, up+rsc)
+	}
+	k["resources"] = res
+	var patches []map[string]any
+	for _, p := range r.Patches {
+		// invoking patchEntry to write one patch as kustomize reads it, its defined below
+		e, err := patchEntry(p)
+		if err != nil {
+			return err
+		}
+		patches = append(patches, e)
+	}
+	if len(patches) > 0 {
+		k["patches"] = patches
+	}
+	kb, err := yaml.Marshal(k)
+	if err != nil {
+		return err
+	}
+	kHead := fmt.Sprintf("# Written by setdrift translate: this export's generic set, translated from %s for %s.\n# Apply it with kubectl apply --server-side -k %s; README.md says what changed.\n", r.From.Name(), r.To.Name(), r.Dir)
+	if err := os.WriteFile(filepath.Join(dir, "kustomization.yaml"), append([]byte(kHead), kb...), 0o600); err != nil {
+		return err
+	}
+	sb, err := yaml.Marshal(Stamp{From: string(r.From), To: string(r.To), TranslatedAt: time.Now().UTC().Format(time.RFC3339), SetDrift: version})
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(dir, StampFile), sb, 0o600); err != nil {
+		return err
+	}
+	// invoking readme to write what the translation changed and what to do, its defined below
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte(readme(r)), 0o600); err != nil {
+		return err
+	}
+	return WriteDecisions(dir, r.Decisions)
+}
+
+// patchEntry writes a Patch as a kustomize patches entry, a JSON patch on its target, or a strategic merge patch deleting it
+func patchEntry(p Patch) (map[string]any, error) {
+	target := map[string]any{"version": p.Version, "kind": p.Kind, "name": p.Name}
+	if p.Group != "" {
+		target["group"] = p.Group
+	}
+	if p.Namespace != "" {
+		target["namespace"] = p.Namespace
+	}
+	if p.Delete {
+		apiVersion := p.Version
+		if p.Group != "" {
+			apiVersion = p.Group + "/" + p.Version
+		}
+		md := map[string]any{"name": p.Name}
+		if p.Namespace != "" {
+			md["namespace"] = p.Namespace
+		}
+		b, err := yaml.Marshal(map[string]any{"$patch": "delete", "apiVersion": apiVersion, "kind": p.Kind, "metadata": md})
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"patch": string(b)}, nil
+	}
+	b, err := yaml.Marshal(p.Ops)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"target": target, "patch": string(b)}, nil
+}
+
+// readme writes the overlay's README, what changed for each object, what to know, and the decisions
+func readme(r *Result) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "# Translated for %s\n\n", r.To.Name())
+	from := r.From.Name()
+	if from == "" {
+		from = "a cluster on no known cloud"
+	}
+	fmt.Fprintf(&b, "Written by `setdrift translate`: this export's generic set, from %s, with what %s reads differently rewritten. The generic set itself is unchanged. Apply this directory on %s with `kubectl apply --server-side -k .`, and check it with `setdrift verify`.\n\n", from, r.To.Name(), r.To.Name())
+	if len(r.Patches) > 0 {
+		b.WriteString("## What changed\n\n")
+		for _, p := range r.Patches {
+			fmt.Fprintf(&b, "- **%s %s**\n", p.Kind, qualifiedName(&p))
+			for _, w := range p.Why {
+				fmt.Fprintf(&b, "  - %s\n", w)
+			}
+		}
+		b.WriteString("\n")
+	}
+	if len(r.Notes) > 0 {
+		b.WriteString("## Before you apply\n\n")
+		for _, n := range r.Notes {
+			fmt.Fprintf(&b, "- %s\n", n)
+		}
+		b.WriteString("\n")
+	}
+	if len(r.Decisions) > 0 {
+		fmt.Fprintf(&b, "## Decisions\n\n%s has the features with no 1:1 equivalent on %s and the choice for each.\n\n", DecisionsFile, r.To.Name())
+		for _, d := range r.Decisions {
+			c := d.choice()
+			if c == "" {
+				c = "not decided yet"
+			} else if d.Choose == "" {
+				c += " (the default)"
+			}
+			fmt.Fprintf(&b, "- `%s`: %s\n", d.Feature, c)
+		}
+	}
+	return b.String()
+}
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

@@ -23,13 +23,87 @@ type Platform struct {
 	// Distribution is the platform, like eks, matching platform.Distribution
 	Distribution platform.Distribution `json:"distribution"`
 	// Name is how its written for people, like EKS
-	Name    string  `json:"name"`
-	Markers Markers `json:"markers"`
+	Name string `json:"name"`
+	// Cloud is the cloud the platform runs on, like AWS, for wording about its services, identities and secret manager
+	Cloud     string    `json:"cloud,omitempty"`
+	Markers   Markers   `json:"markers"`
+	Translate Translate `json:"translate"`
+}
+
+// Translate holds how a translation reads this platform's settings and writes them for it
+type Translate struct {
+	// Dir is where a translation for this platform goes in an export, like platform/gcp/gke
+	Dir          string          `json:"dir"`
+	Storage      []StorageTier   `json:"storage,omitempty"`
+	LoadBalancer LoadBalancer    `json:"loadBalancer"`
+	Nodes        NodeTranslation `json:"nodes"`
+}
+
+// StorageTier is one kind of storage on a platform, how a StorageClass for it is recognized and how one is written
+// tiers are matched by capability, the same tier name on two platforms means the same kind of disk or share
+type StorageTier struct {
+	// Tier names the kind of storage, hdd, general-ssd, premium-ssd, extreme or shared-file
+	Tier string `json:"tier"`
+	// Provisioners and the Parameter with one of its Values recognize a class of this tier, matched without regard to case
+	Provisioners []string `json:"provisioners"`
+	Parameter    string   `json:"parameter,omitempty"`
+	Values       []string `json:"values,omitempty"`
+	// Default means a class of one of these provisioners without the parameter is this tier, as the driver's default
+	Default bool `json:"default,omitempty"`
+	// Class is what a StorageClass of this tier is written as on this platform
+	Class StorageClass `json:"class"`
+}
+
+// StorageClass is a provisioner with its parameters
+type StorageClass struct {
+	Provisioner string            `json:"provisioner"`
+	Parameters  map[string]string `json:"parameters,omitempty"`
+}
+
+// LoadBalancer says how a Service's exposure, internal or external, reads and is written on a platform
+type LoadBalancer struct {
+	// Annotation holds the exposure, with InternalValues or ExternalValues
+	Annotation     string   `json:"annotation"`
+	InternalValues []string `json:"internalValues,omitempty"`
+	ExternalValues []string `json:"externalValues,omitempty"`
+	// ClassDefaults is the exposure a load balancer class gives without the annotation, internal or external
+	ClassDefaults map[string]string `json:"classDefaults,omitempty"`
+	// Default is the exposure with neither, internal or external
+	Default string `json:"default"`
+	// Internal and External are the annotations a translation writes for each
+	Internal map[string]string `json:"internal,omitempty"`
+	External map[string]string `json:"external,omitempty"`
+}
+
+// NodeTranslation says which node labels name a pool and which mark spot capacity on a platform
+type NodeTranslation struct {
+	// Pools are the label keys that name a node pool, the first is the one a translation writes
+	Pools []string `json:"pools,omitempty"`
+	// Spot are the labels that mark spot capacity, the first is the one a translation writes
+	Spot []SpotLabel `json:"spot,omitempty"`
+}
+
+// SpotLabel is a label marking spot capacity, Taint means the platform taints spot nodes with the same key and value, so Pods need a toleration
+type SpotLabel struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+	Taint bool   `json:"taint,omitempty"`
+}
+
+// For gives back the platform's entry, nil when the map has none
+func (m *Map) For(d platform.Distribution) *Platform {
+	for i := range m.Platforms {
+		if m.Platforms[i].Distribution == d {
+			return &m.Platforms[i]
+		}
+	}
+	return nil
 }
 
 // Markers are the names and markers only this platform acts on
 // a name in more than one platform's file, like Karpenter's on EKS and AKS, belongs to each of them
 type Markers struct {
+	FinalizerPrefixes            []string `json:"finalizerPrefixes,omitempty"`
 	LoadBalancerClasses          []string `json:"loadBalancerClasses,omitempty"`
 	ServiceAnnotationPrefixes    []string `json:"serviceAnnotationPrefixes,omitempty"`
 	IngressControllers           []string `json:"ingressControllers,omitempty"`
@@ -171,6 +245,10 @@ func (m *Map) reasons(o Object, target platform.Distribution) []string {
 	}
 	c := o.Content
 
+	// a finalizer another platform's controller would remove, on the target nothing does, so deleting the object hangs
+	for _, f := range stringsAt(c, "metadata", "finalizers") {
+		foreign("finalizer", f, m.owners(f, func(k Markers) []string { return k.FinalizerPrefixes }, true), "nothing removes it, so deleting the object hangs")
+	}
 	// the object's own kind, like a Karpenter NodePool or an ACK Bucket
 	foreign("its API group", o.Group, m.groupOwners(o.Group), "nothing serves or acts on it")
 
@@ -315,6 +393,18 @@ func keys(m map[string]any, path ...string) []string {
 	return sortedKeys(mapAt(m, path...))
 }
 
+// stringsAt gives back the strings in the list at path
+func stringsAt(m map[string]any, path ...string) []string {
+	l, _ := anyAt(m, path...).([]any)
+	var out []string
+	for _, v := range l {
+		if s, ok := v.(string); ok {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 // annotations gives back an object's annotations as strings
 func annotations(c map[string]any) map[string]string {
 	out := map[string]string{}
@@ -334,6 +424,46 @@ func sortedKeys[V any](m map[string]V) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// the owners of each kind of marker, for translate
+
+// GroupOwners gives back the platforms an API group belongs to
+func (m *Map) GroupOwners(group string) []platform.Distribution { return m.groupOwners(group) }
+
+// ProvisionerOwners gives back the platforms a storage provisioner belongs to
+func (m *Map) ProvisionerOwners(p string) []platform.Distribution {
+	return m.owners(p, func(k Markers) []string { return k.StorageProvisioners }, false)
+}
+
+// LoadBalancerClassOwners gives back the platforms a load balancer class belongs to
+func (m *Map) LoadBalancerClassOwners(c string) []platform.Distribution {
+	return m.owners(c, func(k Markers) []string { return k.LoadBalancerClasses }, false)
+}
+
+// ServiceAnnotationOwners gives back the platforms a Service annotation belongs to, by prefix
+func (m *Map) ServiceAnnotationOwners(a string) []platform.Distribution {
+	return m.owners(a, func(k Markers) []string { return k.ServiceAnnotationPrefixes }, true)
+}
+
+// ServiceAccountAnnotationOwners gives back the platforms a ServiceAccount's identity annotation belongs to
+func (m *Map) ServiceAccountAnnotationOwners(a string) []platform.Distribution {
+	return m.owners(a, func(k Markers) []string { return k.ServiceAccountAnnotations }, false)
+}
+
+// SecretStoreProviderOwners gives back the platforms an External Secrets provider belongs to
+func (m *Map) SecretStoreProviderOwners(p string) []platform.Distribution {
+	return m.owners(p, func(k Markers) []string { return k.SecretStoreProviders }, false)
+}
+
+// FinalizerOwners gives back the platforms a finalizer belongs to, by prefix
+func (m *Map) FinalizerOwners(f string) []platform.Distribution {
+	return m.owners(f, func(k Markers) []string { return k.FinalizerPrefixes }, true)
+}
+
+// NodeLabelOwners gives back the platforms a node label key belongs to, by prefix
+func (m *Map) NodeLabelOwners(k string) []platform.Distribution {
+	return m.owners(k, func(k Markers) []string { return k.NodeLabelPrefixes }, true)
 }
 
 // Copyright The SetDrift Authors

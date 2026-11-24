@@ -182,6 +182,8 @@ type DryRunVerifier struct {
 	Target platform.Distribution
 	// Capability is the capability map the check reads, nil skips it
 	Capability *capability.Map
+	// Explain gives back why an object that wont work here is that way on purpose, like a decision in a translation's translate-decisions.yaml, empty when it isnt
+	Explain func(*unstructured.Unstructured) string
 }
 
 // Verify checks the export at repoDir, a cluster's directory like clusters/<cluster> with a kustomization.yaml, or an export holding one cluster, and gives back the report
@@ -303,7 +305,12 @@ func (v DryRunVerifier) misfits(objs []*unstructured.Unstructured, diffs []*Diff
 		switch d := diffs[i]; {
 		case d == nil:
 			report.Clean--
-			report.Diffs = append(report.Diffs, Diff{Ref: mf.Ref, Kind: KindWontWork, Paths: mf.Reasons})
+			nd := Diff{Ref: mf.Ref, Kind: KindWontWork, Paths: mf.Reasons}
+			// checking if theres a reason its this way on purpose, if so it counts as explained
+			if v.Explain != nil {
+				nd.Explanation = v.Explain(objs[i])
+			}
+			report.Diffs = append(report.Diffs, nd)
 		case d.Kind == KindNotChecked:
 			// it wasnt counted, so the reasons go with it where its listed
 			for j := range report.NotChecked {
@@ -425,6 +432,16 @@ const sealedRoot = "/export"
 
 // build takes the cluster's directory and the directory inside it to build, and gives back the objects that kustomization builds, as kubectl kustomize does
 // kustomize runs on an in-memory copy of the export's regular files, so it cant read anything outside the export even if localOnly missed something
+// Build gives back what the kustomization in dir builds, dir being root, a cluster's directory, or a set under it, after refusing anything remote, as verify does
+// translate builds the generic set with it
+func Build(root, dir string) ([]*unstructured.Unstructured, error) {
+	// invoking localOnly to refuse an export that pulls in anything remote, its defined below
+	if err := localOnly(root); err != nil {
+		return nil, err
+	}
+	return build(root, dir)
+}
+
 func build(root, dir string) ([]*unstructured.Unstructured, error) {
 	// invoking sealedCopy to copy the export into memory, its defined below
 	fSys, err := sealedCopy(root)

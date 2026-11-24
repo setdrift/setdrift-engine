@@ -3,7 +3,14 @@
 # nowhere else (see docs/capability-map-draft.md, M0 of v0.3.0).
 distribution: eks
 name: EKS
+cloud: AWS
 markers:
+  finalizerPrefixes:
+    - service.eks.amazonaws.com/
+    - service.k8s.aws/
+    - elbv2.k8s.aws/
+    - ingress.k8s.aws/
+    - eks.amazonaws.com/
   loadBalancerClasses:
     - service.k8s.aws/nlb
     - eks.amazonaws.com/nlb
@@ -42,3 +49,45 @@ markers:
     - eks.amazonaws.com
     - elbv2.k8s.aws
     - services.k8s.aws
+translate:
+  # where a translation for EKS goes in an export
+  dir: platform/aws/eks
+  storage:
+    # tiers, matched on the source by provisioner and a parameter, written on the target as its class
+    # Auto Mode clusters use ebs.csi.eks.amazonaws.com: the README of a translation says so
+    - tier: hdd
+      provisioners: [ebs.csi.aws.com, ebs.csi.eks.amazonaws.com, kubernetes.io/aws-ebs]
+      parameter: type
+      values: [st1, sc1, standard]
+      class: {provisioner: ebs.csi.aws.com, parameters: {type: st1}}
+    - tier: general-ssd
+      provisioners: [ebs.csi.aws.com, ebs.csi.eks.amazonaws.com, kubernetes.io/aws-ebs]
+      parameter: type
+      values: [gp3, gp2]
+      default: true
+      class: {provisioner: ebs.csi.aws.com, parameters: {type: gp3}}
+    - tier: premium-ssd
+      provisioners: [ebs.csi.aws.com, ebs.csi.eks.amazonaws.com]
+      parameter: type
+      values: [io1, io2]
+      class: {provisioner: ebs.csi.aws.com, parameters: {type: io2}}
+    - tier: shared-file
+      provisioners: [efs.csi.aws.com]
+      default: true
+      class: {provisioner: efs.csi.aws.com, parameters: {provisioningMode: efs-ap, fileSystemId: "<EFS file system ID>", directoryPerms: "700"}}
+  loadBalancer:
+    # how a Service's exposure reads on this platform, and how its written
+    annotation: service.beta.kubernetes.io/aws-load-balancer-scheme
+    internalValues: [internal]
+    externalValues: [internet-facing]
+    # with no annotation: the Load Balancer Controller and Auto Mode classes default to internal, the legacy cloud provider to internet-facing
+    classDefaults: {service.k8s.aws/nlb: internal, eks.amazonaws.com/nlb: internal}
+    default: external
+    internal: {service.beta.kubernetes.io/aws-load-balancer-scheme: internal}
+    external: {service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing}
+  nodes:
+    pools: [eks.amazonaws.com/nodegroup, karpenter.sh/nodepool]
+    spot: [{key: eks.amazonaws.com/capacityType, value: SPOT}, {key: karpenter.sh/capacity-type, value: spot}]
+
+# Copyright The SetDrift Authors
+# SPDX-License-Identifier: Apache-2.0
