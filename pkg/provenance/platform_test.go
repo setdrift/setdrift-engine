@@ -132,5 +132,56 @@ func TestKubeadmAndKind(t *testing.T) {
 	}
 }
 
+// check that AKS's and GKE's objects are the platform's by the labels and field managers the platform writes itself, an EnsureExists object only until someone else changes it, and the same managers on another platform, or a user's object, arent
+func TestAKSAndGKE(t *testing.T) {
+	mk := func(name string, labels map[string]string, managers ...string) *resource.Object {
+		u := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "v1", "kind": "ConfigMap"}}
+		u.SetName(name)
+		u.SetNamespace("kube-system")
+		u.SetLabels(labels)
+		var mf []metav1.ManagedFieldsEntry
+		for _, m := range managers {
+			mf = append(mf, metav1.ManagedFieldsEntry{Manager: m})
+		}
+		u.SetManagedFields(mf)
+		return resource.New(u)
+	}
+	on := func(d platform.Distribution) *platform.Stage {
+		return &platform.Stage{Result: &platform.Classification{Distribution: d, Confidence: platform.HighConfidence}}
+	}
+	reconcile := map[string]string{addonModeLabel: "Reconcile"}
+	ensure := map[string]string{addonModeLabel: "EnsureExists"}
+	for _, tc := range []struct {
+		name    string
+		o       *resource.Object
+		cluster *platform.Stage
+		want    string // the platform manager, or "" for not the platform's
+		changed bool   // a PLATFORM_OBJECT_CHANGED finding
+	}{
+		{"AKS's label", mk("cns-config", map[string]string{aksManagedByLabel: "aks"}, "eno"), on(platform.AKS), "aks", false},
+		{"an AKS add-on, Reconcile", mk("azure-ip-masq-agent-config", reconcile, "kubectl-client-side-apply"), on(platform.AKS), "aks", false},
+		{"a GKE add-on, Reconcile", mk("kube-dns", reconcile, "kube-addon-manager"), on(platform.GKE), "gke", false},
+		{"AKS's coredns-custom, as created", mk("coredns-custom", ensure, "eno-reconciler"), on(platform.AKS), "aks", false},
+		{"AKS's coredns-custom, edited", mk("coredns-custom", ensure, "eno-reconciler", "kubectl-edit"), on(platform.AKS), "", true},
+		{"written only by eno on AKS", mk("upcoming-maintenance-window", nil, "eno"), on(platform.AKS), "aks", false},
+		{"azure cni's object", mk("node-network", nil, "dnc-rc", "kube-controller-manager"), on(platform.AKS), "aks", false},
+		{"eno on GKE isnt AKS's", mk("settings", nil, "eno"), on(platform.GKE), "", false},
+		{"written only by GKE's add-on manager", mk("cluster-autoscaler-status", nil, "kube-addon-manager"), on(platform.GKE), "gke", false},
+		{"GKE's manager on AKS isnt GKE's", mk("settings", nil, "glbc"), on(platform.AKS), "", false},
+		{"a user's ConfigMap on AKS", mk("settings", nil, "kubectl-client-side-apply"), on(platform.AKS), "", false},
+		{"eno and a user", mk("settings", nil, "eno", "kubectl-edit"), on(platform.AKS), "", false},
+	} {
+		p := LabelClassifier{Platform: tc.cluster}.Classify(tc.o)
+		got := ""
+		if p.Source == snapshotv1alpha1.Source_SOURCE_PLATFORM {
+			got = p.Manager
+		}
+		changed := len(tc.o.Findings) == 1 && tc.o.Findings[0].Code == "PLATFORM_OBJECT_CHANGED"
+		if got != tc.want || changed != tc.changed {
+			t.Errorf("%s: platform %q, changed finding %v; want %q, %v", tc.name, got, changed, tc.want, tc.changed)
+		}
+	}
+}
+
 // Copyright The SetDrift Authors
 // SPDX-License-Identifier: Apache-2.0

@@ -320,6 +320,22 @@ var coreManagers = map[string]bool{
 	"kube-apiserver": true, "kube-controller-manager": true, "api-priority-and-fairness-config-consumer-v1": true,
 }
 
+// aksManagers are the field managers of the components AKS runs in the cluster, eno and its reconciler (AKS's own deployer of its add-ons), the live patching controller, azure cni's dnc-rc, and the reconciler of AKS's webhooks
+var aksManagers = map[string]bool{"eno": true, "eno-reconciler": true, "live-patching-controller": true, "dnc-rc": true, "aks-webhook-reconciler": true}
+
+// gkeManagers are the field managers of the components GKE runs in the cluster, its add-on manager, its common webhooks, the load balancer controller (glbc), the GCP controller manager, the volume populator and its managed cluster autoscaler
+var gkeManagers = map[string]bool{
+	"kube-addon-manager": true, "gke-common-webhooks": true, "glbc": true, "gcp-controller-manager": true, "gke-volume-populator": true, "cluster-autoscaler": true,
+}
+
+// the labels a platform's add-on manager and AKS put on the objects they own
+const (
+	// addonModeLabel is the add-on manager's, on GKE, AKS and other clusters built with it, Reconcile means it keeps the object as it set it, EnsureExists that it creates it once and leaves it to you
+	addonModeLabel = "addonmanager.kubernetes.io/mode"
+	// aksManagedByLabel is AKS's, with the value aks
+	aksManagedByLabel = "kubernetes.azure.com/managedby"
+)
+
 // eksBootstrap names the objects EKS creates with kubectl when it creates a cluster, keyed by group/kind
 // their only field manager is kubectl-client-side-apply, as if a person had applied them
 // rbac names starting with "eks:" are EKS's too, eksEvidence checks those separately
@@ -347,6 +363,23 @@ func platformObject(o *resource.Object, cls *platform.Classification) (string, m
 	if ev := eksEvidence(o); ev != nil {
 		return "eks", ev
 	}
+	// invoking addonEvidence and checking if the platform's add-on manager or AKS owns the object, its defined below
+	if manager, ev := addonEvidence(o, cls); ev != nil {
+		return manager, ev
+	}
+	// invoking Is and checking if the cluster is confidently AKS or GKE, their managers names are only theirs on their own platform
+	if cls.Is(platform.AKS) {
+		// invoking onlyManagers to check every writer is one of AKS's, its defined below
+		if ev := onlyManagers(o, aksManagers); ev != nil {
+			return "aks", ev
+		}
+	}
+	if cls.Is(platform.GKE) {
+		// invoking onlyManagers to check every writer is one of GKE's, its defined below
+		if ev := onlyManagers(o, gkeManagers); ev != nil {
+			return "gke", ev
+		}
+	}
 	// invoking kubeadmEvidence and checking if kubeadm created it, its defined below
 	if ev := kubeadmEvidence(o, cls); ev != nil {
 		return "kubeadm", ev
@@ -359,6 +392,71 @@ func platformObject(o *resource.Object, cls *platform.Classification) (string, m
 		}
 	}
 	return "", nil
+}
+
+// addonEvidence takes o and the platform classification and gives back which platform owns o and the evidence, from the labels the platform itself puts on it, or nil evidence
+// AKS labels its objects kubernetes.azure.com/managedby=aks, and the add-on manager (GKE, AKS and others) labels them addonmanager.kubernetes.io/mode
+// Reconcile objects are the platform's, the add-on manager puts back any change, EnsureExists ones it creates once for you to change, like AKS's coredns-custom
+// so an EnsureExists object is the platform's only while one manager has written it, once someone else has its the user's configuration and is exported
+func addonEvidence(o *resource.Object, cls *platform.Classification) (string, map[string]string) {
+	labels := o.GetLabels()
+	// name gives the platform the object belongs to, by the cluster's classification
+	name := "platform"
+	switch {
+	case cls.Is(platform.AKS):
+		name = "aks"
+	case cls.Is(platform.GKE):
+		name = "gke"
+	}
+	// checking if AKS's own label is on it, if so AKS owns it
+	if v := labels[aksManagedByLabel]; strings.EqualFold(v, "aks") {
+		return "aks", map[string]string{aksManagedByLabel: v}
+	}
+	switch mode := labels[addonModeLabel]; mode {
+	case "Reconcile":
+		return name, map[string]string{addonModeLabel: mode}
+	case "EnsureExists":
+		// invoking writers to list who wrote the object besides Kubernetes' own components, its defined below
+		if w := writers(o); len(w) > 1 {
+			// invoking AddFinding to say the object was changed after the platform created it, its defined in pkg/resource/resource.go
+			o.AddFinding(snapshotv1alpha1.Severity_SEVERITY_INFO, "PLATFORM_OBJECT_CHANGED",
+				"was created by the platform for you to change, and changed since by %s, so it is exported to keep the change", strings.Join(w[1:], ", "))
+			return "", nil
+		}
+		return name, map[string]string{addonModeLabel: mode}
+	}
+	return "", nil
+}
+
+// onlyManagers takes o and a platform's field managers and gives back the evidence when every manager that wrote o, besides Kubernetes' own components, is one of them, or nil
+func onlyManagers(o *resource.Object, platformManagers map[string]bool) map[string]string {
+	// invoking writers to list who wrote the object, its defined below
+	w := writers(o)
+	// checking if anyone wrote it and each one is the platform's
+	if len(w) == 0 {
+		return nil
+	}
+	for _, m := range w {
+		// checking if this writer isnt the platform's, if so the object isnt only the platform's
+		if !platformManagers[m] {
+			return nil
+		}
+	}
+	return map[string]string{"managedFields": strings.Join(w, ",")}
+}
+
+// writers takes o and gives back the field managers that wrote it, in the order managedFields lists them, once each, leaving out Kubernetes' own components and status-only writes
+func writers(o *resource.Object) []string {
+	var out []string
+	// going through the managedFields entries
+	for _, m := range o.GetManagedFields() {
+		// checking if its Kubernetes' own component, a status-only write, or already listed, if so its skipped
+		if coreManagers[m.Manager] || m.Subresource == "status" || slices.Contains(out, m.Manager) {
+			continue
+		}
+		out = append(out, m.Manager)
+	}
+	return out
 }
 
 // kubeadmEvidence gives back the evidence that kubeadm created o and nothing changed it since, meaning its only field manager is kubeadm, besides Kubernetes' own

@@ -302,6 +302,20 @@ func TestAddNodes(t *testing.T) {
 		t.Errorf("azure cloud %+v", az.Cloud)
 	}
 
+	// GKE nodes with no network plugin found run GKE's built-in networking
+	gke := AddNodes(nil, []unstructured.Unstructured{node("us-central1-a", "10.128.0.5", "10.88.0.0/24", "gce://p/us-central1-a/n", "110")})
+	if gke.Network.Cni != "" {
+		t.Errorf("not labelled as GKE nodes, cni %q", gke.Network.Cni)
+	}
+	gn := node("us-central1-a", "10.128.0.5", "10.88.0.0/24", "gce://p/us-central1-a/n", "110")
+	gn.SetLabels(map[string]string{"topology.kubernetes.io/zone": "us-central1-a", "cloud.google.com/gke-nodepool": "default-pool"})
+	if p := AddNodes(nil, []unstructured.Unstructured{gn}); p.Network.Cni != "gke-default" {
+		t.Errorf("GKE nodes, cni %q", p.Network.Cni)
+	}
+	if p := AddNodes(&snapshotv1alpha1.Profile{Network: &snapshotv1alpha1.ProfileNetwork{Cni: "gke-netd"}}, []unstructured.Unstructured{gn}); p.Network.Cni != "gke-netd" {
+		t.Errorf("netd found, cni %q", p.Network.Cni)
+	}
+
 	// aks labels a node outside any zone with its fault domain, "0", which isnt a zone
 	fd := AddNodes(nil, []unstructured.Unstructured{node("0", "10.224.0.4", "", "", "250")})
 	if len(fd.Cloud.Zones) != 0 || fd.Network.NodeRanges[0].Zone != "" {

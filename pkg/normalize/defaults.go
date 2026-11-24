@@ -304,9 +304,15 @@ func podOnlyDefaults(spec map[string]any) {
 	}
 }
 
-// admissionToleration tells if a toleration is one the DefaultTolerationSeconds admission plugin adds, not-ready or unreachable with NoExecute for 300 seconds and nothing else set
+// admissionToleration tells if a toleration is one the cluster adds to a pod by itself, so its not the user's
+// the DefaultTolerationSeconds admission plugin adds not-ready and unreachable with NoExecute for 300 seconds, and a pod that isnt BestEffort can also get memory-pressure with NoSchedule (seen on AKS)
+// left in, a re-apply puts them back in a different order and every one compares as changed
 func admissionToleration(t any) bool {
 	m, ok := t.(map[string]any)
+	// checking if its the memory-pressure toleration, Exists and NoSchedule with nothing else set
+	if ok && len(m) == 3 && m["key"] == "node.kubernetes.io/memory-pressure" && m["operator"] == "Exists" && m["effect"] == "NoSchedule" {
+		return true
+	}
 	// checking if its a map with the operator, effect and seconds admission uses, if not its the user's
 	if !ok || m["operator"] != "Exists" || m["effect"] != "NoExecute" || !equal(m["tolerationSeconds"], int64(300)) {
 		return false
