@@ -29,6 +29,7 @@ budget=${BUDGET:-100}
 kill=${KILL_PERCENT:-75}
 region=${REGION:-us-central1}
 sa=setdrift-guard@$project.iam.gserviceaccount.com
+build_sa=setdrift-build@$project.iam.gserviceaccount.com
 
 say() { printf '==> %s\n' "$*" >&2; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -42,7 +43,8 @@ fraction=$(awk "BEGIN { print $kill / 100 }")
 
 deploy() { # name entry topic simulate
   gcloud functions deploy "$1" --gen2 --runtime=python313 --region="$region" --source="$here/functions" \
-    --entry-point="$2" --trigger-topic="$3" --service-account="$sa" \
+    --entry-point="$2" --trigger-topic="$3" --service-account="$sa" --trigger-service-account="$sa" \
+    --build-service-account="projects/$project/serviceAccounts/$build_sa" \
     --set-env-vars="GOOGLE_CLOUD_PROJECT=$project,KILL_FRACTION=$fraction,SIMULATE=$4" --quiet >/dev/null
 }
 
@@ -55,13 +57,19 @@ setup() {
     cloudfunctions.googleapis.com eventarc.googleapis.com run.googleapis.com pubsub.googleapis.com \
     artifactregistry.googleapis.com cloudscheduler.googleapis.com container.googleapis.com >/dev/null
 
-  say "service account setdrift-guard"
+  # Every account is named, since a new project's default compute account,
+  # which functions would otherwise build and trigger with, has no roles.
+  say "service accounts setdrift-guard (runs the functions) and setdrift-build (builds them)"
   gcloud iam service-accounts describe "$sa" >/dev/null 2>&1 ||
     gcloud iam service-accounts create setdrift-guard --display-name="SetDrift cost guardrails" >/dev/null
+  gcloud iam service-accounts describe "$build_sa" >/dev/null 2>&1 ||
+    gcloud iam service-accounts create setdrift-build --display-name="SetDrift guardrails build" >/dev/null
+  gcloud projects add-iam-policy-binding "$project" --member="serviceAccount:$build_sa" --role=roles/cloudbuild.builds.builder --condition=None >/dev/null
   # Disabling billing needs Project Billing Manager and Browser on the project
   # and Billing Account Viewer on the account; deleting clusters needs
-  # Kubernetes Engine Cluster Admin. Nothing broader.
-  for role in roles/billing.projectManager roles/browser roles/container.clusterAdmin; do
+  # Kubernetes Engine Cluster Admin; the Pub/Sub triggers need Eventarc Event
+  # Receiver and Cloud Run Invoker. Nothing broader.
+  for role in roles/billing.projectManager roles/browser roles/container.clusterAdmin roles/eventarc.eventReceiver roles/run.invoker; do
     gcloud projects add-iam-policy-binding "$project" --member="serviceAccount:$sa" --role="$role" --condition=None >/dev/null
   done
   gcloud billing accounts add-iam-policy-binding "$account" --member="serviceAccount:$sa" --role=roles/billing.viewer >/dev/null
