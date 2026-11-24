@@ -48,3 +48,5 @@ gh attestation verify <archive> --repo setdrift/setdrift-engine
 ```sh
 setdrift version
 ```
+
+To upgrade later, see [Upgrade](upgrade.md).
