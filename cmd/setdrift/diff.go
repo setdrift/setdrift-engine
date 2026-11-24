@@ -34,6 +34,8 @@ type diffOptions struct {
 	namespaces []string
 	// the --map-namespace pairs as given, A_NS=B_NS
 	nsMap []string
+	// the --map-value pairs as given, A_VALUE=B_VALUE
+	valueMap []string
 	// text or json
 	format string
 	// exits 1 when the sides differ, 2 on error, for ci
@@ -124,6 +126,7 @@ with --map-namespace: setdrift diff prod prod --map-namespace shop=shop-prod.`,
 	f.StringVar(&o.kubeconfig, "kubeconfig", "", "path to kubeconfig (default: KUBECONFIG or ~/.kube/config)")
 	f.StringSliceVarP(&o.namespaces, "namespace", "n", nil, "compare only these namespaces, as named in A; skips cluster-scoped resources (repeatable)")
 	f.StringSliceVar(&o.nsMap, "map-namespace", nil, "pair namespace A_NS in A with B_NS in B, as A_NS=B_NS (repeatable)")
+	f.StringSliceVar(&o.valueMap, "map-value", nil, "set apart a value of A's and its counterpart in B as the clusters' own, as A_VALUE=B_VALUE, like a registry host (repeatable)")
 	f.StringVar(&o.format, "format", "text", "output format: text, or json for every field")
 	f.BoolVar(&o.exitCode, "exit-code", false, "exit 1 when A and B differ beyond each cluster's own values, 2 on error")
 	f.IntVar(&o.maxFields, "max-fields", 5, "fields shown per resource in text output")
@@ -146,6 +149,16 @@ func (o *diffOptions) run(cmd *cobra.Command, a, b string) error {
 			return fmt.Errorf("--map-namespace %s: use A_NS=B_NS", m)
 		}
 		nsMap[from] = to
+	}
+	valueMap := map[string]string{}
+	// going through the --map-value pairs and turning them into a map from A's value to B's
+	for _, m := range o.valueMap {
+		from, to, ok := strings.Cut(m, "=")
+		// checking if the pair is missing its = or one of its values, or a value is too short to set apart safely
+		if !ok || len(from) < 3 || len(to) < 3 {
+			return fmt.Errorf("--map-value %s: use A_VALUE=B_VALUE, each at least 3 characters", m)
+		}
+		valueMap[from] = to
 	}
 	// invoking resolve on both arguments before either is read, so every problem shows at once, its defined below
 	ra, errA := o.resolve(a)
@@ -211,7 +224,7 @@ func (o *diffOptions) run(cmd *cobra.Command, a, b string) error {
 		}
 	}
 	// invoking diff.Compare to compare the two snapshots, its defined in pkg/diff/diff.go
-	res, err := diff.Compare(sa, sb, diff.Options{NamespaceMap: nsMap, LabelA: la, LabelB: lb})
+	res, err := diff.Compare(sa, sb, diff.Options{NamespaceMap: nsMap, ValueMap: valueMap, LabelA: la, LabelB: lb})
 	if err != nil {
 		return err
 	}

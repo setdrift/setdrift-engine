@@ -49,6 +49,7 @@ Reading only some namespaces, with `-n` or because that is all you can read, lea
 | every group | every resource the export builds | `patch` | the same | the server-side apply with `dryRun=All` and SetDrift's field manager, which gives what the object would become | the same |
 | (core) | `namespaces` | `get` | `kube-system`, and each one given with `-n` | telling whether the cluster is the export's own (by `kube-system`'s uid); checking `-n` | the check is skipped; `-n` is reported |
 | (core) | `nodes` | `list` | cluster-wide | choosing the platform set with `--set auto` | the generic set is verified |
+| `authorization.k8s.io` | `selfsubjectaccessreviews` | `create` | cluster-wide, stores nothing | asking before the dry-runs whether you may patch the export's types, so a run with no `patch` at all stops at once with the role to add | each resource is tried and counted as not checked |
 
 `verify` never needs `create`, since a resource missing from the cluster is found with `get` and reported, not applied.
 

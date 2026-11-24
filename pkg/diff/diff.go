@@ -27,6 +27,8 @@ type Options struct {
 	// NamespaceMap pairs a namespace in the first snapshot with its name in the second, for environments that name them differently, like web-staging in A and web in B
 	// unmapped namespaces pair by name
 	NamespaceMap map[string]string
+	// ValueMap pairs any other string of the first cluster's with the second's, set apart as the clusters' own values, like a registry host harbor-a.acme.com in A and harbor-b.acme.com in B
+	ValueMap map[string]string
 	// LabelA and LabelB name the sides in the result and its reasons, by default the cluster names, with the capture times when they match
 	LabelA, LabelB string
 }
@@ -212,7 +214,7 @@ func Compare(a, b *snapshotv1alpha1.Snapshot, opts Options) (Result, error) {
 	res.Nodes, res.NodesUnknown = compareNodes(a.GetInventory().GetNodes(), b.GetInventory().GetNodes(), res.A.Label, res.B.Label)
 
 	// invoking substitutions to set aside each side's own values, so fields differing only in them count as env fields, its defined below
-	subA, subB := substitutions(res.A, opts.NamespaceMap, true), substitutions(res.B, opts.NamespaceMap, false)
+	subA, subB := substitutions(res.A, opts.NamespaceMap, opts.ValueMap, true), substitutions(res.B, opts.NamespaceMap, opts.ValueMap, false)
 	// going through the first side's resources in sorted order, sortedKeys is defined below
 	for _, k := range sortedKeys(as) {
 		ea := as[k]
@@ -954,9 +956,9 @@ type replacement struct {
 	with string
 }
 
-// substitutions builds the substitution for one side, its cluster name, region and account, and the mapped namespaces (first is true for the first snapshot's side)
+// substitutions builds the substitution for one side, its cluster name, region and account, the mapped namespaces and the mapped values (first is true for the first snapshot's side)
 // placeholders hold no letters or digits, so no value matches inside one, and each kind of value gets its own slot, the same on both sides
-func substitutions(s Side, nsMap map[string]string, first bool) substitution {
+func substitutions(s Side, nsMap, valueMap map[string]string, first bool) substitution {
 	var sub substitution
 	// add records one value with the placeholder for its slot
 	add := func(value string, slot int) {
@@ -984,6 +986,22 @@ func substitutions(s Side, nsMap map[string]string, first bool) substitution {
 			add(from, 3+i)
 		} else {
 			add(nsMap[from], 3+i)
+		}
+	}
+	// each mapped value gets the next slot, the same on both sides, after the namespaces
+	values := make([]string, 0, len(valueMap))
+	// collecting the mapped values so they get their slots in sorted order
+	for from := range valueMap {
+		values = append(values, from)
+	}
+	sort.Strings(values)
+	// adding each mapped value, the first side's or the second side's
+	for i, from := range values {
+		// checking which side this is, it decides which value of the pair to set aside
+		if first {
+			add(from, 3+len(froms)+i)
+		} else {
+			add(valueMap[from], 3+len(froms)+i)
 		}
 	}
 	// longest first, so a cluster named after its region doesnt split it
