@@ -41,8 +41,9 @@ env:
 jobs:
   # Whether the change can affect the release archives. A change to docs and
   # Markdown files only still runs lint and tests (tests read docs/), but skips
-  # the release build and install jobs. Those then show as skipped, which
-  # branch protection accepts. A tag (release.yaml) always builds.
+  # the release build and install jobs. Those then show as skipped, and
+  # ci-result (the check branch protection requires) passes. A tag
+  # (release.yaml) always builds.
   changes:
     runs-on: ubuntu-latest
     outputs:
@@ -271,6 +272,28 @@ jobs:
           # On the PATH of this session, and of new terminals.
           (Get-Command setdrift).Source
           if (-not ([Environment]::GetEnvironmentVariable('Path', 'User') -split ';' -contains (Split-Path $exe))) { throw 'not on the user PATH' }
+
+  # The one check branch protection requires of CI: it passes when every job
+  # above passed or was skipped on purpose. A skipped matrix job reports under
+  # its bare name (install-unix), never under the names its matrix would have
+  # given it (install-unix (ubuntu-latest)), so requiring those blocked every
+  # docs-only pull request.
+  ci-result:
+    needs: [changes, test, release-build, install-unix, install-windows]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every job passed or was skipped
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "results: $RESULTS"
+          for r in $RESULTS; do
+            case $r in
+            success | skipped) ;;
+            *) echo "::error::a CI job ended $r"; exit 1 ;;
+            esac
+          done
 
   # Not here yet: end-to-end export, restore and verify against EKS for the
   # three Kubernetes versions EKS supports (n-2). The harness is in test/e2e;
