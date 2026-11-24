@@ -35,26 +35,12 @@ stable version.
 
 ## Docs fixes between releases
 
-setdrift.io shows each release line's docs as released, so a docs fix on main
-waits for the next release. To publish one sooner, put it on the line's
-release branch too, `release-v0.2` for v0.2:
+setdrift.io shows each release line's docs as released, so a docs fix on main waits for the next release. To publish one sooner, put it on the line's release branch too, `release-v0.2` for v0.2.
 
 1. Merge the fix to main as usual.
-2. If the branch doesn't exist yet, start it at the newest release:
-   `git push origin v0.2.0^{commit}:refs/heads/release-v0.2`. v0.2.0 is older
-   than the workflows below, so v0.2's branch also takes main's
-   `.github/workflows/release-docs.yaml` and `docs.yaml`; later releases hold
-   them already.
-3. Cherry-pick the fix onto a branch from `release-v0.2`, named outside the
-   `release-v*` pattern (`upgrade-docs-v0.2`), and open a pull request into
-   `release-v0.2`.
+2. If the branch doesn't exist yet, start it at the newest release with `git push origin v0.2.0^{commit}:refs/heads/release-v0.2`. v0.2.0 is older than the workflows below, so v0.2's branch also takes main's `.github/workflows/release-docs.yaml` and `docs.yaml`; later releases hold them already.
+3. Cherry-pick the fix onto a branch from `release-v0.2`, named outside the `release-v*` pattern (`upgrade-docs-v0.2`), and open a pull request into `release-v0.2`.
 
-The `release-docs` check refuses anything outside `docs/`, `README.md` and
-`.github/workflows/` since the release, so the branch never holds code. Once
-merged, setdrift.io rebuilds with the fix. Only fixes that are true of the released version go
-there: a page for a feature on main waits for its release.
+The `release-docs` check refuses anything outside `docs/`, `README.md` and `.github/workflows/` since the release, so the branch never holds code. Once merged, setdrift.io rebuilds with the fix. Only fixes that are true of the released version go there. A page for a feature on main waits for its release.
 
-The next release on the line, like v0.2.1, is tagged from main as always, and
-holds the fix already. setdrift.io uses a release branch only while it holds
-the line's newest tag, so after v0.2.1 it shows v0.2.1's docs until the branch
-is moved up: `git push --force origin v0.2.1^{commit}:refs/heads/release-v0.2`.
+The next release on the line, like v0.2.1, is tagged from main as always, and holds the fix already. setdrift.io uses a release branch only while it holds the line's newest tag, so after v0.2.1 it shows v0.2.1's docs until the branch is moved up with `git push --force origin v0.2.1^{commit}:refs/heads/release-v0.2`.
