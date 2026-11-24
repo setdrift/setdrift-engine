@@ -102,7 +102,7 @@ setup() {
     gcloud scheduler jobs create pubsub setdrift-reaper --location="$region" --schedule="0 * * * *" \
       --topic=setdrift-reaper-tick --message-body=tick >/dev/null
 
-  say "budget setdrift-monthly: $budget a month for this project, emails at 25% and 75%, kill switch at $kill%"
+  say "budget setdrift-monthly: $budget a month for this project, emails to the billing admins at 25%, 75% and 100%, the kill switch at $kill%"
   existing=$(gcloud billing budgets list --billing-account="$account" --filter="displayName=setdrift-monthly" --format="value(name)")
   rules=(--threshold-rule=percent=0.25 --threshold-rule=percent=0.75 --threshold-rule=percent=1.0)
   # a budget keeps no history worth saving, so an existing one is replaced rather than edited
