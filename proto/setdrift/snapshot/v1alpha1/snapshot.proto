@@ -292,6 +292,9 @@ message ProfileNetwork {
   int32 max_pods_per_node = 14;
   // the cloud network's address ranges, with export --aws from EC2
   repeated string vpc_cidrs = 15;
+  // pod_cidrs came from the nodes' own pod ranges, as no component named the
+  // pod network: the network is that range or a larger one (GKE's is often a /14)
+  bool pod_cidrs_from_nodes = 16;
 }
 
 message ProfileSubnet {

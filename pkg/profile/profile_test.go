@@ -281,7 +281,7 @@ func TestAddNodes(t *testing.T) {
 	if p.Cloud.Account != "my-project" || !reflect.DeepEqual(p.Cloud.Zones, []string{"us-central1-a", "us-central1-b"}) {
 		t.Errorf("cloud %+v", p.Cloud)
 	}
-	if !reflect.DeepEqual(p.Network.PodCidrs, []string{"10.4.0.0/22"}) || p.Network.NodePodPrefix != 24 || p.Network.MaxPodsPerNode != 110 {
+	if !reflect.DeepEqual(p.Network.PodCidrs, []string{"10.4.0.0/22"}) || !p.Network.PodCidrsFromNodes || p.Network.NodePodPrefix != 24 || p.Network.MaxPodsPerNode != 110 {
 		t.Errorf("pods %v /%d max %d", p.Network.PodCidrs, p.Network.NodePodPrefix, p.Network.MaxPodsPerNode)
 	}
 	var nodes []string
@@ -300,6 +300,80 @@ func TestAddNodes(t *testing.T) {
 	az := AddNodes(nil, []unstructured.Unstructured{node("eastus-1", "10.224.0.4", "", "azure:///subscriptions/0000-1111/resourceGroups/MC_rg_aks_eastus/providers/Microsoft.Compute/virtualMachineScaleSets/aks-pool/virtualMachines/0", "250")})
 	if az.Cloud.Account != "0000-1111" || az.Cloud.ResourceGroup != "MC_rg_aks_eastus" {
 		t.Errorf("azure cloud %+v", az.Cloud)
+	}
+
+	// aks labels a node outside any zone with its fault domain, "0", which isnt a zone
+	fd := AddNodes(nil, []unstructured.Unstructured{node("0", "10.224.0.4", "", "", "250")})
+	if len(fd.Cloud.Zones) != 0 || fd.Network.NodeRanges[0].Zone != "" {
+		t.Errorf("fault domain taken for a zone: zones %v, node ranges %+v", fd.Cloud.Zones, fd.Network.NodeRanges)
+	}
+}
+
+// check that AKS's pod network is read from azure cni, the NodeNetworkConfig first, and under overlay the ip-masq-agent's ranges when theres no NodeNetworkConfig, but not under its other modes, where theyre the vnet
+func TestBuildAKS(t *testing.T) {
+	cns := func(scenario string) string {
+		return `
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: cns-config, namespace: kube-system}
+data:
+  cns_config.json: '{"CNIConflistScenario": "` + scenario + `", "ChannelMode": "CRD"}'
+`
+	}
+	const masq = `
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: azure-ip-masq-agent-config-reconciled, namespace: kube-system}
+data:
+  ip-masq-agent-reconciled: |
+    MasqLinkLocal: true
+    NonMasqueradeCIDRs:
+    - 10.244.0.0/16
+`
+	const nnc = `
+apiVersion: acn.azure.com/v1alpha
+kind: NodeNetworkConfig
+metadata: {name: aks-nodepool1-0, namespace: kube-system}
+status:
+  networkContainers:
+  - {type: Overlay, subnetAddressSpace: 10.248.0.0/16, primaryIP: 10.248.0.0/24}
+`
+	if p := Build(objects(t, cns("v4overlay"), masq)); !reflect.DeepEqual(p.Network.PodCidrs, []string{"10.244.0.0/16"}) || !slices.Contains(p.Network.CniSettings, "overlay") {
+		t.Errorf("overlay from ip-masq-agent: pods %v settings %v", p.Network.PodCidrs, p.Network.CniSettings)
+	}
+	if p := Build(objects(t, cns("v4overlay"), masq, nnc)); !reflect.DeepEqual(p.Network.PodCidrs, []string{"10.248.0.0/16"}) {
+		t.Errorf("overlay with a NodeNetworkConfig: pods %v", p.Network.PodCidrs)
+	}
+	if p := Build(objects(t, cns("v4swift"), masq)); len(p.Network.PodCidrs) != 0 {
+		t.Errorf("not overlay, the vnet taken for the pod network: %v", p.Network.PodCidrs)
+	}
+}
+
+// check that GKE's own networking and kube-dns are recognized, and the cluster domain is read from kube-dns's flag
+func TestBuildGKE(t *testing.T) {
+	p := Build(objects(t, `
+apiVersion: apps/v1
+kind: DaemonSet
+metadata: {name: netd, namespace: kube-system}
+spec:
+  template:
+    spec:
+      containers:
+      - {name: netd, image: gke.gcr.io/netd:v0.8.4-gke.7}
+`, `
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: kube-dns, namespace: kube-system}
+spec:
+  template:
+    spec:
+      containers:
+      - name: kubedns
+        image: gke.gcr.io/k8s-dns-kube-dns:1.26.4-gke.1
+        args: [--domain=cluster.local., --dns-port=10053]
+`))
+	if p.Network.Cni != "gke-netd" || p.Dns.ClusterDomain != "cluster.local" {
+		t.Errorf("cni %q, cluster domain %q", p.Network.Cni, p.Dns.ClusterDomain)
 	}
 }
 

@@ -67,6 +67,9 @@ func (b *builder) read(o *resource.Object) {
 	case "eks.amazonaws.com/NodeClass", "karpenter.k8s.aws/EC2NodeClass":
 		// invoking nodeClass to read the subnets and security groups the nodes are put in, its defined below
 		b.nodeClass(o, src)
+	case "acn.azure.com/NodeNetworkConfig":
+		// invoking azureNodeNetwork to read the pod network azure cni gave the node, its defined below
+		b.azureNodeNetwork(o, src)
 	case "elbv2.k8s.aws/TargetGroupBinding":
 		vpc, _, _ := unstructured.NestedString(o.Object, "spec", "vpcID")
 		b.set(&b.p.Network.VpcId, vpc, "VPC", src)
@@ -96,6 +99,41 @@ func (b *builder) configMap(o *resource.Object, src string) {
 	case "kube-system/coredns":
 		// invoking corefile to read the cluster domain and where other names are sent, its defined below
 		b.corefile(data["Corefile"], src)
+	case "kube-system/cns-config":
+		// invoking azureCNSConfig to read which mode azure cni runs in, its defined below
+		b.azureCNSConfig(data["cns_config.json"], src)
+	case "kube-system/azure-ip-masq-agent-config-reconciled":
+		// the ranges azure's ip-masq-agent leaves unmasqueraded, the pod network under overlay, finish decides
+		var cfg struct {
+			NonMasqueradeCIDRs []string `json:"NonMasqueradeCIDRs"`
+		}
+		// checking if the config parses, its yaml, which a yaml decoder reads like json here
+		if yaml.Unmarshal([]byte(data["ip-masq-agent-reconciled"]), &cfg) == nil {
+			b.azureNoMasq, b.azureNoMasqSrc = cfg.NonMasqueradeCIDRs, src
+		}
+	}
+}
+
+// azureCNSConfig takes the cns-config ConfigMap's json and notes whether azure cni runs as overlay, where pods get addresses from a range outside the vnet
+func (b *builder) azureCNSConfig(text, src string) {
+	var cfg struct {
+		CNIConflistScenario string `json:"CNIConflistScenario"`
+	}
+	// checking if the json parses and names an overlay scenario, like v4overlay or dualstackoverlay
+	if json.Unmarshal([]byte(text), &cfg) == nil && strings.Contains(strings.ToLower(cfg.CNIConflistScenario), "overlay") {
+		b.azureOverlay = true
+		b.add(&b.p.Network.CniSettings, "overlay", "CNI setting", src)
+	}
+}
+
+// azureNodeNetwork takes a NodeNetworkConfig, azure cni's record of the network it gave a node, and reads the pod network from its status
+// subnetAddressSpace is the whole pod network, the overlay's range or the vnet subnet pods get addresses from
+// the status is read here since normalize removes it later
+func (b *builder) azureNodeNetwork(o *resource.Object, src string) {
+	// going through the node's network containers
+	for _, nc := range maps(o.Object, "status", "networkContainers") {
+		space, _, _ := unstructured.NestedString(nc, "subnetAddressSpace")
+		b.add(&b.p.Network.PodCidrs, space, "pod network", src)
 	}
 }
 

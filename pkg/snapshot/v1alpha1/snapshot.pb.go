@@ -1485,9 +1485,12 @@ type ProfileNetwork struct {
 	// the most pods one node takes (its allocatable pods)
 	MaxPodsPerNode int32 `protobuf:"varint,14,opt,name=max_pods_per_node,json=maxPodsPerNode,proto3" json:"max_pods_per_node,omitempty"`
 	// the cloud network's address ranges, with export --aws from EC2
-	VpcCidrs      []string `protobuf:"bytes,15,rep,name=vpc_cidrs,json=vpcCidrs,proto3" json:"vpc_cidrs,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	VpcCidrs []string `protobuf:"bytes,15,rep,name=vpc_cidrs,json=vpcCidrs,proto3" json:"vpc_cidrs,omitempty"`
+	// pod_cidrs came from the nodes' own pod ranges, as no component named the
+	// pod network: the network is that range or a larger one (GKE's is often a /14)
+	PodCidrsFromNodes bool `protobuf:"varint,16,opt,name=pod_cidrs_from_nodes,json=podCidrsFromNodes,proto3" json:"pod_cidrs_from_nodes,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *ProfileNetwork) Reset() {
@@ -1623,6 +1626,13 @@ func (x *ProfileNetwork) GetVpcCidrs() []string {
 		return x.VpcCidrs
 	}
 	return nil
+}
+
+func (x *ProfileNetwork) GetPodCidrsFromNodes() bool {
+	if x != nil {
+		return x.PodCidrsFromNodes
+	}
+	return false
 }
 
 type ProfileSubnet struct {
@@ -3161,7 +3171,7 @@ const file_setdrift_snapshot_v1alpha1_snapshot_proto_rawDesc = "" +
 	"\aaccount\x18\x02 \x01(\tR\aaccount\x12\x16\n" +
 	"\x06region\x18\x03 \x01(\tR\x06region\x12\x14\n" +
 	"\x05zones\x18\x04 \x03(\tR\x05zones\x12%\n" +
-	"\x0eresource_group\x18\x05 \x01(\tR\rresourceGroup\"\xf8\x04\n" +
+	"\x0eresource_group\x18\x05 \x01(\tR\rresourceGroup\"\xa9\x05\n" +
 	"\x0eProfileNetwork\x12\x1b\n" +
 	"\tpod_cidrs\x18\x01 \x03(\tR\bpodCidrs\x12&\n" +
 	"\x0fnode_pod_prefix\x18\x02 \x01(\x05R\rnodePodPrefix\x12#\n" +
@@ -3180,7 +3190,8 @@ const file_setdrift_snapshot_v1alpha1_snapshot_proto_rawDesc = "" +
 	"\x13api_endpoint_access\x18\f \x01(\tR\x11apiEndpointAccess\x125\n" +
 	"\x17api_public_access_cidrs\x18\r \x03(\tR\x14apiPublicAccessCidrs\x12)\n" +
 	"\x11max_pods_per_node\x18\x0e \x01(\x05R\x0emaxPodsPerNode\x12\x1b\n" +
-	"\tvpc_cidrs\x18\x0f \x03(\tR\bvpcCidrs\"~\n" +
+	"\tvpc_cidrs\x18\x0f \x03(\tR\bvpcCidrs\x12/\n" +
+	"\x14pod_cidrs_from_nodes\x18\x10 \x01(\bR\x11podCidrsFromNodes\"~\n" +
 	"\rProfileSubnet\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04cidr\x18\x02 \x01(\tR\x04cidr\x12\x12\n" +

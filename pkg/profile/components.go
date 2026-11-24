@@ -31,9 +31,13 @@ var components = []known{
 	{"cni", "kindnet", "kindnetd"},
 	{"cni", "azure-cni", "azure-cns"},
 	{"cni", "gke-dataplane-v2", "anetd"},
+	// GKE's own networking when Dataplane V2 is off
+	{"cni", "gke-netd", "netd"},
 	{"cni", "weave", "weave-kube"},
 	{"kube-proxy", "kube-proxy", "kube-proxy"},
 	{"dns", "coredns", "coredns"},
+	// GKE's cluster DNS
+	{"dns", "kube-dns", "k8s-dns-kube-dns"},
 	{"dns-records", "external-dns", "external-dns"},
 	{"ingress", "ingress-nginx", "ingress-nginx/controller"},
 	{"ingress", "traefik", "traefik"},
@@ -138,6 +142,9 @@ func (b *builder) settings(name string, c container, src string) {
 		}
 	case "aws-load-balancer-controller":
 		b.set(&b.p.Network.VpcId, flag(c.args, "aws-vpc-id"), "VPC", src)
+	case "kube-dns":
+		// kube-dns is told the cluster domain in a flag, cluster.local. with its trailing dot
+		b.set(&b.p.Dns.ClusterDomain, strings.TrimSuffix(flag(c.args, "domain"), "."), "cluster domain", src)
 	case "external-dns":
 		// going through the domains external-dns may write records in, one flag each
 		for _, d := range flags(c.args, "domain-filter") {

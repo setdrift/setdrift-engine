@@ -22,6 +22,11 @@ type builder struct {
 	seen map[[2]string]bool
 	// claims per storage class name, "" for claims that name none and get the default class
 	claims map[string]int32
+	// azure cni overlay, from cns-config, and the ranges azure's ip-masq-agent leaves unmasqueraded with where they were found
+	// under overlay those are the pod network, under azure cni's other modes theyre the vnet, so theyre only used once overlay is known
+	azureOverlay   bool
+	azureNoMasq    []string
+	azureNoMasqSrc string
 }
 
 // newBuilder takes a profile, or nil for a new one, and gives back a builder that adds to it
@@ -142,6 +147,12 @@ func describeSubnet(s *snapshotv1alpha1.ProfileSubnet) string {
 
 // finish settles what depends on everything read, the claims per storage class, and sorts every list so the profile reads the same each time
 func (b *builder) finish() {
+	// checking if its azure cni overlay and nothing gave the pod network, if so the ip-masq-agent's ranges are it
+	if b.azureOverlay && len(b.p.Network.PodCidrs) == 0 {
+		for _, c := range b.azureNoMasq {
+			b.add(&b.p.Network.PodCidrs, c, "pod network", b.azureNoMasqSrc)
+		}
+	}
 	def := ""
 	// going through the storage classes, finding the default one and giving each its claims
 	for _, sc := range b.p.StorageClasses {
