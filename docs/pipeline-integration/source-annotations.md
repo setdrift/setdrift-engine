@@ -1,4 +1,4 @@
-# Source Annotations
+# Source annotations
 
 > **To revisit:** the annotation set (repo, path, branch, tag, revision,
 > deployed-by) and their examples were added on 2026-11-20 and are not yet
@@ -62,7 +62,7 @@ The markers a tool writes itself still win where present, Argo CD's tracking id,
 
 ## Adding them
 
-Pipe the rendered manifests through `kubectl annotate --local` before `kubectl apply`, so the annotations go on each object's own metadata. [Pipeline resources showing as unmanaged](pipeline-integration/unmanaged-pipeline-resources.md) has the ways to add them, committed in Git or in a GitHub Actions workflow.
+Pipe the rendered manifests through `kubectl annotate --local` before `kubectl apply`, so the annotations go on each object's own metadata. [Pipeline resources showing as unmanaged](unmanaged-pipeline-resources.md) has the ways to add them, committed in Git or in a GitHub Actions workflow.
 
 ```sh
 kubectl kustomize deploy/overlays/prod | kubectl annotate --local --overwrite -f - -o yaml \
