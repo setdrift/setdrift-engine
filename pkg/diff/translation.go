@@ -140,7 +140,7 @@ func (t Translation) sortField(c Change, f Field, e, tr any) (int, string) {
 	case have && !same(f.A, ev, eok):
 		return sortedReal, "changed on the source after the export it was translated from: export and translate again, or make the same change on the target"
 	// a claim follows its class, a translated class gives it a new provisioner, and the target's controller writes what follows from that
-	case c.A.Key.Kind == "PersistentVolumeClaim" && c.A.Key.Group == "" && t.classTranslated(e):
+	case c.A.Key.Kind == "PersistentVolumeClaim" && c.A.Key.Group == "" && (t.classTranslated(e) || noClass(e)):
 		return sortedTranslated, ""
 	}
 	// a decision never explains a field the target changed: it holds only while the target is as the translation made it, so this is real
@@ -161,6 +161,16 @@ func (t Translation) classTranslated(claim any) bool {
 	e, eok := t.Exported[k]
 	tr, tok := t.Translated[k]
 	return eok && tok && !reflect.DeepEqual(WithoutTranslationMark(e), WithoutTranslationMark(tr))
+}
+
+// noClass tells if a claim names no StorageClass, so it lands on each cluster's default, which differs from platform to platform as a translation expects
+func noClass(claim any) bool {
+	if claim == nil {
+		return false
+	}
+	cls, ok := mapKey(claim, "spec", "storageClassName")
+	name, _ := cls.(string)
+	return !ok || name == ""
 }
 
 // same tells if a field's value matches another's, a missing value matching only an absent one

@@ -56,6 +56,8 @@ cloud_run() {
   keep=${E2E_KEEP_DIR:-$HOME/.cache/setdrift-e2e}/$distribution-$(date -u +%Y%m%dT%H%M%SZ)
   mkdir -p "$keep"
   cp "$work"/export/snapshots/* "$keep"/
+  # the whole export too, it holds no secret values, so translate.sh can translate it once the cluster is gone
+  cp -R "$work/export" "$keep/export"
 
   say "verifying"
   # verify is reported but not counted until the platform's rule pack exists:

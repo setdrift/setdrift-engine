@@ -63,7 +63,14 @@ gcloud container clusters create "$name" --project "$project" --zone "$zone" \
 gcloud container clusters get-credentials "$name" --project "$project" --zone "$zone" >/dev/null
 say "cluster ready"
 
-cloud_run
+# checking if steps were given in place of the shared checks (E2E_STEPS, see translate.sh), if so theyre run, the cleanup above deletes the cluster either way
+if [[ -n ${E2E_STEPS:-} ]]; then
+  # shellcheck source=/dev/null
+  source "$E2E_STEPS"
+  steps_run
+else
+  cloud_run
+fi
 
 # Copyright The SetDrift Authors
 # SPDX-License-Identifier: Apache-2.0
