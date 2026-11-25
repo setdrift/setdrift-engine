@@ -39,6 +39,7 @@ func TestPlatform(t *testing.T) {
 		{"add-on label", mk("apps/v1", "Deployment", "metrics-server", map[string]string{"app.kubernetes.io/managed-by": "EKS", "app.kubernetes.io/instance": "metrics-server"}, "eks", "kube-controller-manager"), true},
 		{"auto mode label", mk("karpenter.sh/v1", "NodePool", "system", map[string]string{"app.kubernetes.io/managed-by": "eks"}, "eks-auto-mode"), true},
 		{"only EKS managers", mk("rbac.authorization.k8s.io/v1", "Role", "x", nil, "eks-internal", "kube-apiserver"), true},
+		{"Auto Mode's resource optimizer policy", mk("admissionregistration.k8s.io/v1", "MutatingAdmissionPolicy", "resource-optimization.eks.amazonaws.com", nil, "eks-resource-optimizer"), true},
 		{"EKS manager and a person", mk("v1", "ConfigMap", "x", nil, "eks", "kubectl-edit"), false},
 		{"eks: RBAC applied with kubectl", mk("rbac.authorization.k8s.io/v1", "ClusterRole", "eks:addon-manager", nil, "kubectl-client-side-apply"), true},
 		{"bootstrap webhook", mk("admissionregistration.k8s.io/v1", "MutatingWebhookConfiguration", "pod-identity-webhook", nil, "kubectl-client-side-apply"), true},

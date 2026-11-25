@@ -88,5 +88,17 @@ func TestTranslationMarkOnJobTemplate(t *testing.T) {
 	}
 }
 
+// a claim that names no StorageClass lands on each cluster's default, which a translation to another platform expects, so its bound volume differing isn't counted
+func TestClaimWithoutClass(t *testing.T) {
+	pvc := Key{Kind: "PersistentVolumeClaim", Namespace: "shop", Name: "scratch"}
+	claim := map[string]any{"spec": map[string]any{"resources": map[string]any{}}}
+	tr := Translation{Code: "te2g", Exported: map[Key]any{pvc: claim}, Translated: map[Key]any{pvc: claim}}
+	r := Result{Changed: []Change{{A: Object{Key: pvc}, B: Object{Key: pvc}, Fields: []Field{{Path: "(volume) storageClass", A: "gp3", B: "standard-rwo"}}}}}
+	r.ApplyTranslation(tr)
+	if len(r.Changed) != 0 || r.AsTranslated != 1 {
+		t.Errorf("%+v", r)
+	}
+}
+
 // Copyright The SetDrift Authors
 // SPDX-License-Identifier: Apache-2.0

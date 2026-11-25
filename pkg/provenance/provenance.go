@@ -313,7 +313,8 @@ func (c LabelClassifier) fromMarkers(o *resource.Object, cls *platform.Classific
 }
 
 // eksManagers are the field managers of the components EKS runs, its add-ons (eks), the control plane's own objects (eks-internal) and Auto Mode (eks-auto-mode)
-var eksManagers = map[string]bool{"eks": true, "eks-internal": true, "eks-auto-mode": true}
+// eks-resource-optimizer is Auto Mode's resource optimizer, which writes its MutatingAdmissionPolicy resource-optimization.eks.amazonaws.com (seen on 1.37)
+var eksManagers = map[string]bool{"eks": true, "eks-internal": true, "eks-auto-mode": true, "eks-resource-optimizer": true}
 
 // coreManagers are the field managers of Kubernetes' own components, which write status and defaults into objects whoever created them, so theyre ignored
 var coreManagers = map[string]bool{

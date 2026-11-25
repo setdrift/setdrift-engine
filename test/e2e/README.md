@@ -11,6 +11,7 @@ after two hours without use.
 | [cluster.sh](cluster.sh) | Creates, waits for, keeps alive and tears down the cluster |
 | [restore.sh](restore.sh) | The restore experiment: exports the cluster and follows the RESTORE.md it writes into a second e2e cluster, then checks the result (`make e2e-restore`) |
 | [populate.sh](populate.sh) | Installs Argo CD, Flux and External Secrets Operator with real apps, a Helm release and the [fixtures](fixtures) |
+| [translate.sh](translate.sh) | A translation run in one line, `translate.sh <path-to-export> --to <eks\|aks\|gke>`: creates a fresh target cluster, translates the export for it, follows the translation's RESTORE.md, runs verify and `diff --translation-dir` against the export's snapshot, and deletes the cluster however the run ends. The export can come from a cluster that's gone, like the one `aks.sh` or `gke.sh` keeps. Its steps are [translate-steps.sh](translate-steps.sh) |
 
 ## Use
 
