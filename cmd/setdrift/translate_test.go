@@ -121,5 +121,26 @@ func TestTranslateFlagAndHeldErrors(t *testing.T) {
 	}
 }
 
+// check a decision the source changed under gets its own heading, apart from new ones
+func TestTranslateReaskHeading(t *testing.T) {
+	root := miniExport(t, true)
+	if _, _, err := runTranslate(root, "--to", "gke", "--unmatched", "keep-source"); err != nil {
+		t.Fatal(err)
+	}
+	dfile := filepath.Join(root, "translations", "te2g", "translate-decisions.yaml")
+	b, _ := os.ReadFile(dfile)
+	// the user chose leave-out for the bucket, then the bucket changed at the source
+	_ = os.WriteFile(dfile, []byte(strings.Replace(string(b), "choose: keep-source", "choose: leave-out", 1)), 0o600)
+	bucket := filepath.Join(root, "cloud-resources", "namespaces", "shop", "bucket.s3.services.k8s.aws", "acme-orders.yaml")
+	_ = os.WriteFile(bucket, []byte("apiVersion: s3.services.k8s.aws/v1alpha1\nkind: Bucket\nmetadata: {name: acme-orders, namespace: shop}\nspec: {name: acme-orders-v2}\n"), 0o600)
+	out, _, err := runTranslate(root, "--to", "gke")
+	if err == nil || !strings.Contains(out, "1 decision changed on the source since you chose, and needs choosing again:") || strings.Contains(out, "no equivalent on GKE") {
+		t.Errorf("%v\n%s", err, out)
+	}
+	if !strings.Contains(out, "Earlier you chose to leave out Bucket shop/acme-orders (leave-out)") {
+		t.Errorf("%s", out)
+	}
+}
+
 // Copyright The SetDrift Authors
 // SPDX-License-Identifier: Apache-2.0
