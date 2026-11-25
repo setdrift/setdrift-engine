@@ -50,7 +50,8 @@ func AddNodes(p *snapshotv1alpha1.Profile, nodes []unstructured.Unstructured) *s
 			}
 		}
 		// checking if the node takes more pods than any before it
-		if pods, err := strconv.Atoi(stringOf(n.Object, "status", "allocatable", "pods")); err == nil && int32(pods) > b.p.Network.MaxPodsPerNode {
+		// a count outside what int32 holds isnt a real node's, so its left out
+		if pods, err := strconv.ParseInt(stringOf(n.Object, "status", "allocatable", "pods"), 10, 32); err == nil && int32(pods) > b.p.Network.MaxPodsPerNode {
 			b.p.Network.MaxPodsPerNode = int32(pods)
 		}
 		// invoking providerAccount to read the cloud account from the node's provider id, its defined below
@@ -88,7 +89,7 @@ func (b *builder) nodePodRanges(ranges []netip.Prefix) {
 	}
 	// checking if no component said how big a node's range is, if so the nodes say it
 	if b.p.Network.NodePodPrefix == 0 {
-		b.p.Network.NodePodPrefix = int32(ranges[0].Bits())
+		b.p.Network.NodePodPrefix = int32(ranges[0].Bits()) //#nosec G115 -- a prefix's bits are 0 to 128
 		b.found("node pod range /"+strconv.Itoa(ranges[0].Bits()), nodesSource+" (spec.podCIDR)")
 	}
 	// invoking covering to find the range holding them, per address family, its defined in cidr.go

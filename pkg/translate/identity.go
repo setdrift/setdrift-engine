@@ -21,9 +21,9 @@ type Identity struct {
 
 // what each cloud's own webhook injects on its platform, and a translation injects itself on another, since no webhook there does
 const (
-	awsTokenDir     = "/var/run/secrets/eks.amazonaws.com/serviceaccount"
+	awsTokenDir     = "/var/run/secrets/eks.amazonaws.com/serviceaccount" //#nosec G101 -- where the token is mounted, not a credential
 	awsAudience     = "sts.amazonaws.com"
-	azureTokenDir   = "/var/run/secrets/azure/tokens"
+	azureTokenDir   = "/var/run/secrets/azure/tokens" //#nosec G101 -- where the token is mounted, not a credential
 	azureTokenFile  = "azure-identity-token"
 	azureAudience   = "api://AzureADTokenExchange"
 	federationToken = "setdrift-federation-token"

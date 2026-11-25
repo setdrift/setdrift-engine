@@ -51,7 +51,7 @@ func TestImagesToCopy(t *testing.T) {
 	imagesStep(&b, imgs, platform.AKS, "translations/te2a")
 	for _, want := range []string{
 		`az acr import --name "$ACR" --source ` + ecr + ` --image acme/shop:1.4 --username AWS --password "$(aws ecr get-login-password --region us-east-2)"`,
-		"- name: 111122223333.dkr.ecr.us-east-2.amazonaws.com/acme/shop\n  newName: <registry>/acme/shop",
+		"- name: \"111122223333.dkr.ecr.us-east-2.amazonaws.com/acme/shop\"\n  newName: \"<registry>/acme/shop\"",
 	} {
 		if !strings.Contains(b.String(), want) {
 			t.Errorf("AKS step lacks %q:\n%s", want, b.String())
@@ -62,7 +62,7 @@ func TestImagesToCopy(t *testing.T) {
 	}
 	b.Reset()
 	imagesStep(&b, imagesToCopy(objs, platform.GKE), platform.GKE, "translations/te2g")
-	if !strings.Contains(b.String(), `crane copy `+ecr+` "$REGISTRY/acme/shop:1.4"`) || !strings.Contains(b.String(), "crane auth login acmeshop.azurecr.io") {
+	if !strings.Contains(b.String(), `crane copy `+ecr+` "$REGISTRY"/acme/shop:1.4`) || !strings.Contains(b.String(), "crane auth login acmeshop.azurecr.io") {
 		t.Errorf("GKE step:\n%s", b.String())
 	}
 }
