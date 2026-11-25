@@ -39,15 +39,28 @@ command -v gke-gcloud-auth-plugin >/dev/null || { say "install the GKE auth plug
 gcloud services enable compute.googleapis.com container.googleapis.com --project "$project" >/dev/null
 
 started=$(date +%s)
+since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 cleanup() {
   local rc=$?
   trap - EXIT INT TERM
+  # the disks the claims made outlive the cluster, GKE doesnt delete them with it, so theyre listed while the cluster can still say which
+  local disks
+  disks=$(kubectl get pv -o jsonpath='{range .items[*]}{.spec.csi.volumeHandle}{"\n"}{end}' 2>/dev/null | sed -n 's#^projects/[^/]*/zones/[^/]*/disks/##p' || true)
   say "deleting cluster $name"
   gcloud container clusters delete "$name" --project "$project" --zone "$zone" --quiet 2>/dev/null || true
   if gcloud container clusters describe "$name" --project "$project" --zone "$zone" >/dev/null 2>&1; then
     say "WARNING: $name still exists, delete it: gcloud container clusters delete $name --zone $zone --project $project"
   else
     say "deleted; nothing is left running"
+  fi
+  # then the claims' disks, those the cluster named and any other unattached claim disk made during the run, for a cluster that couldnt be read at the end
+  disks=$(printf '%s\n%s\n' "$disks" "$(gcloud compute disks list --project "$project" --filter="zone:$zone AND name~^pvc- AND creationTimestamp>=$since" --format='value(name,users.len())' 2>/dev/null | awk '$2 == "" || $2 == 0 {print $1}')" | sort -u | sed '/^$/d')
+  if [[ -n $disks ]]; then
+    say "deleting the claims' disks: $(echo "$disks" | tr '\n' ' ')"
+    echo "$disks" | xargs gcloud compute disks delete --project "$project" --zone "$zone" --quiet >/dev/null 2>&1 || true
+  fi
+  if [[ -n $(gcloud compute disks list --project "$project" --filter="zone:$zone AND name~^pvc-" --format='value(name)' 2>/dev/null) ]]; then
+    say "WARNING: claim disks are left, delete them: gcloud compute disks list --project $project --filter='name~^pvc-'"
   fi
   say "the cluster existed for $(( ($(date +%s) - started) / 60 )) minutes"
   rm -rf "$work"
