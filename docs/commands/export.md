@@ -344,6 +344,7 @@ The terminal shows what was applied by hand, by namespace, then where the README
 
 ## See also
 
+- [Understanding your export](../understanding-your-export.md), a walkthrough of one export, file by file, on a cluster you can build locally
 - [Output](../output.md), everything the export writes
 - [Handle secrets](../secrets.md), how secret values are dropped and how ExternalSecrets rebuild them
 - [Snapshots](../snapshots.md)
