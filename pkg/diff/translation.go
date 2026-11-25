@@ -41,14 +41,14 @@ func (r *Result) ApplyTranslation(t Translation) {
 	for _, c := range r.Changed {
 		// both read without the translation's own annotations, as A and B were compared
 		e, t2 := WithoutTranslationMark(t.Exported[c.A.Key]), WithoutTranslationMark(t.Translated[c.A.Key])
-		var real, translated []Field
+		var kept, translated []Field
 		for _, f := range c.Fields {
 			// invoking sortField to tell what this field is, its defined below
 			switch kind, reason := t.sortField(c, f, e, t2); kind {
 			case sortedTranslated:
 				translated = append(translated, f)
 			default:
-				real = append(real, f)
+				kept = append(kept, f)
 				if reason != "" {
 					c.Reasons = appendOnce(c.Reasons, reason)
 				}
@@ -58,8 +58,8 @@ func (r *Result) ApplyTranslation(t Translation) {
 			r.Translated = append(r.Translated, Sorted{Object: c.B, Why: []string{"changed by the translation"}, Fields: translated})
 		}
 		// a resource stays changed when a real field differs, or it only differs in the clusters' own values, which shows on its own
-		if len(real) > 0 || (len(c.Fields) == 0 && len(c.EnvFields) > 0) {
-			c.Fields = real
+		if len(kept) > 0 || (len(c.Fields) == 0 && len(c.EnvFields) > 0) {
+			c.Fields = kept
 			changed = append(changed, c)
 		} else {
 			r.AsTranslated++

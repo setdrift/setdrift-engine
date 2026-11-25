@@ -25,7 +25,7 @@ var secretValues = []string{
 	"VALhelmManifestC4d0",     // a value in a Helm release's rendered manifest
 }
 
-// check that no secret value survives an export, its files, or what export, diff and snapshot json print, in any form a cluster holds it
+// check that no secret value survives an export, its files, a translation's files, or what export, diff, snapshot json and translate print, in any form a cluster holds it
 // each value is looked for plain and base64-encoded once and twice
 func TestNoSecretValueSurvives(t *testing.T) {
 	in, out := t.TempDir(), t.TempDir()
@@ -150,6 +150,31 @@ data: {release: ` + release + `}
 	check("snapshot json", stdout+stderr)
 	stdout, stderr, _ = runCmd(t, "diff", snaps[0], in) // differences or none, only what it prints matters
 	check("diff", stdout+stderr)
+
+	// translate, what it prints and every file of the overlay it writes, its README.md, RESTORE.md and decisions
+	stdout, stderr, err = runCmd(t, "translate", out, "--to", "aks", "--unmatched", "keep-source")
+	if err != nil {
+		t.Fatalf("translate: %v\n%s", err, stderr)
+	}
+	check("translate's output", stdout+stderr)
+	overlays, _ := filepath.Glob(filepath.Join(out, "clusters", "leak", "translations", "*"))
+	if len(overlays) != 1 {
+		t.Fatalf("translations: %v", overlays)
+	}
+	err = filepath.WalkDir(overlays[0], func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		b, err := os.ReadFile(path) // #nosec G304 -- a file the test's own translate wrote
+		if err != nil {
+			return err
+		}
+		check(path, string(b))
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// the export still knows each Secret by its keys, which are fine to keep
 	b, err := os.ReadFile(filepath.Join(out, "clusters", "leak", "redacted", "namespaces", "shop", "secret", "opaque.yaml.redacted"))

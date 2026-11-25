@@ -232,7 +232,7 @@ func TestBuildCorpus(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		objs, err := build(root, root)
+		objs, err := buildSealed(root, root)
 		if err != nil {
 			t.Errorf("%s: %v", repo, err)
 			continue
@@ -413,7 +413,7 @@ func TestBuildIsSealed(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(outside, "cm.yaml"), []byte("apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: stolen\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	objs, err := build(root, root)
+	objs, err := buildSealed(root, root)
 	if err == nil {
 		t.Fatalf("built %d objects from outside the export", len(objs))
 	}

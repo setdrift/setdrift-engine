@@ -263,7 +263,7 @@ func (v DryRunVerifier) Verify(ctx context.Context, repoDir string) (*Report, er
 		return nil, err
 	}
 	// invoking build to get what the chosen set's kustomization builds, its defined below
-	objs, err := build(root, filepath.Join(root, filepath.FromSlash(v.Set)))
+	objs, err := buildSealed(root, filepath.Join(root, filepath.FromSlash(v.Set)))
 	if err != nil {
 		return nil, err
 	}
@@ -502,8 +502,6 @@ func remoteValue(v any) (string, bool) {
 // sealedRoot is where build puts its copy of the export in memory, a fixed path so a windows drive letter never gets in the way
 const sealedRoot = "/export"
 
-// build takes the cluster's directory and the directory inside it to build, and gives back the objects that kustomization builds, as kubectl kustomize does
-// kustomize runs on an in-memory copy of the export's regular files, so it cant read anything outside the export even if localOnly missed something
 // Build gives back what the kustomization in dir builds, dir being root, a cluster's directory, or a set under it, after refusing anything remote, as verify does
 // translate builds the generic set with it
 func Build(root, dir string) ([]*unstructured.Unstructured, error) {
@@ -511,10 +509,12 @@ func Build(root, dir string) ([]*unstructured.Unstructured, error) {
 	if err := localOnly(root); err != nil {
 		return nil, err
 	}
-	return build(root, dir)
+	return buildSealed(root, dir)
 }
 
-func build(root, dir string) ([]*unstructured.Unstructured, error) {
+// buildSealed takes the cluster's directory and the directory inside it to build, and gives back the objects that kustomization builds, as kubectl kustomize does
+// kustomize runs on an in-memory copy of the export's regular files, so it cant read anything outside the export even if localOnly missed something
+func buildSealed(root, dir string) ([]*unstructured.Unstructured, error) {
 	// invoking sealedCopy to copy the export into memory, its defined below
 	fSys, err := sealedCopy(root)
 	if err != nil {

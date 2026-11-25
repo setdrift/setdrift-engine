@@ -31,7 +31,7 @@ type bucket struct {
 func readBucket(o *unstructured.Unstructured) (bucket, bool) {
 	spec, _, _ := unstructured.NestedMap(o.Object, "spec")
 	b := bucket{Name: o.GetName()}
-	mapped := []string{}
+	var mapped []string
 	switch o.GroupVersionKind().Group + "/" + o.GetKind() {
 	case "s3.services.k8s.aws/Bucket":
 		if n, _ := spec["name"].(string); n != "" {

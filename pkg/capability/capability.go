@@ -329,8 +329,8 @@ func (m *Map) owners(value string, pick func(Markers) []string, prefix bool) []p
 	return out
 }
 
-// groupOwners gives back the platforms an API group belongs to, matching the group itself or a suffix after a dot
-func (m *Map) groupOwners(group string) []platform.Distribution {
+// ownersOfGroup gives back the platforms an API group belongs to, matching the group itself or a suffix after a dot
+func (m *Map) ownersOfGroup(group string) []platform.Distribution {
 	if group == "" {
 		return nil
 	}
@@ -385,6 +385,8 @@ func (m *Map) Misfits(objs []Object, target platform.Distribution) []Misfit {
 }
 
 // reasons lists what one object names that belongs to other platforms and not the target
+//
+//revive:disable-next-line:cognitive-complexity one independent rule per kind, clearest as one switch
 func (m *Map) reasons(o Object, target platform.Distribution) []string {
 	var rs []string
 	// foreign adds a reason when the value belongs to platforms that dont include the target
@@ -405,7 +407,7 @@ func (m *Map) reasons(o Object, target platform.Distribution) []string {
 		foreign("finalizer", f, m.owners(f, func(k Markers) []string { return k.FinalizerPrefixes }, true), "nothing removes it, so deleting the object hangs")
 	}
 	// the object's own kind, like a Karpenter NodePool or an ACK Bucket
-	foreign("its API group", o.Group, m.groupOwners(o.Group), "nothing serves or acts on it")
+	foreign("its API group", o.Group, m.ownersOfGroup(o.Group), "nothing serves or acts on it")
 
 	switch {
 	case o.Group == "" && o.Kind == "Service":
@@ -518,10 +520,10 @@ func nodeKeys(spec map[string]any) []string {
 	return sortedKeys(set)
 }
 
-// anyAt walks nested maps by keys and gives back what is there, nil when a step is missing
-func anyAt(m map[string]any, path ...string) any {
+// anyAt walks nested maps by steps and gives back what is there, nil when a step is missing
+func anyAt(m map[string]any, steps ...string) any {
 	var cur any = m
-	for _, p := range path {
+	for _, p := range steps {
 		cm, ok := cur.(map[string]any)
 		if !ok {
 			return nil
@@ -532,25 +534,25 @@ func anyAt(m map[string]any, path ...string) any {
 }
 
 // mapAt is anyAt for a map
-func mapAt(m map[string]any, path ...string) map[string]any {
-	v, _ := anyAt(m, path...).(map[string]any)
+func mapAt(m map[string]any, steps ...string) map[string]any {
+	v, _ := anyAt(m, steps...).(map[string]any)
 	return v
 }
 
 // str is anyAt for a string
-func str(m map[string]any, path ...string) (string, bool) {
-	v, ok := anyAt(m, path...).(string)
+func str(m map[string]any, steps ...string) (string, bool) {
+	v, ok := anyAt(m, steps...).(string)
 	return v, ok
 }
 
-// keys gives back the sorted keys of the map at path
-func keys(m map[string]any, path ...string) []string {
-	return sortedKeys(mapAt(m, path...))
+// keys gives back the sorted keys of the map at steps
+func keys(m map[string]any, steps ...string) []string {
+	return sortedKeys(mapAt(m, steps...))
 }
 
-// stringsAt gives back the strings in the list at path
-func stringsAt(m map[string]any, path ...string) []string {
-	l, _ := anyAt(m, path...).([]any)
+// stringsAt gives back the strings in the list at steps
+func stringsAt(m map[string]any, steps ...string) []string {
+	l, _ := anyAt(m, steps...).([]any)
 	var out []string
 	for _, v := range l {
 		if s, ok := v.(string); ok {
@@ -584,7 +586,7 @@ func sortedKeys[V any](m map[string]V) []string {
 // the owners of each kind of marker, for translate
 
 // GroupOwners gives back the platforms an API group belongs to
-func (m *Map) GroupOwners(group string) []platform.Distribution { return m.groupOwners(group) }
+func (m *Map) GroupOwners(group string) []platform.Distribution { return m.ownersOfGroup(group) }
 
 // ProvisionerOwners gives back the platforms a storage provisioner belongs to
 func (m *Map) ProvisionerOwners(p string) []platform.Distribution {
