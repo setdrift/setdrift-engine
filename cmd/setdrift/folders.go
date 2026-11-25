@@ -56,6 +56,7 @@ func folderKind(dir string) folder {
 	if _, err := os.Stat(filepath.Join(abs, kustomize.ExportInfoFile)); err == nil {
 		return folder{kind: folderExport, root: abs}
 	}
+	// the error is dropped: filepath.Glob only fails on a malformed pattern, and this one is fixed
 	if m, _ := filepath.Glob(filepath.Join(abs, "clusters", "*", kustomize.ExportInfoFile)); len(m) > 0 {
 		return folder{kind: folderExport, root: abs}
 	}
@@ -177,6 +178,7 @@ func olderApplyNote(r *verify.Report) string {
 // keptTranslations says, for each translation an export kept from before, that its older than the export now and how to bring it in step
 func keptTranslations(root, out string) []string {
 	var lines []string
+	// the error is dropped: no translations directory, or one that can't be read, means no translation to name here, the other commands report it
 	entries, _ := os.ReadDir(filepath.Join(root, "translations"))
 	for _, e := range entries {
 		f := folderKind(filepath.Join(root, "translations", e.Name()))

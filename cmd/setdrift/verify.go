@@ -195,6 +195,7 @@ func (o *verifyOptions) run(cmd *cobra.Command, dir string) error {
 	// invoking platform.FromKubeconfig to read the hints the kubeconfig gives, its defined in pkg/platform/signals.go
 	signals := platform.FromKubeconfig(kc.platform)
 	// invoking platform.Probe to ask the cluster itself, its defined in pkg/platform/probe.go
+	// the error is dropped: Probe's second result is notes for the user, not an error, verify words its own
 	probed, _ := platform.Probe(cmd.Context(), dc, dyn)
 	// invoking platform.Decide to weigh both into one classification, its defined in pkg/platform/platform.go
 	cls := platform.Decide(append(signals, probed...))
@@ -447,6 +448,7 @@ func translationFor(root string, cls *platform.Classification) (dir string, stam
 	if err != nil {
 		return "", nil, nil
 	}
+	// the error is dropped: no translations directory, or one that can't be read, means no translation to name here, the other commands report it
 	entries, _ := os.ReadDir(filepath.Join(root, capability.TranslationsDir))
 	for _, e := range entries {
 		d := capability.TranslationsDir + "/" + e.Name()

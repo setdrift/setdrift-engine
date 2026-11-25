@@ -18,8 +18,11 @@ const (
 	Unknown = ""
 )
 
-// Namespaces are where the engines run, the ones to read for Detect
-var Namespaces = []string{"kube-system", "calico-system"}
+// engineNamespaces are where the engines run, the ones to read for Detect
+var engineNamespaces = []string{"kube-system", "calico-system"}
+
+// Namespaces gives back where the engines run, the namespaces to read for Detect, a copy the caller may change
+func Namespaces() []string { return slices.Clone(engineNamespaces) }
 
 // VPCCNIConfigMap is the EKS VPC CNI's settings in kube-system, it switches the policy agent on, and on EKS Auto Mode its the only switch
 const VPCCNIConfigMap = "amazon-vpc-cni"
@@ -42,7 +45,7 @@ var engines = map[string]string{
 func Detect(objs []*unstructured.Unstructured) string {
 	var found []string
 	for _, o := range objs {
-		if !slices.Contains(Namespaces, o.GetNamespace()) {
+		if !slices.Contains(engineNamespaces, o.GetNamespace()) {
 			continue
 		}
 		switch o.GetKind() {
@@ -88,7 +91,7 @@ func Detect(objs []*unstructured.Unstructured) string {
 func Idle(objs []*unstructured.Unstructured) []string {
 	var out []string
 	for _, o := range objs {
-		if o.GetKind() != "DaemonSet" || !slices.Contains(Namespaces, o.GetNamespace()) {
+		if o.GetKind() != "DaemonSet" || !slices.Contains(engineNamespaces, o.GetNamespace()) {
 			continue
 		}
 		if ready, ok, _ := unstructured.NestedInt64(o.Object, "status", "numberReady"); ok && ready == 0 && engines[o.GetName()] != "" {
