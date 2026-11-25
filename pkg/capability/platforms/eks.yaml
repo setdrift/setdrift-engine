@@ -66,23 +66,35 @@ translate:
   dir: platform/aws/eks
   storage:
     # tiers, matched on the source by provisioner and a parameter, written on the target as its class
-    # Auto Mode clusters use ebs.csi.eks.amazonaws.com: the README of a translation says so
+    # the limits are AWS's, from its EBS docs (2026): gp3 and io2 take IOPS and throughput, st1 starts at 125 GiB
     - tier: hdd
       provisioners: [ebs.csi.aws.com, ebs.csi.eks.amazonaws.com, kubernetes.io/aws-ebs]
       parameter: type
       values: [st1, sc1, standard]
       class: {provisioner: ebs.csi.eks.amazonaws.com, parameters: {type: st1}}
+      minSizeGi: 125
+      fallback: general-ssd
     - tier: general-ssd
       provisioners: [ebs.csi.aws.com, ebs.csi.eks.amazonaws.com, kubernetes.io/aws-ebs]
       parameter: type
       values: [gp3, gp2]
       default: true
       class: {provisioner: ebs.csi.eks.amazonaws.com, parameters: {type: gp3}}
+      performance: {iops: iops, throughput: throughput, iopsPerGi: iopsPerGB, maxIOPS: 80000, maxThroughput: 2000, baseIOPS: 3000, baseThroughput: 125}
     - tier: premium-ssd
       provisioners: [ebs.csi.aws.com, ebs.csi.eks.amazonaws.com]
       parameter: type
       values: [io1, io2]
-      class: {provisioner: ebs.csi.eks.amazonaws.com, parameters: {type: io2}}
+      # io2 needs its IOPS set, 3000 like the other clouds' baseline unless the source's carry over
+      class: {provisioner: ebs.csi.eks.amazonaws.com, parameters: {type: io2, iops: "3000"}}
+      performance: {iops: iops, iopsPerGi: iopsPerGB, maxIOPS: 256000}
+    - tier: extreme
+      provisioners: [ebs.csi.aws.com, ebs.csi.eks.amazonaws.com]
+      parameter: type
+      # nothing on EKS reads as extreme, io2 Block Express is written for another platform's extreme disks
+      values: []
+      class: {provisioner: ebs.csi.eks.amazonaws.com, parameters: {type: io2, iops: "3000"}}
+      performance: {iops: iops, iopsPerGi: iopsPerGB, maxIOPS: 256000}
     - tier: shared-file
       provisioners: [efs.csi.aws.com]
       default: true

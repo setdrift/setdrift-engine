@@ -17,17 +17,19 @@ import (
 // a workload pinned to a node pool on spot, a workload using the platform's cloud identity, a NetworkPolicy and a ConfigMap
 func cluster(t *testing.T, d platform.Distribution) []*unstructured.Unstructured {
 	t.Helper()
-	var class, lb, pool, spot, saAnn string
+	var class, tuned, lb, pool, spot, saAnn string
 	// a platform that taints its spot nodes has the toleration on a workload pinned to them, as it must to run there
 	tol := ""
 	switch d {
 	case platform.EKS:
 		class = "provisioner: ebs.csi.eks.amazonaws.com\nparameters: {type: gp3}"
+		tuned = "provisioner: ebs.csi.eks.amazonaws.com\nparameters: {type: gp3, iops: \"6000\", throughput: \"250\"}"
 		lb = "annotations: {service.beta.kubernetes.io/aws-load-balancer-scheme: internal}}\nspec: {type: LoadBalancer, loadBalancerClass: eks.amazonaws.com/nlb, ports: [{port: 80}]}"
 		pool, spot = "eks.amazonaws.com/nodegroup", "{eks.amazonaws.com/capacityType: SPOT}"
 		saAnn = "eks.amazonaws.com/role-arn: arn:aws:iam::111122223333:role/orders"
 	case platform.GKE:
 		class = "provisioner: pd.csi.storage.gke.io\nparameters: {type: pd-balanced}"
+		tuned = "provisioner: pd.csi.storage.gke.io\nparameters: {type: pd-ssd}"
 		lb = "annotations: {networking.gke.io/load-balancer-type: Internal}}\nspec: {type: LoadBalancer, ports: [{port: 80}]}"
 		pool, spot = "cloud.google.com/gke-nodepool", "{cloud.google.com/gke-spot: \"true\"}"
 		tol = `
@@ -35,6 +37,7 @@ func cluster(t *testing.T, d platform.Distribution) []*unstructured.Unstructured
 		saAnn = "iam.gke.io/gcp-service-account: orders@iam.gserviceaccount.com"
 	case platform.AKS:
 		class = "provisioner: disk.csi.azure.com\nparameters: {skuName: PremiumV2_LRS}"
+		tuned = "provisioner: disk.csi.azure.com\nparameters: {skuName: PremiumV2_LRS, cachingMode: None, DiskIOPSReadWrite: \"6000\", DiskMBpsReadWrite: \"250\"}"
 		lb = "annotations: {service.beta.kubernetes.io/azure-load-balancer-internal: \"true\"}}\nspec: {type: LoadBalancer, ports: [{port: 80}]}"
 		pool, spot = "kubernetes.azure.com/agentpool", "{kubernetes.azure.com/scalesetpriority: spot}"
 		tol = `
@@ -43,6 +46,7 @@ func cluster(t *testing.T, d platform.Distribution) []*unstructured.Unstructured
 	}
 	docs := []string{
 		"apiVersion: storage.k8s.io/v1\nkind: StorageClass\nmetadata: {name: fast}\n" + class,
+		"apiVersion: storage.k8s.io/v1\nkind: StorageClass\nmetadata: {name: tuned}\n" + tuned,
 		"apiVersion: v1\nkind: Service\nmetadata: {name: web-lb, namespace: shop, " + lb,
 		"apiVersion: v1\nkind: ServiceAccount\nmetadata: {name: orders, namespace: shop, annotations: {" + saAnn + "}}",
 		`apiVersion: apps/v1
@@ -105,7 +109,7 @@ func jsonOf(m map[string]any) any {
 	return back.Object
 }
 
-// every direction, there and back with every default, comes back as it was, apart from the known case below, ROUNDTRIP=1 prints every difference
+// every direction, there and back with every default, comes back exactly as it was, ROUNDTRIP=1 prints any difference
 func TestRoundTripAllDirections(t *testing.T) {
 	all := []platform.Distribution{platform.EKS, platform.AKS, platform.GKE}
 	var report []string
@@ -122,11 +126,8 @@ func TestRoundTripAllDirections(t *testing.T) {
 			sort.Strings(keys)
 			for _, k := range keys {
 				report = append(report, fmt.Sprintf("%s -> %s -> %s  %s\n      %s", home, away, home, k, strings.Join(got[k], "\n      ")))
-				// the one known case: a storage class comes back as the platform's own class of its tier, see the M3 notes in the backlog
 				for _, line := range got[k] {
-					if k != "StorageClass/fast" || !strings.HasPrefix(line, "parameters") {
-						t.Errorf("%s -> %s -> %s: %s doesn't come back as it was: %s", home, away, home, k, line)
-					}
+					t.Errorf("%s -> %s -> %s: %s doesn't come back as it was: %s", home, away, home, k, line)
 				}
 			}
 		}

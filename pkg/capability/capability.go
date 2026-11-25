@@ -110,6 +110,32 @@ type StorageTier struct {
 	Default bool `json:"default,omitempty"`
 	// Class is what a StorageClass of this tier is written as on this platform
 	Class StorageClass `json:"class"`
+	// Performance names the class's IOPS and throughput parameters and their limits, so a source class's values carry over, nil when the platform's class sets none
+	Performance *Performance `json:"performance,omitempty"`
+	// PromoteAbove and Promote write the tier Promote instead when the carried IOPS are above PromoteAbove, like AKS's Ultra Disk above Premium SSD v2's maximum
+	PromoteAbove int    `json:"promoteAbove,omitempty"`
+	Promote      string `json:"promote,omitempty"`
+	// MinSizeGi is the smallest volume the class gives, and Fallback the tier written instead when a claim of the class asks for less, like st1's 125 GiB
+	MinSizeGi int    `json:"minSizeGi,omitempty"`
+	Fallback  string `json:"fallback,omitempty"`
+	// ZoneRedundant are values of Parameter whose disks are kept in several zones, which a translation says loudly when the target's aren't
+	ZoneRedundant []string `json:"zoneRedundant,omitempty"`
+	// Shape are the class's own parameters that make it this tier, not a user's tuning, so a translation doesn't list them as not carried, like GKE's pd-type
+	Shape []string `json:"shape,omitempty"`
+}
+
+// Performance is how a class sets its disks' IOPS and throughput
+type Performance struct {
+	// IOPS and Throughput are the parameter names, IOPSPerGi a parameter that sets IOPS by size instead, which no other platform reads
+	IOPS       string `json:"iops,omitempty"`
+	Throughput string `json:"throughput,omitempty"`
+	IOPSPerGi  string `json:"iopsPerGi,omitempty"`
+	// MaxIOPS and MaxThroughput are the most a disk of the class takes, a carried value above them is capped and said
+	MaxIOPS       int `json:"maxIOPS,omitempty"`
+	MaxThroughput int `json:"maxThroughput,omitempty"`
+	// BaseIOPS and BaseThroughput are what a disk of the class gets without them set, a source value equal to them isn't carried, the target's class gives the same
+	BaseIOPS       int `json:"baseIOPS,omitempty"`
+	BaseThroughput int `json:"baseThroughput,omitempty"`
 }
 
 // StorageClass is a provisioner with its parameters
@@ -201,6 +227,10 @@ func (m *Map) TranslationCode(from, to platform.Distribution) string {
 // TranslationAnnotation is what a translation's overlay stamps on every object it applies, with the translation's code, like setdrift.io/translation: te2g
 // so the target cluster's objects say they arrived through a translation, diff leaves it out of a comparison as SetDrift's own bookkeeping
 const TranslationAnnotation = "setdrift.io/translation"
+
+// SourceClassAnnotation is what a translation records on a StorageClass it rewrote, the original's platform, provisioner and parameters as JSON
+// translating back to that platform restores the original exactly, translating on to another starts from the original, diff leaves it out like TranslationAnnotation
+const SourceClassAnnotation = "setdrift.io/source-class"
 
 // TranslationsDir is the directory of a cluster's directory that holds its translations, each in translations/<code>
 const TranslationsDir = "translations"

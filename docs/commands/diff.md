@@ -62,7 +62,7 @@ A cluster with no context yet gets one from its cloud's CLI, for example `aws ek
 
 Both sides are normalized the way `export` normalizes them, so server defaults, status and secret values never show up as differences, and Secrets compare by their keys. Each platform's own objects (EKS's, kind's) are not compared. [What counts as a difference](../which-comparison.md#what-counts-as-a-difference) has the details, like why the same ECR image in two regions matches.
 
-The annotation `setdrift.io/translation`, which a [translation](translate.md#where-translations-go) puts on every object it applies, never counts as one. A translation itself isn't a side `diff` takes, it's changes to an export, so `diff` says so and names the export to compare instead.
+The annotations a [translation](translate.md#where-translations-go) keeps for itself, `setdrift.io/translation` on every object it applies and `setdrift.io/source-class` on a StorageClass, never count as one. A translation itself isn't a side `diff` takes, it's changes to an export, so `diff` says so and names the export to compare instead.
 
 ## Examples
 

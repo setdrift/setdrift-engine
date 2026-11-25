@@ -5,12 +5,15 @@
 package translate
 
 import (
+	"encoding/json"
 	"fmt"
 	"maps"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"setdrift.io/setdrift-engine/internal/text"
 	"setdrift.io/setdrift-engine/pkg/capability"
@@ -114,6 +117,8 @@ type Result struct {
 	Stale []string
 	// Identities are the cloud identities kept, keep-source, for the RESTORE.md steps that federate the target to them
 	Identities []Identity
+	// Lost are what the translation can't bring over and RESTORE.md lists loudly, like a disk's zone redundancy
+	Lost []Lost
 	// Added are objects the translation writes into the overlay, the target's equivalents chosen for cloud resources
 	Added []*unstructured.Unstructured
 	// CloudResources are the export's cloud-resource operator objects and what happens to each
@@ -121,6 +126,11 @@ type Result struct {
 	// NetworkPolicies counts the export's NetworkPolicies, NetworkPolicyEngine is what enforced them on the source, empty when unknown
 	NetworkPolicies     int
 	NetworkPolicyEngine string
+}
+
+// Lost is something a translation can't bring over, with why and what to do instead, for RESTORE.md's list
+type Lost struct {
+	What, Why, ToDo string
 }
 
 // NetworkPolicyChoice gives back what the decisions say about unenforced NetworkPolicies, Require when nothing does
@@ -161,7 +171,7 @@ func Translate(objs []*unstructured.Unstructured, from, to platform.Distribution
 	for _, d := range earlier {
 		chosen[d.Feature] = d.Choose
 	}
-	t := &translator{m: m, from: from, to: to, tgt: tgt, chosen: chosen, r: r, region: src.Region, kept: map[string]Identity{}}
+	t := &translator{m: m, from: from, to: to, tgt: tgt, chosen: chosen, r: r, region: src.Region, kept: map[string]Identity{}, claimMin: claimSizes(objs)}
 	for _, o := range objs {
 		// invoking object to work out one object's patch and decisions, its defined below
 		t.object(o)
@@ -229,6 +239,39 @@ func Translate(objs []*unstructured.Unstructured, from, to platform.Distribution
 	return r, nil
 }
 
+// claimSizes gives back the smallest size each StorageClass's claims ask for, in GiB rounded up, from claims and StatefulSets' claim templates
+func claimSizes(objs []*unstructured.Unstructured) map[string]int {
+	out := map[string]int{}
+	note := func(spec map[string]any) {
+		cls, _ := spec["storageClassName"].(string)
+		size, _, _ := unstructured.NestedString(spec, "resources", "requests", "storage")
+		q, err := resource.ParseQuantity(size)
+		if cls == "" || err != nil {
+			return
+		}
+		gi := int((q.Value() + (1 << 30) - 1) >> 30)
+		if cur, ok := out[cls]; !ok || gi < cur {
+			out[cls] = gi
+		}
+	}
+	for _, o := range objs {
+		switch o.GetKind() {
+		case "PersistentVolumeClaim":
+			if spec, ok, _ := unstructured.NestedMap(o.Object, "spec"); ok {
+				note(spec)
+			}
+		case "StatefulSet":
+			tpls, _, _ := unstructured.NestedSlice(o.Object, "spec", "volumeClaimTemplates")
+			for _, tpl := range tpls {
+				if spec, ok := tpl.(map[string]any)["spec"].(map[string]any); ok {
+					note(spec)
+				}
+			}
+		}
+	}
+	return out
+}
+
 // patchKey orders patches by kind, namespace and name
 func patchKey(p Patch) string { return p.Kind + "/" + p.Namespace + "/" + p.Name }
 
@@ -242,6 +285,8 @@ type translator struct {
 	region   string
 	// kept are the cloud identities kept, by namespace/serviceaccount
 	kept map[string]Identity
+	// claimMin is the smallest size, in GiB rounded up, a claim of each StorageClass asks for, by class name
+	claimMin map[string]int
 }
 
 // patchOf gives back the index of the object's patch, starting one when it has none yet
@@ -423,6 +468,7 @@ func (t *translator) networkPolicies(objs []*unstructured.Unstructured, engine s
 }
 
 // storageClass rewrites a class of another platform's provisioner to the target's class of the same tier, keeping its name so claims need no change
+// the source's IOPS and throughput carry over where both classes set them, within the target's limits, and what can't come over is said, a class can't always map 1:1 or both ways
 func (t *translator) storageClass(p *Patch, ref string, c map[string]any) {
 	prov, _ := c["provisioner"].(string)
 	if !t.foreign(t.m.ProvisionerOwners(prov)) {
@@ -434,15 +480,36 @@ func (t *translator) storageClass(p *Patch, ref string, c map[string]any) {
 			params[k] = fmt.Sprint(v)
 		}
 	}
-	// invoking tierOf to recognize the source class's kind of storage, its defined below
-	tier := t.tierOf(prov, params)
-	var cls *capability.StorageClass
-	for i := range t.tgt.Translate.Storage {
-		if t.tgt.Translate.Storage[i].Tier == tier {
-			cls = &t.tgt.Translate.Storage[i].Class
+	ann, _ := c["metadata"].(map[string]any)["annotations"].(map[string]any)
+	// invoking sourceClass to read what an earlier translation recorded of the original class, its defined below
+	if orig, ok := sourceClass(ann); ok {
+		// checking if its going back to the original's platform, if so the original is restored exactly and the record goes
+		if platform.Distribution(orig.Platform) == t.to {
+			p.Ops = append(p.Ops, Op{Op: "replace", Path: "/provisioner", Value: orig.Provisioner})
+			restored := map[string]any{}
+			for k, v := range orig.Parameters {
+				restored[k] = v
+			}
+			p.Ops = append(p.Ops, Op{Op: "add", Path: "/parameters", Value: restored})
+			p.Ops = append(p.Ops, Op{Op: "remove", Path: "/metadata/annotations/" + escape(capability.SourceClassAnnotation)})
+			p.Why = append(p.Why, fmt.Sprintf("the original %s class an earlier translation recorded is restored exactly, provisioner %s with %s", t.tgt.Name, orig.Provisioner, formatParams(orig.Parameters)))
+			return
+		}
+		// going on to another platform, the original is the truest source, not the translation of it
+		prov, params = orig.Provisioner, orig.Parameters
+	} else {
+		// recording the original, so translating back restores it exactly
+		rec, _ := json.Marshal(classRecord{Platform: string(t.from), Provisioner: prov, Parameters: params})
+		if ann == nil {
+			p.Ops = append(p.Ops, Op{Op: "add", Path: "/metadata/annotations", Value: map[string]any{capability.SourceClassAnnotation: string(rec)}})
+		} else {
+			p.Ops = append(p.Ops, Op{Op: "add", Path: "/metadata/annotations/" + escape(capability.SourceClassAnnotation), Value: string(rec)})
 		}
 	}
-	if cls == nil {
+	// invoking tierOf to recognize the source class's kind of storage, its defined below
+	tier, src := t.tierOf(prov, params)
+	tt := t.targetTier(tier)
+	if tt == nil {
 		what := fmt.Sprintf("%s uses provisioner %s with parameters %v, and SetDrift knows no %s class of the same kind", ref, prov, params, t.tgt.Name)
 		if t.decide(Decision{Feature: "storage/" + qualifiedName(p), What: what, Options: []string{LeaveOut}}) == LeaveOut {
 			p.Delete = true
@@ -450,26 +517,196 @@ func (t *translator) storageClass(p *Patch, ref string, c map[string]any) {
 		}
 		return
 	}
-	p.Ops = append(p.Ops, Op{Op: "replace", Path: "/provisioner", Value: cls.Provisioner})
+	var why []string
+	// the source's IOPS and throughput, where its class sets them
+	iops, thr, perGi := perfOf(src, params)
+	// checking if the IOPS are above the target tier's, if so the tier it promotes to is written, like Ultra Disk above Premium SSD v2's 80,000
+	if iops > 0 && tt.PromoteAbove > 0 && iops > tt.PromoteAbove {
+		if up := t.targetTier(tt.Promote); up != nil {
+			why = append(why, fmt.Sprintf("%d IOPS is above %d, the most the %s class takes, so it becomes the %s class", iops, tt.PromoteAbove, tt.Tier, up.Tier))
+			tt = up
+		}
+	}
+	// checking if a claim of the class asks for less than the target class gives, if so its fallback is written, like gp3 for claims under st1's 125 GiB
+	if tt.MinSizeGi > 0 && tt.Fallback != "" {
+		if smallest, ok := t.claimMin[qualifiedName(p)]; ok && smallest < tt.MinSizeGi {
+			if fb := t.targetTier(tt.Fallback); fb != nil {
+				why = append(why, fmt.Sprintf("a claim of this class asks for %d GiB, under the %d GiB the %s class starts at, so it becomes the %s class", smallest, tt.MinSizeGi, tt.Tier, fb.Tier))
+				tt = fb
+			}
+		}
+	}
 	newParams := map[string]any{}
-	for k, v := range cls.Parameters {
+	for k, v := range tt.Class.Parameters {
 		newParams[k] = v
 	}
+	// invoking carry to set the IOPS and throughput on the target's class, or say why they couldn't, its defined below
+	why = append(why, t.carry(ref, tt, newParams, iops, thr, perGi)...)
+	// the CSI parameters every driver reads, like the filesystem type, carry over as they are, anything else of the source's is said, not dropped silently
+	var dropped []string
+	for _, k := range slices.Sorted(maps.Keys(params)) {
+		switch {
+		case strings.HasPrefix(k, "csi.storage.k8s.io/"):
+			newParams[k] = params[k]
+		case !sourceKnows(src, k):
+			dropped = append(dropped, k+"="+params[k])
+		}
+	}
+	if len(dropped) > 0 {
+		t.r.Notes = append(t.r.Notes, fmt.Sprintf("%s's settings %s don't carry over to %s's class: set what the workload needs by hand, like encryption with a key of the target cloud's", ref, strings.Join(dropped, ", "), t.tgt.Name))
+	}
+	p.Ops = append(p.Ops, Op{Op: "replace", Path: "/provisioner", Value: tt.Class.Provisioner})
 	p.Ops = append(p.Ops, Op{Op: "add", Path: "/parameters", Value: newParams})
-	if ann, ok := c["metadata"].(map[string]any)["annotations"].(map[string]any); ok && ann["storageclass.kubernetes.io/is-default-class"] != nil {
+	if ann != nil && ann["storageclass.kubernetes.io/is-default-class"] != nil {
 		p.Ops = append(p.Ops, Op{Op: "remove", Path: "/metadata/annotations/" + escape("storageclass.kubernetes.io/is-default-class")})
 		p.Why = append(p.Why, fmt.Sprintf("no longer marked the default class: %s keeps its own default, and two defaults would make claims that name no class land on either", t.tgt.Name))
 	}
-	p.Why = append(p.Why, fmt.Sprintf("provisioner %s (%s) becomes %s with %s, the same kind of storage on %s; the class keeps its name, so claims need no change", prov, tier, cls.Provisioner, formatParams(cls.Parameters), t.tgt.Name))
-	if strings.Contains(fmt.Sprint(cls.Parameters), "<") {
+	shown := map[string]string{}
+	for k, v := range newParams {
+		shown[k] = fmt.Sprint(v)
+	}
+	p.Why = append(p.Why, fmt.Sprintf("provisioner %s (%s) becomes %s with %s, the same kind of storage on %s; the class keeps its name, so claims need no change", prov, tier, tt.Class.Provisioner, formatParams(shown), t.tgt.Name))
+	p.Why = append(p.Why, why...)
+	// checking if the source keeps its disks in several zones, if so its said loudly, the target's class doesnt
+	if v, ok := zoneValue(src, params); ok {
+		t.r.Notes = append(t.r.Notes, fmt.Sprintf("ZONE REDUNDANCY LOST: %s keeps its disks in several zones (%s), and %s's class keeps each disk in one zone, so a zone outage takes its volumes down. Replicate the data across zones yourself, like a database's replicas, or use the shared-file class for shared data", ref, v, t.tgt.Name))
+		t.r.Lost = append(t.r.Lost, Lost{What: ref + "'s zone redundancy", Why: fmt.Sprintf("%s disks are kept in several zones, %s's in one", v, t.tgt.Name), ToDo: "Replicate the data across zones, like a database's replicas, or use shared files"})
+	}
+	if strings.Contains(fmt.Sprint(tt.Class.Parameters), "<") {
 		t.r.Notes = append(t.r.Notes, fmt.Sprintf("%s: fill in the values in angle brackets in the overlay's kustomization.yaml before applying", ref))
 	}
 }
 
-// tierOf recognizes a class's kind of storage from any platform's tiers, by provisioner and parameter, empty when none matches
-func (t *translator) tierOf(prov string, params map[string]string) string {
-	for _, pl := range t.m.Platforms {
-		for _, st := range pl.Translate.Storage {
+// classRecord is what SourceClassAnnotation holds, a StorageClass as it was before its first translation
+type classRecord struct {
+	Platform    string            `json:"platform"`
+	Provisioner string            `json:"provisioner"`
+	Parameters  map[string]string `json:"parameters,omitempty"`
+}
+
+// sourceClass reads the original class an earlier translation recorded, ok false when theres none or it doesnt parse
+func sourceClass(ann map[string]any) (classRecord, bool) {
+	v, _ := ann[capability.SourceClassAnnotation].(string)
+	var rec classRecord
+	if v == "" || json.Unmarshal([]byte(v), &rec) != nil || rec.Provisioner == "" {
+		return classRecord{}, false
+	}
+	if rec.Parameters == nil {
+		rec.Parameters = map[string]string{}
+	}
+	return rec, true
+}
+
+// zoneValue gives back the source class's parameter value when it keeps disks in several zones
+func zoneValue(src *capability.StorageTier, params map[string]string) (string, bool) {
+	if src == nil {
+		return "", false
+	}
+	v, ok := param(params, src.Parameter)
+	return v, ok && slices.ContainsFunc(src.ZoneRedundant, func(z string) bool { return strings.EqualFold(z, v) })
+}
+
+// sourceKnows tells if a parameter is one the source's tier reads, its tier parameter, its shape or its performance settings, which the translation accounts for
+func sourceKnows(src *capability.StorageTier, k string) bool {
+	if src == nil {
+		return false
+	}
+	known := append([]string{src.Parameter}, src.Shape...)
+	if pf := src.Performance; pf != nil {
+		known = append(known, pf.IOPS, pf.Throughput, pf.IOPSPerGi)
+	}
+	// Azure's skuName is also written skuname and storageaccounttype
+	if strings.EqualFold(src.Parameter, "skuName") {
+		known = append(known, "storageaccounttype")
+	}
+	return slices.ContainsFunc(known, func(x string) bool { return x != "" && strings.EqualFold(x, k) })
+}
+
+// targetTier gives back the target's tier by name, nil when it has none
+func (t *translator) targetTier(name string) *capability.StorageTier {
+	for i := range t.tgt.Translate.Storage {
+		if t.tgt.Translate.Storage[i].Tier == name {
+			return &t.tgt.Translate.Storage[i]
+		}
+	}
+	return nil
+}
+
+// perfOf reads a source class's IOPS, throughput and IOPS per GiB, zero for each it doesnt set
+func perfOf(src *capability.StorageTier, params map[string]string) (iops, thr, perGi int) {
+	if src == nil || src.Performance == nil {
+		return 0, 0, 0
+	}
+	num := func(name string) int {
+		if name == "" {
+			return 0
+		}
+		v, ok := param(params, name)
+		if !ok {
+			return 0
+		}
+		n, err := strconv.Atoi(strings.TrimSpace(v))
+		if err != nil {
+			return 0
+		}
+		return n
+	}
+	return num(src.Performance.IOPS), num(src.Performance.Throughput), num(src.Performance.IOPSPerGi)
+}
+
+// carry sets the source's IOPS and throughput on the target's class parameters, capped at its limits, and gives back what it says about them
+// a target class without performance settings, or a value set per GiB, cant take them, and thats a note to set them by hand
+func (t *translator) carry(ref string, tt *capability.StorageTier, params map[string]any, iops, thr, perGi int) []string {
+	var why []string
+	if perGi > 0 {
+		t.r.Notes = append(t.r.Notes, fmt.Sprintf("%s sets %d IOPS per GiB, which %s's class doesn't read: set its IOPS by hand for the size its claims ask for", ref, perGi, t.tgt.Name))
+	}
+	if iops == 0 && thr == 0 {
+		return nil
+	}
+	pf := tt.Performance
+	if pf == nil {
+		t.r.Notes = append(t.r.Notes, fmt.Sprintf("%s sets %s, which %s's %s class doesn't take from a StorageClass: set them by hand if the workload needs them", ref, perfText(iops, thr), t.tgt.Name, tt.Tier))
+		return nil
+	}
+	set := func(name string, v, maxV, base int, what string) {
+		// checking if theres nothing to carry, or the value is what both classes give anyway, if so the target's class stays as it is
+		if v == 0 || (base > 0 && v == base) {
+			return
+		}
+		if name == "" {
+			t.r.Notes = append(t.r.Notes, fmt.Sprintf("%s sets %s %d, which %s's %s class sets by its IOPS instead", ref, what, v, t.tgt.Name, tt.Tier))
+			return
+		}
+		if maxV > 0 && v > maxV {
+			t.r.Notes = append(t.r.Notes, fmt.Sprintf("%s sets %s %d, above %d, the most %s's %s class takes, so it's capped at %d", ref, what, v, maxV, t.tgt.Name, tt.Tier, maxV))
+			v = maxV
+		}
+		params[name] = strconv.Itoa(v)
+	}
+	set(pf.IOPS, iops, pf.MaxIOPS, pf.BaseIOPS, "IOPS")
+	set(pf.Throughput, thr, pf.MaxThroughput, pf.BaseThroughput, "throughput")
+	why = append(why, fmt.Sprintf("%s carried over", perfText(iops, thr)))
+	return why
+}
+
+// perfText writes IOPS and throughput for people
+func perfText(iops, thr int) string {
+	var parts []string
+	if iops > 0 {
+		parts = append(parts, fmt.Sprintf("%d IOPS", iops))
+	}
+	if thr > 0 {
+		parts = append(parts, fmt.Sprintf("throughput %d", thr))
+	}
+	return strings.Join(parts, " and ")
+}
+
+// tierOf recognizes a class's kind of storage from any platform's tiers, by provisioner and parameter, with the tier it matched, empty and nil when none matches
+func (t *translator) tierOf(prov string, params map[string]string) (string, *capability.StorageTier) {
+	for i := range t.m.Platforms {
+		for j := range t.m.Platforms[i].Translate.Storage {
+			st := &t.m.Platforms[i].Translate.Storage[j]
 			if !slices.Contains(st.Provisioners, prov) {
 				continue
 			}
@@ -477,15 +714,15 @@ func (t *translator) tierOf(prov string, params map[string]string) string {
 			v, ok := param(params, st.Parameter)
 			switch {
 			case st.Parameter == "":
-				return st.Tier
+				return st.Tier, st
 			case ok && slices.ContainsFunc(st.Values, func(x string) bool { return strings.EqualFold(x, v) }):
-				return st.Tier
+				return st.Tier, st
 			case !ok && st.Default:
-				return st.Tier
+				return st.Tier, st
 			}
 		}
 	}
-	return ""
+	return "", nil
 }
 
 // param reads a StorageClass parameter without regard to case, Azure's skuName is also written skuname and storageaccounttype
