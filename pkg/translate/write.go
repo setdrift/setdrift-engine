@@ -28,7 +28,9 @@ const (
 // Stamp is what StampFile holds
 type Stamp struct {
 	// Code names the translation, like te2g for EKS to GKE, the same as its directory's name
-	Code         string `json:"code,omitempty"`
+	Code string `json:"code,omitempty"`
+	// ID is a short hash of what the overlay applies, the annotation on the target's objects is code-id, so an older apply is told apart
+	ID           string `json:"id,omitempty"`
 	From         string `json:"from"`
 	To           string `json:"to"`
 	TranslatedAt string `json:"translatedAt"`
@@ -78,7 +80,8 @@ func Explainer(ds []Decision) func(*unstructured.Unstructured) string {
 	return func(o *unstructured.Unstructured) string {
 		q := qualified(o)
 		for _, f := range []string{"identity/" + q, "secret-store/" + q, "object/" + o.GetKind() + "/" + q, "cloud-resource/" + o.GetKind() + "/" + q, "storage/" + q} {
-			if d, ok := byFeature[f]; ok && d.choice() != "" {
+			// a decision waiting for the user to choose again, the source changed under it, explains nothing
+			if d, ok := byFeature[f]; ok && d.choice() != "" && !d.Waiting() {
 				how := "as chosen"
 				if d.Choose == "" {
 					how = "the default"
@@ -96,7 +99,7 @@ func plainYAMLError(err error) string {
 	// checking if its a key the file shouldnt have, if so it names the key and the ones it may have
 	if i := strings.Index(msg, `unknown field "`); i >= 0 {
 		key := strings.SplitN(msg[i+len(`unknown field "`):], `"`, 2)[0]
-		return fmt.Sprintf("it has an unknown key %q (an entry has feature, what, options, default and choose)", key)
+		return fmt.Sprintf("it has an unknown key %q (an entry has feature, what, options, default, previous, choose and basis)", key)
 	}
 	for _, p := range []string{"error converting YAML to JSON: ", "error unmarshaling JSON: while decoding JSON: ", "yaml: "} {
 		msg = strings.ReplaceAll(msg, p, "")
@@ -115,9 +118,9 @@ func WriteDecisions(dir string, ds []Decision) error {
 		entry := []struct {
 			k string
 			v any
-		}{{"feature", d.Feature}, {"what", d.What}, {"options", d.Options}, {"default", d.Default}, {"choose", d.Choose}}
+		}{{"feature", d.Feature}, {"what", d.What}, {"options", d.Options}, {"default", d.Default}, {"previous", d.Previous}, {"choose", d.Choose}, {"basis", d.Basis}}
 		for i, kv := range entry {
-			if kv.k == "default" && d.Default == "" {
+			if (kv.k == "default" && d.Default == "") || (kv.k == "previous" && d.Previous == "") || (kv.k == "basis" && d.Basis == "") {
 				continue
 			}
 			vb, err := yaml.Marshal(map[string]any{kv.k: kv.v})
@@ -138,7 +141,9 @@ func WriteDecisions(dir string, ds []Decision) error {
 		"# For each, set choose to one of its options (keep-source, equivalent, leave-out,\n" +
 		"# or for NetworkPolicies require or accept-unenforced),\n" +
 		"# then run setdrift translate again. An empty choose takes the default where there\n" +
-		"# is one; with no default, translate stops until you choose.\n"
+		"# is one; with no default, translate stops until you choose. basis records what\n" +
+		"# each was decided on: when the source changes under your choice, translate asks\n" +
+		"# again, with your earlier choice in previous.\n"
 	return os.WriteFile(filepath.Join(dir, DecisionsFile), append([]byte(head), b...), 0o600)
 }
 
@@ -187,8 +192,14 @@ func Write(root string, r *Result, resources []string, version string, ri Restor
 		res = append(res, equivalentsDir+"/"+name)
 	}
 	k["resources"] = res
-	// every object the overlay applies, and its Pod template, carries the translation's code, so the target cluster's objects say where they came from
-	k["commonAnnotations"] = map[string]string{capability.TranslationAnnotation: r.Code}
+	// the translation's id, a short hash of what the overlay applies, the same for the same translation and new for a changed one
+	var added []any
+	for _, a := range r.Added {
+		added = append(added, a.Object)
+	}
+	r.ID = Fingerprint([]any{res, r.Patches, added})[:8]
+	// every object the overlay applies, and its Pod template, carries the translation's code and id, so the target cluster's objects say which translation they came from
+	k["commonAnnotations"] = map[string]string{capability.TranslationAnnotation: r.Code + "-" + r.ID}
 	var patches []map[string]any
 	for _, p := range r.Patches {
 		// invoking patchEntry to write one patch as kustomize reads it, its defined below
@@ -209,7 +220,7 @@ func Write(root string, r *Result, resources []string, version string, ri Restor
 	if err := os.WriteFile(filepath.Join(dir, "kustomization.yaml"), append([]byte(kHead), kb...), 0o600); err != nil {
 		return err
 	}
-	sb, err := yaml.Marshal(Stamp{Code: r.Code, From: string(r.From), To: string(r.To), TranslatedAt: time.Now().UTC().Format(time.RFC3339), SetDrift: version})
+	sb, err := yaml.Marshal(Stamp{Code: r.Code, ID: r.ID, From: string(r.From), To: string(r.To), TranslatedAt: time.Now().UTC().Format(time.RFC3339), SetDrift: version})
 	if err != nil {
 		return err
 	}

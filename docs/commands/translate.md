@@ -21,7 +21,7 @@ Each translation is in the export's `translations/<code>/`, named by its directi
 | `ta2e` | AKS to EKS |
 | `ta2g` | AKS to GKE |
 
-A source on no known platform is `x`, like `tx2g`. The directory holds the overlay, its `translation.yaml` (from, to and when), README.md, RESTORE.md and `translate-decisions.yaml`. Every object the overlay applies carries the annotation `setdrift.io/translation` with the code, so the target cluster's objects say they arrived through a translation, and a translated StorageClass also carries `setdrift.io/source-class`, its original, see [Mapping isn't always 1:1](#mapping-isnt-always-11-or-both-ways). `diff` leaves both out of a comparison.
+A source on no known platform is `x`, like `tx2g`. The directory holds the overlay, its `translation.yaml` (from, to and when), README.md, RESTORE.md and `translate-decisions.yaml`. Every object the overlay applies carries the annotation `setdrift.io/translation` with the code and the translation's id, like `te2g-af990077`, so the target cluster's objects say which translation they arrived through. The id is a short hash of what the overlay applies, the same when translating again changes nothing and new when it does, so `diff` and `verify` can tell a target applied from an earlier run of the translation, and a translated StorageClass also carries `setdrift.io/source-class`, its original, see [Mapping isn't always 1:1](#mapping-isnt-always-11-or-both-ways). `diff` leaves both out of a comparison.
 
 A translation isn't an export, and the two aren't interchangeable. Given a translation or the export's own platform set, `translate` says so and names the export to give instead. Exporting again keeps the translations and their decisions, and says to run `translate` again so each is in step with the new export.
 
@@ -76,6 +76,8 @@ What has no 1:1 equivalent is a decision, kept in `translate-decisions.yaml` in 
 
 A choice must be one its entry offers, and translate refuses a file it can't read, saying what's wrong. A decision for something the export no longer has, like an object deleted since, is dropped, and translate says so.
 
+Each decision records what it was made on, a fingerprint of the source object in `basis` (for NetworkPolicies, the engine and the policies). When the source changes under a choice you made, like a kept identity's role or a policy added since an `accept-unenforced`, translating again doesn't carry the choice over. It stops and asks again, with your earlier choice in `previous`. A default you never changed is taken again, and translate says the source changed under it. Exporting again doesn't do this by itself, so after exporting, translate again, and `verify` and `diff` say when a translation is older than its export.
+
 Where there's a safe default, like `keep-source` for a cloud identity or an External Secrets store, or `require` for NetworkPolicies the source enforced, translate takes it and lists it. Where there isn't, like an object that creates cloud resources, translate stops and writes the file for you to fill in. Run translate again after choosing, and your choices carry over to every later run.
 
 `setdrift verify` on a cluster of the target platform checks the translation, and counts what was decided in the file as explained.
@@ -93,6 +95,12 @@ Then apply it on the GKE cluster, and check it.
 ```sh
 kubectl --context gke-prod apply --server-side -k ./setdrift-export/clusters/prod/translations/te2g
 setdrift verify --context gke-prod ./setdrift-export
+```
+
+Then prove the GKE cluster is the EKS one, translated, with [`diff` through the translation](diff.md#comparing-across-a-translation).
+
+```sh
+setdrift diff eks-prod gke-prod --translation-dir ./setdrift-export/clusters/prod/translations/te2g
 ```
 
 Translate for EKS in an emergency, before the target enforces NetworkPolicies, keeping that choice on record.

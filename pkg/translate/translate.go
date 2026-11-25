@@ -5,6 +5,8 @@
 package translate
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"maps"
@@ -75,6 +77,62 @@ type Decision struct {
 	Choose string `json:"choose"`
 	// Default is the safe choice a translation takes when Choose is empty, empty when there is none and the user must choose
 	Default string `json:"default,omitempty"`
+	// Basis fingerprints what the decision was made on, the source object as exported, so a later translation knows when it changed under the choice
+	Basis string `json:"basis,omitempty"`
+	// Previous is the user's choice before the source changed under it, set while the translation waits for them to choose again
+	Previous string `json:"previous,omitempty"`
+}
+
+// Subject names what a decision is about for people, like ServiceAccount shop/orders, from its feature
+func (d Decision) Subject() string {
+	kind, rest, _ := strings.Cut(d.Feature, "/")
+	switch kind {
+	case "identity":
+		return "ServiceAccount " + rest
+	case "secret-store":
+		return "the secret store " + rest
+	case "storage":
+		return "StorageClass " + rest
+	case "ingress":
+		return "Ingress " + rest
+	case "object", "cloud-resource":
+		k, name, _ := strings.Cut(rest, "/")
+		return k + " " + name
+	case NetworkPolicyFeature:
+		return "the NetworkPolicies"
+	}
+	return d.Feature
+}
+
+// Describe says what a choice does in words, with the value the file holds, like to leave out ServiceAccount shop/orders (leave-out)
+func (d Decision) Describe(choice string) string {
+	s := d.Subject()
+	var words string
+	switch choice {
+	case LeaveOut:
+		words = "to leave out " + s
+	case KeepSource:
+		words = "to keep " + s + " using the source cloud"
+	case Equivalent:
+		words = "to use the target's equivalent of " + s
+	case Require:
+		words = "to require the target to enforce " + s
+	case AcceptUnenforced:
+		words = "to accept " + s + " not being enforced"
+	default:
+		words = choice + " for " + s
+	}
+	return words + " (" + choice + ")"
+}
+
+// Waiting tells if the user must choose again, the source changed under their earlier choice
+func (d Decision) Waiting() bool { return d.Previous != "" && d.Choose == "" }
+
+// Fingerprint gives back a short fingerprint of what a decision is made on, an object, or for NetworkPolicies the engine and the policies, the same for the same content
+func Fingerprint(v any) string {
+	b, _ := json.Marshal(v)
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])[:12]
 }
 
 // choice gives back what the translation acts on, the user's choice or else the default
@@ -107,8 +165,10 @@ type Op struct {
 type Result struct {
 	From, To platform.Distribution
 	// Dir is where the translation goes under the cluster's directory, translations/<code>, and Code its name, like te2g for EKS to GKE
-	Dir       string
-	Code      string
+	Dir  string
+	Code string
+	// ID is the translation's id, a hash of what its overlay applies, set when its written
+	ID        string
 	Patches   []Patch
 	Decisions []Decision
 	// Notes are what the user should know, like a placement that was relaxed
@@ -136,7 +196,7 @@ type Lost struct {
 // NetworkPolicyChoice gives back what the decisions say about unenforced NetworkPolicies, Require when nothing does
 func NetworkPolicyChoice(ds []Decision) string {
 	for _, d := range ds {
-		if d.Feature == NetworkPolicyFeature && d.choice() != "" {
+		if d.Feature == NetworkPolicyFeature && d.choice() != "" && !d.Waiting() {
 			return d.choice()
 		}
 	}
@@ -147,7 +207,7 @@ func NetworkPolicyChoice(ds []Decision) string {
 func (r *Result) Undecided() []Decision {
 	var out []Decision
 	for _, d := range r.Decisions {
-		if d.choice() == "" {
+		if d.choice() == "" || d.Waiting() {
 			out = append(out, d)
 		}
 	}
@@ -167,9 +227,9 @@ func Translate(objs []*unstructured.Unstructured, from, to platform.Distribution
 		return nil, fmt.Errorf("this export is already for %s", tgt.Name)
 	}
 	r := &Result{From: from, To: to, Dir: m.TranslationDir(from, to), Code: m.TranslationCode(from, to)}
-	chosen := map[string]string{}
+	chosen := map[string]Decision{}
 	for _, d := range earlier {
-		chosen[d.Feature] = d.Choose
+		chosen[d.Feature] = d
 	}
 	t := &translator{m: m, from: from, to: to, tgt: tgt, chosen: chosen, r: r, region: src.Region, kept: map[string]Identity{}, claimMin: claimSizes(objs)}
 	for _, o := range objs {
@@ -280,7 +340,7 @@ type translator struct {
 	m        *capability.Map
 	from, to platform.Distribution
 	tgt      *capability.Platform
-	chosen   map[string]string
+	chosen   map[string]Decision
 	r        *Result
 	region   string
 	// kept are the cloud identities kept, by namespace/serviceaccount
@@ -302,11 +362,27 @@ func (t *translator) patchOf(o *unstructured.Unstructured) int {
 }
 
 // decide records a decision and gives back what to act on, the earlier choice when there was one, else the default
+// a decision made on a source object that has changed since doesnt carry over: the user's own choice waits for them to choose again, a default is taken again and said
 func (t *translator) decide(d Decision) string {
-	if c, ok := t.chosen[d.Feature]; ok {
-		d.Choose = c
+	if prev, ok := t.chosen[d.Feature]; ok {
+		changed := prev.Basis != "" && d.Basis != "" && prev.Basis != d.Basis
+		switch {
+		case changed && prev.Choose != "":
+			d.Previous = prev.Choose
+		case changed:
+			t.r.Notes = append(t.r.Notes, fmt.Sprintf("%s has changed on the source since it was last translated. The default still applies, %s, so check that still fits", d.Subject(), d.Describe(d.Default)))
+		default:
+			d.Choose = prev.Choose
+			// still waiting from an earlier run, the user hasnt chosen again yet
+			if prev.Choose == "" {
+				d.Previous = prev.Previous
+			}
+		}
 	}
 	t.r.Decisions = append(t.r.Decisions, d)
+	if d.Waiting() {
+		return ""
+	}
 	return d.choice()
 }
 
@@ -331,7 +407,7 @@ func (t *translator) object(o *unstructured.Unstructured) {
 	// an object whose kind belongs to another platform, like an EC2NodeClass, has nothing to run it here
 	if owners := t.m.GroupOwners(gvk.Group); t.foreign(owners) {
 		what := fmt.Sprintf("%s (%s) is a %s object: on %s nothing serves or acts on it", ref, gvk.Group, names(t.m, owners), t.tgt.Name)
-		switch t.decide(Decision{Feature: "object/" + gvk.Kind + "/" + qualified(o), What: what, Options: []string{KeepSource, LeaveOut}}) {
+		switch t.decide(Decision{Feature: "object/" + gvk.Kind + "/" + qualified(o), What: what, Options: []string{KeepSource, LeaveOut}, Basis: Fingerprint(o.Object)}) {
 		case KeepSource, LeaveOut:
 			p.Delete = true
 			p.Why = append(p.Why, "left out of the translation, as decided: "+what)
@@ -420,7 +496,7 @@ func (t *translator) cloudResource(o *unstructured.Unstructured, inSet bool) {
 	}
 	what := fmt.Sprintf("%s (%s) manages a real %s resource through %s, which doesn't run on %s. keep-source leaves it with the source cluster, whose operator keeps managing it; leave-out drops it%s",
 		ref, gvk.Group, owner.Cloud, op.Name, t.tgt.Name, offer)
-	c := t.decide(Decision{Feature: "cloud-resource/" + gvk.Kind + "/" + qualified(o), What: what, Options: options})
+	c := t.decide(Decision{Feature: "cloud-resource/" + gvk.Kind + "/" + qualified(o), What: what, Options: options, Basis: Fingerprint(o.Object)})
 	cr.Choice = c
 	if inSet && c != "" {
 		p := Patch{Group: gvk.Group, Version: gvk.Version, Kind: gvk.Kind, Namespace: o.GetNamespace(), Name: o.GetName(), Delete: true}
@@ -464,7 +540,14 @@ func (t *translator) networkPolicies(objs []*unstructured.Unstructured, engine s
 	t.r.NetworkPolicyEngine = engine
 	what := fmt.Sprintf("%s, enforced on the source by %s. On a %s cluster that doesn't enforce them, they apply and do nothing. require has setdrift verify fail on such a cluster; accept-unenforced lets it pass, for an emergency, and verify says so every run",
 		text.Plural(n, "NetworkPolicy", "NetworkPolicies"), engine, t.tgt.Name)
-	t.decide(Decision{Feature: NetworkPolicyFeature, What: what, Options: []string{Require, AcceptUnenforced}, Default: Require})
+	// the decision is made on the engine and the policies themselves, a policy added or changed since is a new question
+	var policies []any
+	for _, o := range objs {
+		if o.GroupVersionKind().Group == "networking.k8s.io" && o.GetKind() == "NetworkPolicy" {
+			policies = append(policies, o.Object)
+		}
+	}
+	t.decide(Decision{Feature: NetworkPolicyFeature, What: what, Options: []string{Require, AcceptUnenforced}, Default: Require, Basis: Fingerprint([]any{engine, policies})})
 }
 
 // storageClass rewrites a class of another platform's provisioner to the target's class of the same tier, keeping its name so claims need no change
@@ -511,7 +594,7 @@ func (t *translator) storageClass(p *Patch, ref string, c map[string]any) {
 	tt := t.targetTier(tier)
 	if tt == nil {
 		what := fmt.Sprintf("%s uses provisioner %s with parameters %v, and SetDrift knows no %s class of the same kind", ref, prov, params, t.tgt.Name)
-		if t.decide(Decision{Feature: "storage/" + qualifiedName(p), What: what, Options: []string{LeaveOut}}) == LeaveOut {
+		if t.decide(Decision{Feature: "storage/" + qualifiedName(p), What: what, Options: []string{LeaveOut}, Basis: Fingerprint(c)}) == LeaveOut {
 			p.Delete = true
 			p.Why = append(p.Why, "left out, as decided: "+what)
 		}
@@ -819,7 +902,7 @@ func (t *translator) identity(ref string, o *unstructured.Unstructured) {
 		}
 		src, dst := clouds(t.m, owners), clouds(t.m, []platform.Distribution{t.to})
 		what := fmt.Sprintf("%s uses the %s identity %s (%s), and its Pods call %s services with it. keep-source federates the %s cluster to that identity, so the same calls work unchanged. Moving to %s services and a %s identity is a change to the app, outside SetDrift", ref, src, o.GetAnnotations()[k], k, src, t.tgt.Name, dst, dst)
-		if t.decide(Decision{Feature: "identity/" + qualified(o), What: what, Options: []string{KeepSource, LeaveOut}, Default: KeepSource}) == KeepSource {
+		if t.decide(Decision{Feature: "identity/" + qualified(o), What: what, Options: []string{KeepSource, LeaveOut}, Default: KeepSource, Basis: Fingerprint(o.Object)}) == KeepSource {
 			// invoking keptIdentity to read the identity, its defined in identity.go
 			if id, ok := keptIdentity(o); ok {
 				t.kept[o.GetNamespace()+"/"+o.GetName()] = id
@@ -839,7 +922,7 @@ func (t *translator) secretStore(ref string, o *unstructured.Unstructured) {
 		}
 		src, dst := clouds(t.m, owners), clouds(t.m, []platform.Distribution{t.to})
 		what := fmt.Sprintf("%s reads secrets from %s's secret manager (provider %s). keep-source keeps reading it, federating the %s cluster to it. equivalent means moving the secrets to %s's secret manager yourself (SetDrift never copies secret values) and pointing the store there", ref, src, k, t.tgt.Name, dst)
-		t.decide(Decision{Feature: "secret-store/" + qualified(o), What: what, Options: []string{KeepSource, Equivalent}, Default: KeepSource})
+		t.decide(Decision{Feature: "secret-store/" + qualified(o), What: what, Options: []string{KeepSource, Equivalent}, Default: KeepSource, Basis: Fingerprint(o.Object)})
 	}
 }
 

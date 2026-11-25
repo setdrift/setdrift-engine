@@ -30,7 +30,7 @@ func (t *translator) ingress(p *Patch, ref string, o *unstructured.Unstructured)
 	tgt := t.tgt.Translate.Ingress
 	if exp == "internal" && tgt.InternalUnsupported {
 		what := fmt.Sprintf("%s is an internal Ingress (%s), and %s's Ingress controller (%s) offers only public ones. equivalent makes it public on %s, so restrict who can reach it yourself; leave-out leaves it for you to put behind an internal load balancer of your own", ref, source, t.tgt.Name, tgt.ClassName, t.tgt.Name)
-		switch t.decide(Decision{Feature: "ingress/" + qualified(o), What: what, Options: []string{Equivalent, LeaveOut}}) {
+		switch t.decide(Decision{Feature: "ingress/" + qualified(o), What: what, Options: []string{Equivalent, LeaveOut}, Basis: Fingerprint(o.Object)}) {
 		case LeaveOut:
 			p.Delete = true
 			p.Why = append(p.Why, "left out, as decided: "+what)

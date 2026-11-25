@@ -114,7 +114,7 @@ spec:
 	if vols := volumes(g); len(vols) != 1 {
 		t.Fatalf("on GKE the Pods need the token: %+v", g.Object)
 	}
-	if got, _, _ := unstructured.NestedString(g.Object, "metadata", "annotations", "setdrift.io/translation"); got != "te2g" {
+	if got, _, _ := unstructured.NestedString(g.Object, "metadata", "annotations", "setdrift.io/translation"); !strings.HasPrefix(got, "te2g-") || len(got) != len("te2g-")+8 {
 		t.Errorf("on GKE the object carries the translation's code: %q", got)
 	}
 	back := translated(t, onGKE, platform.GKE, platform.EKS)

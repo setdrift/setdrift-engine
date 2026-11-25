@@ -249,6 +249,13 @@ func (o *verifyOptions) run(cmd *cobra.Command, dir string) error {
 		target = filepath.Join(root, set)
 	}
 	fmt.Fprintf(w, "Verifying %s against context %s (%s)\n", target, kc.name, why)
+	// checking if its a translation older than the export, if so its decisions may be about objects the export has changed since
+	if strings.HasPrefix(set, capability.TranslationsDir+"/") {
+		// invoking staleTranslation to compare the two times, its defined in folders.go
+		if note := staleTranslation(root, set, info); note != "" {
+			fmt.Fprintln(w, note)
+		}
+	}
 	// invoking sameCluster to tell if this is the cluster the export came from, its defined below
 	same := sameCluster(cmd.Context(), dyn, info)
 	// invoking otherClusterNote and checking if it has something to say, if so it gets printed before the result
@@ -327,6 +334,10 @@ func (o *verifyOptions) run(cmd *cobra.Command, dir string) error {
 
 	// invoking printVerify to print the result, its defined in verifyreport.go
 	printVerify(w, doc, root, kc.name)
+	// invoking olderApplyNote to say when the cluster was applied from another run of the translation, its defined in folders.go
+	if note := olderApplyNote(report); note != "" {
+		fmt.Fprintln(w, note)
+	}
 	// invoking printNetworkPolicy to say what the network policy check found, its defined in verifynetpol.go
 	printNetworkPolicy(w, doc.NetworkPolicy)
 	// checking if a report was wanted, if so its written next to the export or where -o says

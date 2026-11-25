@@ -43,6 +43,8 @@ type diffOptions struct {
 	exitCode bool
 	// how many fields the text output shows per resource
 	maxFields int
+	// a translation to compare through, translations/<code> in an export
+	translationDir string
 }
 
 // exitError ends the cli with a chosen exit status, main.go reads it
@@ -131,6 +133,7 @@ with --map-namespace: setdrift diff prod prod --map-namespace shop=shop-prod.`,
 	f.StringVar(&o.format, "format", "text", "output format: text, or json for every field")
 	f.BoolVar(&o.exitCode, "exit-code", false, "exit 1 when A and B differ beyond each cluster's own values, 2 on error")
 	f.IntVar(&o.maxFields, "max-fields", 5, "fields shown per resource in text output")
+	f.StringVar(&o.translationDir, "translation-dir", "", "compare through a translation, its directory in the export (translations/<code>): what it changed on purpose and what its decisions cover show apart and don't count")
 	return cmd
 }
 
@@ -160,6 +163,15 @@ func (o *diffOptions) run(cmd *cobra.Command, a, b string) error {
 			return fmt.Errorf("--map-value %s: use A_VALUE=B_VALUE, each at least 3 characters", m)
 		}
 		valueMap[from] = to
+	}
+	var tr *translationInput
+	// checking if a translation was given, if so its read before either side, so a wrong directory fails at once
+	if o.translationDir != "" {
+		var err error
+		// invoking loadTranslation to read it, its defined in difftranslation.go
+		if tr, err = loadTranslation(o.translationDir); err != nil {
+			return err
+		}
 	}
 	// invoking resolve on both arguments before either is read, so every problem shows at once, its defined below
 	ra, errA := o.resolve(a)
@@ -205,6 +217,31 @@ func (o *diffOptions) run(cmd *cobra.Command, a, b string) error {
 	if err != nil {
 		return err
 	}
+	// checking if theres a translation, if so the target must be the second side, swapped when its the first
+	if tr != nil {
+		// invoking direction to tell which side is the target, its defined in difftranslation.go
+		swap, why, err := tr.direction(sa, sb)
+		if err != nil {
+			return err
+		}
+		if swap {
+			fmt.Fprintf(cmd.ErrOrStderr(), "Note: %s.\n", why)
+			a, b, ra, rb, sa, sb, fileA, fileB = b, a, rb, ra, sb, sa, fileB, fileA
+			namespaces, bNamespaces = bNamespaces, namespaces
+			inverted := map[string]string{}
+			for from, to := range nsMap {
+				inverted[to] = from
+			}
+			nsMap = inverted
+		}
+		if tr.note != "" {
+			fmt.Fprintln(cmd.ErrOrStderr(), tr.note)
+		}
+		// invoking olderApply to say when the target was applied from another run of the translation, its defined in difftranslation.go
+		if note := tr.olderApply(sb); note != "" {
+			fmt.Fprintln(cmd.ErrOrStderr(), note)
+		}
+	}
 	// invoking checkMapping to refuse a mapped namespace that isnt on its side, its defined below
 	if err := checkMapping(nsMap, sa, sb, a, b); err != nil {
 		return err
@@ -233,6 +270,15 @@ func (o *diffOptions) run(cmd *cobra.Command, a, b string) error {
 	res, err := diff.Compare(sa, sb, diff.Options{NamespaceMap: nsMap, ValueMap: valueMap, LabelA: la, LabelB: lb, Capability: capMap})
 	if err != nil {
 		return err
+	}
+	// checking if theres a translation, if so the differences are sorted through it, ApplyTranslation is defined in pkg/diff/translation.go
+	if tr != nil {
+		// invoking forDiff to give the translation's objects as diff keys them, its defined in difftranslation.go
+		t, err := tr.forDiff()
+		if err != nil {
+			return err
+		}
+		res.ApplyTranslation(t)
 	}
 	// checking if A was read live, if so its capture time is dropped, it only says something for a snapshot read earlier
 	if !fileA {
@@ -548,8 +594,16 @@ func onlyNamespaces(s *snapshotv1alpha1.Snapshot, namespaces []string) *snapshot
 func printDiff(w io.Writer, r diff.Result, maxFields int, nodes bool) {
 	// invoking printSides to print what is compared and the counts, its defined below
 	printSides(w, r, nodes)
+	// checking if a translation sorted differences out, if so theyre listed first, shown and not counted, printSorted is defined below
+	if r.Translation != "" {
+		printSorted(w, r)
+	}
 	// checking if the sides match apart from each cluster's own values, if so theres nothing more to print, Same is defined in pkg/diff/diff.go
 	if r.Same() {
+		if r.Translation != "" {
+			fmt.Fprintf(w, "\nNo real differences: %s is %s, translated (%s).\n", r.B.Label, r.A.Label, r.Translation)
+			return
+		}
 		fmt.Fprintln(w, "\nNo differences.")
 		return
 	}
@@ -582,6 +636,41 @@ func printDiff(w io.Writer, r diff.Result, maxFields int, nodes bool) {
 	// checking if some resources differ only in each cluster's own values, if so printEnvOnly names them, its defined below
 	if envOnly > 0 {
 		printEnvOnly(w, r, envOnly)
+	}
+}
+
+// printSorted lists what a translation sorted out of the differences, translated on purpose, decided, and not moved by design, none of them counted
+func printSorted(w io.Writer, r diff.Result) {
+	for _, g := range []struct {
+		title string
+		items []diff.Sorted
+	}{
+		{"Translated on purpose (%d), not counted", r.Translated},
+		{"Decided in translate-decisions.yaml (%d), not counted", r.Decided},
+		{"Not moved by design (%d), not counted", r.NotMoved},
+	} {
+		if len(g.items) == 0 {
+			continue
+		}
+		fmt.Fprintf(w, "\n"+g.title+":\n", len(g.items))
+		for _, s := range g.items {
+			name := s.Object.Key.Kind + " " + s.Object.Key.Name
+			if s.Object.Namespace != "" {
+				name = s.Object.Namespace + "/" + s.Object.Key.Name + " " + s.Object.Key.Kind
+			}
+			var paths []string
+			for _, f := range s.Fields {
+				paths = append(paths, f.Path)
+			}
+			fmt.Fprintf(w, "  %s", name)
+			if len(paths) > 0 {
+				fmt.Fprintf(w, "  (%s)", strings.Join(paths, ", "))
+			}
+			fmt.Fprintln(w)
+			for _, why := range s.Why {
+				fmt.Fprintf(w, "      %s\n", why)
+			}
+		}
 	}
 }
 
@@ -636,7 +725,12 @@ func printSides(w io.Writer, r diff.Result, nodes bool) {
 	}
 	// invoking Counts to tell how many differ and how many differ only in each cluster's own values, its defined in pkg/diff/diff.go
 	differ, envOnly := r.Counts()
-	fmt.Fprintf(w, "\n%d in both: %d identical, %d differ", r.Identical+len(r.Changed), r.Identical, differ)
+	fmt.Fprintf(w, "\n%d in both: %d identical", r.Identical+len(r.Changed)+r.AsTranslated, r.Identical)
+	// checking if a translation sorted some out, if so the count line says how many are as it translated them
+	if r.Translation != "" {
+		fmt.Fprintf(w, ", %d as translated", r.AsTranslated)
+	}
+	fmt.Fprintf(w, ", %d differ", differ)
 	// checking if some differ only in each cluster's own values, if so the count line says how many
 	if envOnly > 0 {
 		fmt.Fprintf(w, ", %d differ only in each cluster's own values (name, region, account)", envOnly)
