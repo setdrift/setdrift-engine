@@ -56,6 +56,10 @@ func restore(r *Result, ri RestoreInfo) string {
 	for _, l := range r.Lost {
 		fmt.Fprintf(&b, "| **%s** | %s | %s |\n", l.What, l.Why, l.ToDo)
 	}
+	// checking if any image is in another cloud's private registry, if so its a row, with the step below
+	if len(r.Images) > 0 {
+		fmt.Fprintf(&b, "| %s in another cloud's registry | The new cluster can't pull from it without that cloud's credentials | Copy them to %s's registry, below |\n", text.Plural(len(r.Images), "image", "images"), to)
+	}
 	b.WriteString("| Secret values | SetDrift never copies them | Supply them, below |\n")
 	b.WriteString("| Load balancer addresses | A new cluster gets new addresses | Point DNS and clients at the new ones once they're assigned |\n\n")
 
@@ -87,6 +91,12 @@ func restore(r *Result, ri RestoreInfo) string {
 			// invoking trustSteps to write the commands for the identity's cloud, its defined below
 			b.WriteString(trustSteps(id))
 		}
+	}
+
+	if len(r.Images) > 0 {
+		next("Copy the images")
+		// invoking imagesStep for the commands, its defined in images.go
+		imagesStep(&b, r.Images, r.To, r.Dir)
 	}
 
 	next("Apply the translation")
