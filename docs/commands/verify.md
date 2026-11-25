@@ -30,6 +30,15 @@ It passes when at least 95% of the resources (`--threshold`) would not change an
 
 A server-side apply only changes the fields it sends, so `verify` can't see a field the export left out, since the cluster keeps it. It flags a resource that lost all of its spec or data. Other missing fields only show when the export is applied to a new cluster.
 
+### What this cluster runs
+
+On a cluster other than the export's own, like a restore or migration target, `verify` also checks that the cluster runs what the export's objects name, since an object naming something missing applies cleanly and never works.
+
+- **A StorageClass of a cloud's CSI driver the cluster doesn't run** waits forever for volumes. For EKS it names the variant, the EBS CSI add-on (`ebs.csi.aws.com`) or EKS Auto Mode (`ebs.csi.eks.amazonaws.com`), since a translation for EKS writes Auto Mode's.
+- **An Ingress naming an IngressClass** that neither the cluster nor the export has never gets an address.
+
+Each shows under "Won't work on this platform". A list `verify` can't read is skipped rather than reported. A translation can be given directly, `setdrift verify --context gke-prod ./setdrift-export/clusters/prod/translations/te2g`, and is checked with its decisions, whatever the cluster is.
+
 ### Network policies
 
 A NetworkPolicy applies on any cluster, but only does anything where a network policy engine enforces it. When the export has NetworkPolicies and its source enforced them, `verify` reads this cluster's system DaemonSets in `kube-system` and `calico-system`, and EKS's `amazon-vpc-cni` ConfigMap, to find its engine.

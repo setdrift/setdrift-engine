@@ -2,6 +2,8 @@
 # own controllers on it, act on.
 distribution: gke
 name: GKE
+# its code in a translation's name, like te2g for EKS to GKE
+code: g
 cloud: Google Cloud
 markers:
   finalizerPrefixes:

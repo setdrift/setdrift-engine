@@ -240,7 +240,8 @@ func Compare(a, b *snapshotv1alpha1.Snapshot, opts Options) (Result, error) {
 			continue
 		}
 		// invoking compareKeys to list the fields that differ, its defined below
-		raw := compareKeys("", nil, ea.manifest, eb.manifest, nil)
+		// invoking WithoutTranslationMark on both, so a translation's stamp isnt a difference, its defined below
+		raw := compareKeys("", nil, WithoutTranslationMark(ea.manifest), WithoutTranslationMark(eb.manifest), nil)
 		// invoking compareVolumes to compare a claim's bound volumes too, with the workloads that mount it, its defined below
 		vol, volWhy := compareVolumes(ea, eb, raw, ia.mounts[ea.obj.Namespace+"/"+ea.obj.Key.Name], res.A.Label, res.B.Label)
 		// checking if neither the manifests nor the volumes differ, if so its identical
@@ -872,6 +873,52 @@ func reasons(a, b entry, la, lb string) []string {
 // Fields takes two decoded JSON documents and lists the fields that differ between them, in path order, pairing the items of named lists (containers, env, ports, volumes) by name
 // compareKeys does the work, its defined below, and pkg/verify/dryrun.go uses it to compare a dry-run result with the live object
 func Fields(a, b any) []Field { return compareKeys("", nil, a, b, nil) }
+
+// WithoutTranslationMark gives back a manifest without the annotation a translation stamps on every object it applies, on the object and on its Pod template
+// it copies only the maps it changes, the manifest itself is left as it is
+func WithoutTranslationMark(m any) any {
+	var strip func(v any, path []string) any
+	strip = func(v any, path []string) any {
+		mv, ok := v.(map[string]any)
+		if !ok {
+			return v
+		}
+		if len(path) == 0 {
+			if _, has := mv[capability.TranslationAnnotation]; !has {
+				return v
+			}
+			out := maps.Clone(mv)
+			delete(out, capability.TranslationAnnotation)
+			if len(out) == 0 {
+				return nil
+			}
+			return out
+		}
+		child, has := mv[path[0]]
+		if !has {
+			return v
+		}
+		nc := strip(child, path[1:])
+		if reflect.DeepEqual(nc, child) {
+			return v
+		}
+		out := maps.Clone(mv)
+		if nc == nil {
+			delete(out, path[0])
+		} else {
+			out[path[0]] = nc
+		}
+		return out
+	}
+	for _, p := range [][]string{
+		{"metadata", "annotations"},
+		{"spec", "template", "metadata", "annotations"},
+		{"spec", "jobTemplate", "spec", "template", "metadata", "annotations"},
+	} {
+		m = strip(m, p)
+	}
+	return m
+}
 
 // compareKeys takes a and b under path, with steps as path's managedFields keys (Field.Keys), and appends to out the fields that differ, in path order
 // it goes down maps and lists, a value of different types on the two sides is one differing field

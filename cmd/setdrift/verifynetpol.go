@@ -20,6 +20,7 @@ import (
 
 	"setdrift.io/setdrift-engine/internal/text"
 	"setdrift.io/setdrift-engine/pkg/netpolicy"
+	"setdrift.io/setdrift-engine/pkg/verify"
 )
 
 // networkPolicyCheck is what the check found, for the printed result and the report
@@ -134,6 +135,29 @@ func countNetworkPolicies(objs []*unstructured.Unstructured, namespaces []string
 		}
 	}
 	return n
+}
+
+// the types the served check lists
+var (
+	csiDriversGVR     = schema.GroupVersionResource{Group: "storage.k8s.io", Version: "v1", Resource: "csidrivers"}
+	ingressClassesGVR = schema.GroupVersionResource{Group: "networking.k8s.io", Version: "v1", Resource: "ingressclasses"}
+)
+
+// served reads the names of this cluster's CSI drivers and IngressClasses, for verify's check that what objects name is there
+// a list that cant be read is left nil, which skips that part of the check rather than flag what it couldnt see
+func served(ctx context.Context, dyn dynamic.Interface) *verify.Served {
+	names := func(gvr schema.GroupVersionResource) map[string]bool {
+		l, err := dyn.Resource(gvr).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return nil
+		}
+		out := map[string]bool{}
+		for _, o := range l.Items {
+			out[o.GetName()] = true
+		}
+		return out
+	}
+	return &verify.Served{CSIDrivers: names(csiDriversGVR), IngressClasses: names(ingressClassesGVR)}
 }
 
 // acceptSingular reads --accept-unenforced-network-policy as --accept-unenforced-network-policies, so either spelling works and the help shows one

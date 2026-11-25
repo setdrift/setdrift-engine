@@ -3,6 +3,8 @@
 # Node Auto Provisioning runs Karpenter.
 distribution: aks
 name: AKS
+# its code in a translation's name, like te2g for EKS to GKE
+code: a
 cloud: Azure
 markers:
   finalizerPrefixes:

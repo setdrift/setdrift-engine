@@ -3,6 +3,8 @@
 # nowhere else (see docs/capability-map-draft.md, M0 of v0.3.0).
 distribution: eks
 name: EKS
+# its code in a translation's name, like te2g for EKS to GKE
+code: e
 cloud: AWS
 markers:
   finalizerPrefixes:
@@ -69,18 +71,18 @@ translate:
       provisioners: [ebs.csi.aws.com, ebs.csi.eks.amazonaws.com, kubernetes.io/aws-ebs]
       parameter: type
       values: [st1, sc1, standard]
-      class: {provisioner: ebs.csi.aws.com, parameters: {type: st1}}
+      class: {provisioner: ebs.csi.eks.amazonaws.com, parameters: {type: st1}}
     - tier: general-ssd
       provisioners: [ebs.csi.aws.com, ebs.csi.eks.amazonaws.com, kubernetes.io/aws-ebs]
       parameter: type
       values: [gp3, gp2]
       default: true
-      class: {provisioner: ebs.csi.aws.com, parameters: {type: gp3}}
+      class: {provisioner: ebs.csi.eks.amazonaws.com, parameters: {type: gp3}}
     - tier: premium-ssd
       provisioners: [ebs.csi.aws.com, ebs.csi.eks.amazonaws.com]
       parameter: type
       values: [io1, io2]
-      class: {provisioner: ebs.csi.aws.com, parameters: {type: io2}}
+      class: {provisioner: ebs.csi.eks.amazonaws.com, parameters: {type: io2}}
     - tier: shared-file
       provisioners: [efs.csi.aws.com]
       default: true
@@ -95,6 +97,7 @@ translate:
     default: external
     internal: {service.beta.kubernetes.io/aws-load-balancer-scheme: internal}
     external: {service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing}
+    class: eks.amazonaws.com/nlb
   ingress:
     # the AWS Load Balancer Controller's class; Auto Mode clusters name theirs in an IngressClass with controller eks.amazonaws.com/alb
     className: alb
@@ -104,7 +107,7 @@ translate:
     default: internal
     internal: {alb.ingress.kubernetes.io/scheme: internal}
     external: {alb.ingress.kubernetes.io/scheme: internet-facing}
-  snapshotDriver: ebs.csi.aws.com
+  snapshotDriver: ebs.csi.eks.amazonaws.com
   nodes:
     pools: [eks.amazonaws.com/nodegroup, karpenter.sh/nodepool]
     spot: [{key: eks.amazonaws.com/capacityType, value: SPOT}, {key: karpenter.sh/capacity-type, value: spot}]

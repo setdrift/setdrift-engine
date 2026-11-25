@@ -17,6 +17,7 @@ clusters/<cluster>/
   redacted/namespaces/<ns>/<kind>[.<group>]/<name>.yaml.redacted
   external-secrets/namespaces/<ns>/externalsecret.external-secrets.io/<name>.yaml
   cloud-resources/namespaces/<ns>/<kind>.<group>/<name>.yaml   objects that manage real cloud resources (not applied)
+  translations/<code>/      written by setdrift translate, e.g. translations/te2g for EKS to GKE (kept when exporting again)
   restore/volumes/<ns>/<claim>.yaml
   restore/storageclasses/<name>.yaml
   platform/<cloud>/<distribution>/   e.g. platform/aws/eks, platform/local/kind

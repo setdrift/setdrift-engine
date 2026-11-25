@@ -133,7 +133,7 @@ func TestWriteEquivalents(t *testing.T) {
 	if err := Write(root, r, []string{"namespaces/shop"}, "v0.3.0", RestoreInfo{}); err != nil {
 		t.Fatal(err)
 	}
-	dir := filepath.Join(root, "platform", "gcp", "gke")
+	dir := filepath.Join(root, "translations", "te2g")
 	k, _ := os.ReadFile(filepath.Join(dir, "kustomization.yaml"))
 	if !strings.Contains(string(k), "equivalents/shop-storagebucket-acme-orders.yaml") {
 		t.Errorf("kustomization doesn't list the equivalent:\n%s", k)
@@ -190,7 +190,7 @@ spec: {podSelector: {}}`)
 // a translation that stopped for decisions left only the decisions file, and the next run writes over it, a directory translate didnt write is still refused
 func TestWriteAfterStopping(t *testing.T) {
 	root := t.TempDir()
-	dir := filepath.Join(root, "platform", "gcp", "gke")
+	dir := filepath.Join(root, "translations", "te2g")
 	r, _ := Translate(nil, platform.EKS, platform.GKE, load(t), nil, Source{})
 	if err := WriteDecisions(dir, nil); err != nil {
 		t.Fatal(err)
@@ -199,7 +199,7 @@ func TestWriteAfterStopping(t *testing.T) {
 		t.Errorf("after stopping: %v", err)
 	}
 	other := t.TempDir()
-	odir := filepath.Join(other, "platform", "gcp", "gke")
+	odir := filepath.Join(other, "translations", "te2g")
 	_ = os.MkdirAll(odir, 0o750)
 	_ = os.WriteFile(filepath.Join(odir, "kustomization.yaml"), []byte("resources: []\n"), 0o600)
 	if err := Write(other, r, nil, "v0.3.0", RestoreInfo{}); err == nil || !strings.Contains(err.Error(), "wasn't written by setdrift translate") {

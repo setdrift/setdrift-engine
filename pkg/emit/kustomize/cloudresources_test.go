@@ -102,5 +102,32 @@ func TestExportInfoNetworkPolicy(t *testing.T) {
 	}
 }
 
+// exporting again keeps the previous export's translations and the choices in their decisions files, and replaces the rest
+func TestExportAgainKeepsTranslations(t *testing.T) {
+	s := &snapshotv1alpha1.Snapshot{Cluster: &snapshotv1alpha1.Cluster{Name: "prod"}, Resources: []*snapshotv1alpha1.Resource{resource("ConfigMap", "shop", "settings", false)}}
+	dir := t.TempDir()
+	if err := (Emitter{}).Emit(s, dir); err != nil {
+		t.Fatal(err)
+	}
+	root := ClusterDir(dir, "prod")
+	tr := filepath.Join(root, "translations", "te2g")
+	if err := os.MkdirAll(tr, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tr, "translate-decisions.yaml"), []byte("- feature: identity/shop/orders\n  choose: leave-out\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s.Resources = []*snapshotv1alpha1.Resource{resource("ConfigMap", "shop", "flags", false)}
+	if err := (Emitter{Force: true}).Emit(s, dir); err != nil {
+		t.Fatal(err)
+	}
+	if b, err := os.ReadFile(filepath.Join(tr, "translate-decisions.yaml")); err != nil || !strings.Contains(string(b), "leave-out") {
+		t.Errorf("the decisions are gone: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "namespaces", "shop", "configmap", "settings.yaml")); !os.IsNotExist(err) {
+		t.Errorf("the rest of the previous export should be replaced: %v", err)
+	}
+}
+
 // Copyright The SetDrift Authors
 // SPDX-License-Identifier: Apache-2.0

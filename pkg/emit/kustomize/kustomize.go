@@ -263,8 +263,33 @@ func (e Emitter) Emit(s *snapshotv1alpha1.Snapshot, dir string) error {
 	if err != nil {
 		return err
 	}
+	// invoking keepTranslations to carry the previous export's translations and their decisions over, its defined below
+	kept, err := keepTranslations(root, tmp)
+	if err != nil {
+		return err
+	}
 	// invoking replaceDir to put the finished export in place of the previous one, its defined below
-	return replaceDir(tmp, root)
+	if err := replaceDir(tmp, root); err != nil {
+		// checking if translations were carried over, if so they go back to the previous export, which replaceDir put back
+		if kept {
+			_ = os.Rename(filepath.Join(tmp, capability.TranslationsDir), filepath.Join(root, capability.TranslationsDir))
+		}
+		return err
+	}
+	return nil
+}
+
+// keepTranslations moves the previous export's translations/ into the new one, so exporting again keeps every translation and the choices in its translate-decisions.yaml
+// theyre the user's work, not the cluster's, a new translate brings them in step with the new export
+func keepTranslations(root, tmp string) (bool, error) {
+	from := filepath.Join(root, capability.TranslationsDir)
+	if fi, err := os.Stat(from); err != nil || !fi.IsDir() {
+		return false, nil
+	}
+	if err := os.Rename(from, filepath.Join(tmp, capability.TranslationsDir)); err != nil {
+		return false, fmt.Errorf("keeping the previous export's translations: %w", err)
+	}
+	return true, nil
 }
 
 // replaceDir moves the finished export tmp to root, putting the previous export back if that fails

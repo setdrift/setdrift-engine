@@ -27,6 +27,17 @@ To see your contexts, run `kubectl config get-contexts`, and `kubectl config cur
 
 The export goes into `./setdrift-export`, or the directory `-o` names, which must be empty unless `--force` is given. [Output](../output.md) describes everything it writes.
 
+### Exports and translations
+
+An export and a translation aren't interchangeable. An export is a cluster's configuration, a translation is a set of changes to one export for another platform, written by [`translate`](translate.md) into the export's `translations/<code>/`. Each command says plainly when it's given the wrong one, and names what to give instead.
+
+| Given | `export` does |
+|---|---|
+| `-o` naming an export's root, the directory holding `clusters/` | Writes the export there, and with `--force` replaces `clusters/<cluster>/` but keeps its `translations/` and their decisions, then says each translation was made from the previous export and how to bring it in step |
+| `-o` naming a translation, a platform set, a cluster's directory or a place inside one | Refuses, even with `--force`, since the export would land inside another export, and names the export's root to give instead |
+| `--from-dir` naming an export | Reads its manifests, leaving out its translations, snapshots and records |
+| `--from-dir` naming a translation or a platform set | Refuses, since they're changes to an export rather than manifests, and names the export to read instead |
+
 ## Examples
 
 The current context, into `./setdrift-export`.
@@ -112,7 +123,7 @@ setdrift export -n payments -n checkout
 
 *text · default none*
 
-Reads the manifests in a directory instead of a cluster, `.yaml`, `.yml` and `.json` files in it and below it. No cluster is contacted, so the flags about reading a cluster can't be used with it, and the cluster is named `local` unless `--cluster-name` names it. A Kustomization that only lists its own files is read as those files, and one that changes them (patches, generators, a namespace) is refused with the command that renders it first. An export's own directory reads back too, without its snapshots and records.
+Reads the manifests in a directory instead of a cluster, `.yaml`, `.yml` and `.json` files in it and below it. No cluster is contacted, so the flags about reading a cluster can't be used with it, and the cluster is named `local` unless `--cluster-name` names it. A Kustomization that only lists its own files is read as those files, and one that changes them (patches, generators, a namespace) is refused with the command that renders it first. An export's own directory reads back too, without its snapshots, records and translations. A translation or a platform set is refused, see [Exports and translations](#exports-and-translations).
 
 ```sh
 setdrift export --from-dir ./manifests --cluster-name test -o ./out
@@ -152,7 +163,7 @@ setdrift export -o ./prod-export
 
 *on/off · default off*
 
-Writes into a directory that isn't empty, replacing only `clusters/<cluster>/` in it, so resources gone from the cluster don't leave stale files. Everything else stays, other clusters' directories, earlier snapshots and verify reports. It also replaces an existing snapshot file `--snapshot` names. It says what it will delete and asks first. When the directory holds the export of a different cluster under the same name, like two EKS clusters called `prod` in two regions, it says so before asking. It tells clusters apart by their EKS ARN, or else by their `kube-system` namespace, which stays the same for a cluster's whole life. To keep both exports, give one a name of its own with `--cluster-name`.
+Writes into a directory that isn't empty, replacing only `clusters/<cluster>/` in it, so resources gone from the cluster don't leave stale files. Everything else stays, other clusters' directories, earlier snapshots and verify reports, and the cluster's own `translations/` with the choices in their `translate-decisions.yaml`. It also replaces an existing snapshot file `--snapshot` names. It says what it will delete and asks first. When the directory holds the export of a different cluster under the same name, like two EKS clusters called `prod` in two regions, it says so before asking. It tells clusters apart by their EKS ARN, or else by their `kube-system` namespace, which stays the same for a cluster's whole life. To keep both exports, give one a name of its own with `--cluster-name`.
 
 ```sh
 setdrift export -o ./prod-export --force

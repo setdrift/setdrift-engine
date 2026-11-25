@@ -65,6 +65,13 @@ func (o *translateOptions) run(cmd *cobra.Command, dir string) error {
 	if err := checkExportPath(dir); err != nil {
 		return err
 	}
+	// invoking folderKind to tell a translation or a platform set from an export, its defined in folders.go
+	switch f := folderKind(dir); f.kind {
+	case folderTranslation:
+		return fmt.Errorf("%s is %s of the export at %s, not an export: translate the export, setdrift translate %s --to %s", dir, f.describe(), f.root, f.root, to)
+	case folderPlatformSet:
+		return fmt.Errorf("%s is the export's own platform set (%s), not an export: translate the export, setdrift translate %s --to %s", dir, f.rel, f.root, to)
+	}
 	if o.unmatched != "" && o.unmatched != translate.KeepSource && o.unmatched != translate.LeaveOut {
 		return fmt.Errorf("--unmatched must be keep-source or leave-out, not %q", o.unmatched)
 	}
@@ -99,7 +106,7 @@ func (o *translateOptions) run(cmd *cobra.Command, dir string) error {
 	}
 	tgt := m.For(to)
 	// invoking translate.ReadDecisions to carry over the choices of an earlier run, its defined in pkg/translate/write.go
-	earlier, err := translate.ReadDecisions(filepath.Join(root, filepath.FromSlash(tgt.Translate.Dir)))
+	earlier, err := translate.ReadDecisions(filepath.Join(root, filepath.FromSlash(m.TranslationDir(from, to))))
 	if err != nil {
 		return err
 	}

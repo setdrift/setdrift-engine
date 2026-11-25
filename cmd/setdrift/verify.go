@@ -134,6 +134,18 @@ func (o *verifyOptions) run(cmd *cobra.Command, dir string) error {
 	if o.threshold < 0 || o.threshold > 100 {
 		return fmt.Errorf("--threshold %d: give a percent from 0 to 100", o.threshold)
 	}
+	// invoking folderKind to tell a translation or a platform set from an export, its defined in folders.go
+	// either is checked as asked, from its export, a translation with its decisions
+	given := folderKind(dir)
+	switch given.kind {
+	case folderTranslation:
+		dir = given.root
+	case folderPlatformSet:
+		if o.set == "generic" {
+			return fmt.Errorf("%s is the export's platform set (%s), and --set generic asks for the generic set: give the export, %s, with --set generic", dir, given.rel, given.root)
+		}
+		dir, o.set = given.root, "platform"
+	}
 	// invoking verify.ClusterRoot to find the cluster's directory inside dir, its defined in pkg/verify/dryrun.go
 	root, err := verify.ClusterRoot(dir)
 	if err != nil {
@@ -194,12 +206,22 @@ func (o *verifyOptions) run(cmd *cobra.Command, dir string) error {
 		}
 		v.Target, v.Capability = cls.Distribution, capMap
 	}
+
 	// the decisions of the translation checked, if its one, for the network policy check
 	var decisions []translate.Decision
 	// invoking chooseSet to pick the part of the export to check and say why, its defined below
 	set, why, err := o.chooseSet(info, cls)
+	// checking if a translation was given, if so its the set to check, with its decisions, whatever this cluster is
+	if given.kind == folderTranslation && err == nil {
+		set, why = given.rel, given.describe()+", as given"
+		ds, derr := translate.ReadDecisions(filepath.Join(root, filepath.FromSlash(given.rel)))
+		if derr != nil {
+			return derr
+		}
+		v.Explain, decisions = translate.Explainer(ds), ds
+	}
 	// checking if auto picked no platform set, if so a translation for this cluster's platform is the one to check
-	if err == nil && o.set == "auto" && set == "" {
+	if err == nil && o.set == "auto" && set == "" && given.kind != folderTranslation {
 		// invoking translationFor to find the export's translations and the one for this cluster, its defined below
 		tdir, tstamp, others := translationFor(root, cls)
 		switch {
@@ -232,6 +254,18 @@ func (o *verifyOptions) run(cmd *cobra.Command, dir string) error {
 	// invoking otherClusterNote and checking if it has something to say, if so it gets printed before the result
 	if note := otherClusterNote(info, same); note != "" {
 		fmt.Fprintln(w, note)
+	}
+	// checking if this isnt the export's own cluster, if so the export was restored or translated here, and verify checks this cluster runs what its objects name
+	// on the export's own cluster an unused class was already that way, so it isnt checked there
+	if same == nil || !*same {
+		// invoking served to read this cluster's CSI drivers and IngressClasses, its defined in verifynetpol.go
+		v.Served = served(cmd.Context(), dyn)
+		// the check needs the map to know which drivers are a cloud's, even on a cluster classified with little confidence
+		if v.Capability == nil {
+			if capMap, err := capability.Load(); err == nil {
+				v.Capability = capMap
+			}
+		}
 	}
 	// invoking Verify to dry-run every resource and compare it with the live object, its defined in pkg/verify/dryrun.go
 	report, err := v.Verify(cmd.Context(), root)
@@ -385,14 +419,15 @@ func (o *verifyOptions) chooseSet(info *kustomize.ExportInfo, cls *platform.Clas
 	return "", "the generic set: the export's platform set is " + platDir + ", and this cluster is " + cls.Summary(), nil
 }
 
-// translationFor finds the translations written into the export, the one for this cluster's platform when theres one, with its stamp, and the platforms of the others
+// translationFor finds the translations written into the export, under translations/<code>, the one for this cluster's platform when theres one, with its stamp, and the platforms of the others
 func translationFor(root string, cls *platform.Classification) (dir string, stamp *translate.Stamp, others []string) {
 	m, err := capability.Load()
 	if err != nil {
 		return "", nil, nil
 	}
-	for _, p := range m.Platforms {
-		d := p.Translate.Dir
+	entries, _ := os.ReadDir(filepath.Join(root, capability.TranslationsDir))
+	for _, e := range entries {
+		d := capability.TranslationsDir + "/" + e.Name()
 		b, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(d), translate.StampFile)) //#nosec G304 -- inside the export directory the user named
 		if err != nil {
 			continue
@@ -401,12 +436,15 @@ func translationFor(root string, cls *platform.Classification) (dir string, stam
 		if yaml.Unmarshal(b, &st) != nil {
 			continue
 		}
-		// checking if its this cluster's platform, classified with confidence, if so its the set to check
-		if cls != nil && cls.Is(p.Distribution) && cls.Distribution == p.Distribution {
+		to := platform.Distribution(st.To)
+		// checking if its for this cluster's platform, classified with confidence, if so its the set to check
+		if cls != nil && cls.Is(to) && cls.Distribution == to {
 			dir, stamp = d, &st
 			continue
 		}
-		others = append(others, p.Name)
+		if p := m.For(to); p != nil {
+			others = append(others, p.Name)
+		}
 	}
 	return dir, stamp, others
 }

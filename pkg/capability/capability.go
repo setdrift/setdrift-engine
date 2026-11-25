@@ -25,7 +25,9 @@ type Platform struct {
 	// Name is how its written for people, like EKS
 	Name string `json:"name"`
 	// Cloud is the cloud the platform runs on, like AWS, for wording about its services, identities and secret manager
-	Cloud     string    `json:"cloud,omitempty"`
+	Cloud string `json:"cloud,omitempty"`
+	// Code is the platform's short code in a translation's name, like e for EKS in te2g (EKS to GKE)
+	Code      string    `json:"code"`
 	Markers   Markers   `json:"markers"`
 	Translate Translate `json:"translate"`
 	// CloudResources are the operators on this cloud that create and manage real cloud resources from objects in the cluster, like ACK
@@ -129,6 +131,8 @@ type LoadBalancer struct {
 	// Internal and External are the annotations a translation writes for each
 	Internal map[string]string `json:"internal,omitempty"`
 	External map[string]string `json:"external,omitempty"`
+	// Class is the load balancer class a translation writes, empty when the platform gives a Service its load balancer without one
+	Class string `json:"class,omitempty"`
 }
 
 // Ingress says how an Ingress's controller and exposure read and are written on a platform
@@ -178,6 +182,32 @@ type SpotLabel struct {
 	Key   string `json:"key"`
 	Value string `json:"value"`
 	Taint bool   `json:"taint,omitempty"`
+}
+
+// UnknownCode stands for a source on no known platform in a translation's name, like tx2g
+const UnknownCode = "x"
+
+// TranslationCode names a translation by its platforms' codes, t, the source's, 2, the target's, like te2g for EKS to GKE
+func (m *Map) TranslationCode(from, to platform.Distribution) string {
+	code := func(d platform.Distribution) string {
+		if p := m.For(d); p != nil && p.Code != "" {
+			return p.Code
+		}
+		return UnknownCode
+	}
+	return "t" + code(from) + "2" + code(to)
+}
+
+// TranslationAnnotation is what a translation's overlay stamps on every object it applies, with the translation's code, like setdrift.io/translation: te2g
+// so the target cluster's objects say they arrived through a translation, diff leaves it out of a comparison as SetDrift's own bookkeeping
+const TranslationAnnotation = "setdrift.io/translation"
+
+// TranslationsDir is the directory of a cluster's directory that holds its translations, each in translations/<code>
+const TranslationsDir = "translations"
+
+// TranslationDir is where a translation from one platform to another goes in a cluster's directory, like translations/te2g
+func (m *Map) TranslationDir(from, to platform.Distribution) string {
+	return TranslationsDir + "/" + m.TranslationCode(from, to)
 }
 
 // For gives back the platform's entry, nil when the map has none

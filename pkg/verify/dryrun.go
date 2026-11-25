@@ -184,6 +184,70 @@ type DryRunVerifier struct {
 	Capability *capability.Map
 	// Explain gives back why an object that wont work here is that way on purpose, like a decision in a translation's translate-decisions.yaml, empty when it isnt
 	Explain func(*unstructured.Unstructured) string
+	// Served is what this cluster runs that objects name, its CSI drivers and IngressClasses, nil skips the check that each named one is there
+	Served *Served
+}
+
+// Served is what a cluster runs that objects name, each nil when it couldnt be read, which skips that part of the check
+type Served struct {
+	CSIDrivers     map[string]bool
+	IngressClasses map[string]bool
+}
+
+// unserved finds the objects that name something this cluster doesnt run, a StorageClass of a cloud's CSI driver it has no CSIDriver for, an Ingress of a class neither it nor the export has
+// they apply cleanly and never work, claims wait forever, the Ingress never gets an address
+// only cloud drivers the capability map knows are checked, a provisioner of another kind, like local-path, has no CSIDriver to look for
+func (v DryRunVerifier) unserved(objs []*unstructured.Unstructured) []capability.Misfit {
+	if v.Served == nil || v.Capability == nil {
+		return nil
+	}
+	known := map[string]bool{}
+	for _, p := range v.Capability.Platforms {
+		for _, prov := range p.Markers.StorageProvisioners {
+			// the in-tree names, kubernetes.io/aws-ebs and the like, are served by the CSI driver they migrated to, under another name
+			if !strings.HasPrefix(prov, "kubernetes.io/") {
+				known[prov] = true
+			}
+		}
+	}
+	exportClasses := map[string]bool{}
+	for _, o := range objs {
+		if o.GroupVersionKind().Group == "networking.k8s.io" && o.GetKind() == "IngressClass" {
+			exportClasses[o.GetName()] = true
+		}
+	}
+	drivers := slices.Sorted(maps.Keys(v.Served.CSIDrivers))
+	var out []capability.Misfit
+	for _, o := range objs {
+		gvk := o.GroupVersionKind()
+		switch {
+		case gvk.Group == "storage.k8s.io" && gvk.Kind == "StorageClass" && v.Served.CSIDrivers != nil:
+			prov, _, _ := unstructured.NestedString(o.Object, "provisioner")
+			if !known[prov] || v.Served.CSIDrivers[prov] {
+				continue
+			}
+			out = append(out, capability.Misfit{Ref: Ref(o), Reasons: []string{fmt.Sprintf("provisioner %s isn't a CSI driver this cluster runs (it runs %s), so claims for this class wait forever%s",
+				prov, strings.Join(drivers, ", "), ebsVariant(prov, v.Served.CSIDrivers))}})
+		case gvk.Group == "networking.k8s.io" && gvk.Kind == "Ingress" && v.Served.IngressClasses != nil:
+			cls, _, _ := unstructured.NestedString(o.Object, "spec", "ingressClassName")
+			if cls == "" || v.Served.IngressClasses[cls] || exportClasses[cls] {
+				continue
+			}
+			out = append(out, capability.Misfit{Ref: Ref(o), Reasons: []string{fmt.Sprintf("ingress class %s isn't on this cluster or in the export, so the Ingress never gets an address: create the IngressClass for this cluster's controller", cls)}})
+		}
+	}
+	return out
+}
+
+// ebsVariant names EKS's other EBS driver when the cluster runs it, the add-on's and EKS Auto Mode's have different names
+func ebsVariant(prov string, drivers map[string]bool) string {
+	switch {
+	case prov == "ebs.csi.eks.amazonaws.com" && drivers["ebs.csi.aws.com"]:
+		return ". This cluster runs the EBS CSI add-on (ebs.csi.aws.com), not EKS Auto Mode, whose driver a translation for EKS writes: change the class's provisioner to ebs.csi.aws.com"
+	case prov == "ebs.csi.aws.com" && drivers["ebs.csi.eks.amazonaws.com"]:
+		return ". This is EKS Auto Mode, whose EBS driver is ebs.csi.eks.amazonaws.com: change the class's provisioner to it"
+	}
+	return ""
 }
 
 // Verify checks the export at repoDir, a cluster's directory like clusters/<cluster> with a kustomization.yaml, or an export holding one cluster, and gives back the report
@@ -286,10 +350,6 @@ func (v DryRunVerifier) Verify(ctx context.Context, repoDir string) (*Report, er
 // misfits checks the objects against the capability map for the target platform
 // a resource that was clean becomes a KindWontWork diff, one that already differs gets the reasons added, since both mean it wont work here as exported
 func (v DryRunVerifier) misfits(objs []*unstructured.Unstructured, diffs []*Diff, report *Report) {
-	// checking if theres a map and a known target, if not theres nothing to check against
-	if v.Capability == nil || v.Target == platform.Unknown {
-		return
-	}
 	in := make([]capability.Object, len(objs))
 	index := map[string]int{}
 	for i, o := range objs {
@@ -298,8 +358,20 @@ func (v DryRunVerifier) misfits(objs []*unstructured.Unstructured, diffs []*Diff
 		in[i] = capability.Object{Ref: Ref(o), Group: gvk.Group, Kind: gvk.Kind, Content: o.Object}
 		index[in[i].Ref] = i
 	}
-	// invoking Misfits to find the objects naming another platform's markers, its defined in pkg/capability/capability.go
-	for _, mf := range v.Capability.Misfits(in, v.Target) {
+	var found []capability.Misfit
+	// checking if theres a map and a known target, if so Misfits finds the objects naming another platform's markers, its defined in pkg/capability/capability.go
+	if v.Capability != nil && v.Target != platform.Unknown {
+		found = v.Capability.Misfits(in, v.Target)
+	}
+	// invoking unserved for what names something this cluster doesnt run, its defined above, an object in both gets one entry with every reason
+	for _, u := range v.unserved(objs) {
+		if j := slices.IndexFunc(found, func(m capability.Misfit) bool { return m.Ref == u.Ref }); j >= 0 {
+			found[j].Reasons = append(found[j].Reasons, u.Reasons...)
+		} else {
+			found = append(found, u)
+		}
+	}
+	for _, mf := range found {
 		i := index[mf.Ref]
 		// checking how the dry-run left the object, clean, not checked, or already a diff
 		switch d := diffs[i]; {
@@ -461,11 +533,16 @@ func build(root, dir string) ([]*unstructured.Unstructured, error) {
 	var out []*unstructured.Unstructured
 	// turning each built resource into an unstructured object
 	for _, r := range resMap.Resources() {
-		m, err := r.Map()
+		// reading it as JSON, so numbers are int64 and float64 as everywhere else in Kubernetes, kustomize's own map holds plain ints, which the unstructured helpers refuse
+		b, err := r.MarshalJSON()
 		if err != nil {
 			return nil, fmt.Errorf("building %s: %w", dir, err)
 		}
-		out = append(out, &unstructured.Unstructured{Object: m})
+		u := &unstructured.Unstructured{}
+		if err := u.UnmarshalJSON(b); err != nil {
+			return nil, fmt.Errorf("building %s: %w", dir, err)
+		}
+		out = append(out, u)
 	}
 	return out, nil
 }

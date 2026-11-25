@@ -95,11 +95,11 @@ func TestTranslateHeldAndNetworkPolicies(t *testing.T) {
 	if !strings.Contains(out, "WARNING: 1 NetworkPolicy is accepted unenforced") {
 		t.Errorf("no warning:\n%s", out)
 	}
-	ds, _ := os.ReadFile(filepath.Join(root, "platform", "gcp", "gke", "translate-decisions.yaml"))
+	ds, _ := os.ReadFile(filepath.Join(root, "translations", "te2g", "translate-decisions.yaml"))
 	if !strings.Contains(string(ds), "choose: accept-unenforced") || !strings.Contains(string(ds), "choose: keep-source") {
 		t.Errorf("decisions:\n%s", ds)
 	}
-	restore, _ := os.ReadFile(filepath.Join(root, "platform", "gcp", "gke", "RESTORE.md"))
+	restore, _ := os.ReadFile(filepath.Join(root, "translations", "te2g", "RESTORE.md"))
 	if !strings.Contains(string(restore), "Turn on network policy enforcement") || !strings.Contains(string(restore), "services.k8s.aws/deletion-policy: retain") {
 		t.Errorf("RESTORE.md:\n%s", restore)
 	}
