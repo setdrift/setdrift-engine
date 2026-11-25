@@ -207,5 +207,25 @@ func TestWriteAfterStopping(t *testing.T) {
 	}
 }
 
+// EKS's VPC CNI settings are left out for another platform, and kept for EKS
+func TestVPCCNISettingsLeftOut(t *testing.T) {
+	cm := u(t, `
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: amazon-vpc-cni, namespace: kube-system}
+data: {enable-network-policy-controller: "true"}`)
+	r, _ := Translate([]*unstructured.Unstructured{cm}, platform.EKS, platform.GKE, load(t), nil, Source{})
+	if p := patchFor(r, "ConfigMap", "amazon-vpc-cni"); p == nil || !p.Delete {
+		t.Errorf("for GKE: %+v", r.Patches)
+	}
+	if doc := restore(r, RestoreInfo{}); !strings.Contains(doc, "| ConfigMap kube-system/amazon-vpc-cni | EKS's VPC CNI settings, which nothing reads on GKE") {
+		t.Errorf("RESTORE.md row:\n%s", doc)
+	}
+	r, _ = Translate([]*unstructured.Unstructured{cm}, platform.AKS, platform.EKS, load(t), nil, Source{})
+	if patchFor(r, "ConfigMap", "amazon-vpc-cni") != nil {
+		t.Errorf("for EKS it stays: %+v", r.Patches)
+	}
+}
+
 // Copyright The SetDrift Authors
 // SPDX-License-Identifier: Apache-2.0

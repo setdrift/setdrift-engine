@@ -17,6 +17,12 @@ func ds(ns, name, container string, args ...any) *unstructured.Unstructured {
 	}}
 }
 
+// withReady gives a DaemonSet the status of a live one, with n ready Pods
+func withReady(o *unstructured.Unstructured, n int64) *unstructured.Unstructured {
+	o.Object["status"] = map[string]any{"numberReady": n, "desiredNumberScheduled": n}
+	return o
+}
+
 // check each engine is recognized, and the ones that can run without enforcing aren't counted then
 func TestDetect(t *testing.T) {
 	cm := func(v string) *unstructured.Unstructured {
@@ -42,6 +48,9 @@ func TestDetect(t *testing.T) {
 		{"kube-router", []*unstructured.Unstructured{ds("kube-system", "kube-router", "kube-router", "--run-router=true")}, "kube-router"},
 		// an engine's name in an app's namespace isnt the cluster's
 		{"other namespace", []*unstructured.Unstructured{ds("shop", "cilium", "cilium")}, None},
+		// a live DaemonSet with no ready Pods enforces nothing, like GKE's calico-node before its nodes are recreated
+		{"calico not ready", []*unstructured.Unstructured{withReady(ds("kube-system", "calico-node", "calico-node"), 0)}, None},
+		{"calico ready", []*unstructured.Unstructured{withReady(ds("kube-system", "calico-node", "calico-node"), 1)}, "Calico"},
 		{"two engines", []*unstructured.Unstructured{ds("kube-system", "cilium", "cilium"), ds("calico-system", "calico-node", "calico-node")}, "Calico, Cilium"},
 	}
 	for _, c := range cases {

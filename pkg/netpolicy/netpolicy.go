@@ -48,6 +48,11 @@ func Detect(objs []*unstructured.Unstructured) string {
 		switch o.GetKind() {
 		case "DaemonSet":
 			name := o.GetName()
+			// checking if a live DaemonSet runs no ready Pods, if so its engine enforces nothing yet, like GKE's calico-node before the nodes are recreated
+			// a snapshot's DaemonSet has no status, export drops it, so there it counts by being there
+			if ready, ok, _ := unstructured.NestedInt64(o.Object, "status", "numberReady"); ok && ready == 0 {
+				continue
+			}
 			// checking if its the VPC CNI, if so its policy agent decides
 			if name == "aws-node" {
 				if vpcCNIAgentOn(o) {

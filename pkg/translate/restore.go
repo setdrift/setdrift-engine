@@ -40,7 +40,12 @@ func restore(r *Result, ri RestoreInfo) string {
 	for _, p := range r.Patches {
 		// checking if its a deleted object other than a cloud resource, those have rows of their own below
 		if p.Delete && !slices.ContainsFunc(r.CloudResources, func(c CloudResource) bool { return c.Ref == p.Kind+" "+qualifiedName(&p) }) {
-			fmt.Fprintf(&b, "| %s %s | Left out, as decided in %s | See the decision there |\n", p.Kind, qualifiedName(&p), DecisionsFile)
+			why, todo := "Left out, as decided in "+DecisionsFile, "See the decision there"
+			// checking if it was left out by a rule rather than a decision, like EKS's VPC CNI settings, if so its own reason is given
+			if len(p.Why) > 0 && !strings.Contains(p.Why[0], "as decided") {
+				why, todo = strings.TrimPrefix(p.Why[0], "left out: "), "Nothing"
+			}
+			fmt.Fprintf(&b, "| %s %s | %s | %s |\n", p.Kind, qualifiedName(&p), why, todo)
 		}
 	}
 	for _, c := range r.CloudResources {

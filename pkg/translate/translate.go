@@ -288,6 +288,13 @@ func (t *translator) object(o *unstructured.Unstructured) {
 		return
 	}
 
+	// EKS's VPC CNI settings, which switch its network policy agent on, nothing reads them on another platform, whose own enforcement is a RESTORE.md step
+	if gvk.Group == "" && gvk.Kind == "ConfigMap" && o.GetNamespace() == "kube-system" && o.GetName() == netpolicy.VPCCNIConfigMap && t.to != platform.EKS {
+		p.Delete = true
+		p.Why = append(p.Why, fmt.Sprintf("left out: EKS's VPC CNI settings, which nothing reads on %s. Network policy enforcement there is a step of RESTORE.md", t.tgt.Name))
+		t.r.Patches = append(t.r.Patches, p)
+		return
+	}
 	// another platform's finalizers go: on the target nothing removes them, so the object could never be deleted
 	if fins := o.GetFinalizers(); len(fins) > 0 {
 		var keep []any
