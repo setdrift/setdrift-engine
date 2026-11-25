@@ -22,8 +22,8 @@ type Kind struct {
 	label func(m []string) string
 }
 
-// Kinds are the region- and account-bound values found, in the order findings list them
-var Kinds = []Kind{
+// boundKinds are the region- and account-bound values found, in the order findings list them
+var boundKinds = []Kind{
 	{
 		Name: "ECR image", Doc: "https://docs.aws.amazon.com/AmazonECR/latest/userguide/Registries.html",
 		re:    regexp.MustCompile(`\b(\d{12})\.dkr\.ecr\.([a-z]{2}(?:-[a-z]+)+-\d)\.amazonaws\.com(?:\.cn)?\b`),
@@ -86,7 +86,7 @@ type Match struct {
 func Find(s string) []Match {
 	var out []Match
 	// going through each kind, each value can be found by one or more
-	for _, k := range Kinds {
+	for _, k := range boundKinds {
 		// going through each place the kind is found
 		for _, m := range k.re.FindAllStringSubmatch(s, -1) {
 			kind := k.Name

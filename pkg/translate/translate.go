@@ -40,8 +40,8 @@ const (
 // NetworkPolicyFeature is the decision for the export's NetworkPolicies, when the source enforced them
 const NetworkPolicyFeature = "network-policy-enforcement"
 
-// Choices are every choice a decision can take
-var Choices = []string{KeepSource, Equivalent, LeaveOut, Require, AcceptUnenforced}
+// choices are every choice a decision can take
+var choices = []string{KeepSource, Equivalent, LeaveOut, Require, AcceptUnenforced}
 
 // Source is what a translation needs to know about the export besides its generic set
 type Source struct {
@@ -130,6 +130,7 @@ func (d Decision) Waiting() bool { return d.Previous != "" && d.Choose == "" }
 
 // Fingerprint gives back a short fingerprint of what a decision is made on, an object, or for NetworkPolicies the engine and the policies, the same for the same content
 func Fingerprint(v any) string {
+	// the error is dropped: marshalling plain maps, strings and slices can't fail
 	b, _ := json.Marshal(v)
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])[:12]
@@ -586,6 +587,7 @@ func (t *translator) storageClass(p *Patch, ref string, c map[string]any) {
 		prov, params = orig.Provisioner, orig.Parameters
 	} else {
 		// recording the original, so translating back restores it exactly
+		// the error is dropped: marshalling plain maps, strings and slices can't fail
 		rec, _ := json.Marshal(classRecord{Platform: string(t.from), Provisioner: prov, Parameters: params})
 		if ann == nil {
 			p.Ops = append(p.Ops, Op{Op: "add", Path: "/metadata/annotations", Value: map[string]any{capability.SourceClassAnnotation: string(rec)}})

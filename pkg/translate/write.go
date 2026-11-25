@@ -59,11 +59,11 @@ func ReadDecisions(dir string) ([]Decision, error) {
 	}
 	for _, d := range ds {
 		// checking each choice is one of the three, a typo must not pass as undecided
-		if d.Choose != "" && !slices.Contains(Choices, d.Choose) {
+		if d.Choose != "" && !slices.Contains(choices, d.Choose) {
 			opts := d.Options
 			// checking if the entry lost its options, if so every choice is named
 			if len(opts) == 0 {
-				opts = Choices
+				opts = choices
 			}
 			return nil, fmt.Errorf("%s: %s: choose must be %s, not %q", DecisionsFile, d.Feature, strings.Join(opts, ", "), d.Choose)
 		}

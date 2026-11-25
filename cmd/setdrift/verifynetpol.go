@@ -20,6 +20,7 @@ import (
 
 	"setdrift.io/setdrift-engine/internal/text"
 	"setdrift.io/setdrift-engine/pkg/netpolicy"
+	"setdrift.io/setdrift-engine/pkg/translate"
 	"setdrift.io/setdrift-engine/pkg/verify"
 )
 
@@ -51,7 +52,7 @@ var (
 // idle names the engines installed but running on no nodes yet, like GKE's calico-node before its nodes are recreated
 func targetNetworkPolicy(ctx context.Context, dyn dynamic.Interface) (engine, unknownWhy, idle string) {
 	var objs []*unstructured.Unstructured
-	for _, ns := range netpolicy.Namespaces {
+	for _, ns := range netpolicy.Namespaces() {
 		l, err := dyn.Resource(daemonSetsGVR).Namespace(ns).List(ctx, metav1.ListOptions{})
 		switch {
 		case apierrors.IsForbidden(err):
@@ -110,7 +111,7 @@ func checkNetworkPolicies(policies int, source, target, unknownWhy, idle, accept
 		return c
 	}
 	c.Failed = true
-	c.Message += " To pass without enforcement, on purpose, choose accept-unenforced for " + "network-policy-enforcement in the translation's translate-decisions.yaml, or pass --accept-unenforced-network-policies."
+	c.Message += fmt.Sprintf(" To pass without enforcement, on purpose, choose %s for %s in the translation's %s, or pass --accept-unenforced-network-policies.", translate.AcceptUnenforced, translate.NetworkPolicyFeature, translate.DecisionsFile)
 	return c
 }
 

@@ -5,6 +5,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -204,7 +205,10 @@ func (o *translateOptions) run(cmd *cobra.Command, dir string) error {
 		ri.Cluster, ri.SourceVersion = info.Cluster, info.KubernetesVersion
 	}
 	// invoking volumeClaims to list the claims whose disks stay on the source cloud, its defined below
-	ri.Volumes = volumeClaims(root)
+	ri.Volumes, err = volumeClaims(root)
+	if err != nil {
+		return err
+	}
 	// invoking sourceShape to read the source cluster's shape from the export's snapshot, for the target's create command, its defined below
 	ri.Shape = sourceShape(root, info)
 	if err := translate.Write(root, r, res, version.Version, ri); err != nil {
@@ -289,21 +293,33 @@ func heldObjects(root string) ([]*unstructured.Unstructured, error) {
 }
 
 // volumeClaims lists the claims the export pre-binds a volume for, restore/volumes/<namespace>/<claim>.yaml, as namespace/claim
-func volumeClaims(root string) []string {
+// an export without volumes has no restore/volumes, any other read error is given back, since RESTORE.md would leave out data that doesnt come over
+func volumeClaims(root string) ([]string, error) {
 	var out []string
-	nss, _ := os.ReadDir(filepath.Join(root, "restore", "volumes"))
+	dir := filepath.Join(root, "restore", "volumes")
+	nss, err := os.ReadDir(dir)
+	// checking if theres no restore/volumes, if so the export pre-binds no volume
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
 	for _, ns := range nss {
 		if !ns.IsDir() {
 			continue
 		}
-		files, _ := os.ReadDir(filepath.Join(root, "restore", "volumes", ns.Name()))
+		files, err := os.ReadDir(filepath.Join(dir, ns.Name()))
+		if err != nil {
+			return nil, err
+		}
 		for _, f := range files {
 			if name, ok := strings.CutSuffix(f.Name(), ".yaml"); ok {
 				out = append(out, ns.Name()+"/"+name)
 			}
 		}
 	}
-	return out
+	return out, nil
 }
 
 // rootResources reads the resources the cluster's kustomization.yaml lists, the generic set's directories

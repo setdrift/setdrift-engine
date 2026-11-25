@@ -174,9 +174,11 @@ func (t *translator) secretProviderClass(p *Patch, ref string, o *unstructured.U
 		newParams["tenantId"] = "<Azure tenant ID>"
 		var arr []string
 		for _, n := range names {
+			// the error is dropped: marshalling plain maps, strings and slices can't fail
 			b, _ := yaml.Marshal(map[string]any{"objectName": n, "objectType": "secret"})
 			arr = append(arr, string(b))
 		}
+		// the error is dropped: marshalling plain maps, strings and slices can't fail
 		b, _ := yaml.Marshal(map[string]any{"array": arr})
 		newParams["objects"] = string(b)
 	case "GKE":
@@ -262,6 +264,7 @@ func listYAML(names []string, item func(string) map[string]any) string {
 	for _, n := range names {
 		l = append(l, item(n))
 	}
+	// the error is dropped: marshalling plain maps, strings and slices can't fail
 	b, _ := yaml.Marshal(l)
 	return string(b)
 }

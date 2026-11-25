@@ -231,6 +231,7 @@ func (e Emitter) Emit(s *snapshotv1alpha1.Snapshot, dir string) error {
 	}
 	// looking for temporary directories left by an export that was killed before it could clean up
 	// the pattern is fixed, so Glob cant fail
+	// the error is dropped: filepath.Glob only fails on a malformed pattern, and this one is fixed
 	stale, _ := filepath.Glob(filepath.Join(parent, "."+name+".tmp-*"))
 	// removing each one if possible, one left behind changes nothing
 	for _, d := range stale {

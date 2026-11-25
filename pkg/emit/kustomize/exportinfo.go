@@ -84,7 +84,7 @@ func sourceNetworkPolicy(s *snapshotv1alpha1.Snapshot) string {
 		if r.Namespace == "kube-system" {
 			readSystem = true
 		}
-		if !slices.Contains(netpolicy.Namespaces, r.Namespace) || (r.Kind != "DaemonSet" && !(r.Kind == "ConfigMap" && r.Name == netpolicy.VPCCNIConfigMap)) {
+		if !slices.Contains(netpolicy.Namespaces(), r.Namespace) || (r.Kind != "DaemonSet" && !(r.Kind == "ConfigMap" && r.Name == netpolicy.VPCCNIConfigMap)) {
 			continue
 		}
 		var m map[string]any

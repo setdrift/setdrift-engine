@@ -94,11 +94,13 @@ func loadTranslation(dir string) (*translationInput, error) {
 // translationsOf lists an export's translations for a message, empty when it has none
 func translationsOf(dir string) string {
 	roots := []string{dir}
+	// the error is dropped: filepath.Glob only fails on a malformed pattern, and this one is fixed
 	if m, _ := filepath.Glob(filepath.Join(dir, "clusters", "*")); len(m) > 0 {
 		roots = m
 	}
 	var found []string
 	for _, r := range roots {
+		// the error is dropped: filepath.Glob only fails on a malformed pattern, and this one is fixed
 		m, _ := filepath.Glob(filepath.Join(r, capability.TranslationsDir, "*", translate.StampFile))
 		for _, s := range m {
 			found = append(found, filepath.Dir(s))
@@ -121,6 +123,7 @@ func exportSnapshot(clusterRoot string, info *kustomize.ExportInfo) (string, err
 	if err != nil {
 		return "", fmt.Errorf("%s: %w", kustomize.ExportInfoFile, err)
 	}
+	// the error is dropped: filepath.Glob only fails on a malformed pattern, and this one is fixed
 	m, _ := filepath.Glob(filepath.Join(root, snapshotsDir, at.UTC().Format("2006-01-02T150405Z")+"-*.pb"))
 	if len(m) == 0 {
 		return "", fmt.Errorf("the export at %s has no snapshot from when it was taken (%s) in %s/, which diff compares through the translation: export again without --no-snapshot", root, info.ExportedAt, snapshotsDir)
