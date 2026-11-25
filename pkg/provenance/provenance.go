@@ -373,6 +373,9 @@ var eksBootstrap = map[string]map[string]bool{
 	"storage.k8s.io/CSIDriver":                                    {"efs.csi.aws.com": true},
 }
 
+// builtinNamespaces are the namespaces Kubernetes creates in every cluster
+var builtinNamespaces = map[string]bool{"default": true, "kube-system": true, "kube-public": true, "kube-node-lease": true}
+
 // eksCRDGroups are the CRD groups of the controllers EKS runs in its control plane, the VPC resource controller, the network policy controller and Auto Mode
 var eksCRDGroups = []string{"eks.amazonaws.com", "vpcresources.k8s.aws", "networking.k8s.aws"}
 
@@ -381,6 +384,10 @@ var eksCRDGroups = []string{"eks.amazonaws.com", "vpcresources.k8s.aws", "networ
 // EKS's and kubeadm's own field managers name their platform, so those rules apply on any cluster
 // kind's add-ons were applied with kubectl and are known only by name, so those rules apply only on a cluster classified as kind
 func platformObject(o *resource.Object, cls *platform.Classification) (string, map[string]string) {
+	// checking if its one of the namespaces Kubernetes itself creates in every cluster, if so a new cluster has its own, and applied elsewhere it would only take over its metadata
+	if gvk := o.GroupVersionKind(); gvk.Group == "" && gvk.Kind == "Namespace" && builtinNamespaces[o.GetName()] {
+		return "kubernetes", map[string]string{"namespace": o.GetName()}
+	}
 	// invoking eksEvidence and checking if EKS manages the object, its defined below
 	if ev := eksEvidence(o); ev != nil {
 		return "eks", ev

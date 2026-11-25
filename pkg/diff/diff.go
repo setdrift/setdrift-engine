@@ -124,6 +124,8 @@ type Result struct {
 	Translated []Sorted `json:"translated,omitempty"`
 	Decided    []Sorted `json:"decided,omitempty"`
 	NotMoved   []Sorted `json:"notMoved,omitempty"`
+	// OnSource are the source's own objects that name another platform's features, already true of it before the translation, shown and not counted
+	OnSource []Sorted `json:"onSource,omitempty"`
 }
 
 // WontWork is a resource on one side that names features its side's platform doesnt have, from the capability map

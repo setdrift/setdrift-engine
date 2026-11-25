@@ -66,13 +66,14 @@ The annotations a [translation](translate.md#where-translations-go) keeps for it
 
 ## Comparing across a translation
 
-After a migration with [`translate`](translate.md), `diff` with `--translation-dir` answers whether the new cluster is the old one, translated. It sorts every difference into one of four groups.
+After a migration with [`translate`](translate.md), `diff` with `--translation-dir` answers whether the new cluster is the old one, translated. It sorts every difference into one of five groups.
 
 | Group | What's in it | Counted |
 |---|---|---|
 | Translated on purpose | What the translation changed, like a StorageClass's provisioner or a load balancer's annotation, and what it left out or added | No |
 | Decided | What its `translate-decisions.yaml` covers, like an identity kept on the source cloud | No |
 | Not moved by design | Secrets and objects holding secret values, which SetDrift never moves, and jobs that ran once | No |
+| Already true of the source | Objects on the source that name another platform's features, there before the translation | No |
 | A real difference | Anything else, with why, changed on the source after the export it was translated from, or differing on the target from the translation | Yes |
 
 It tells them apart by lining up four versions of each object, the source as exported, the export translated, the source now and the target now, so it never guesses what the translation changed. With no real differences it says the target is the source, translated, and `--exit-code` fails only on real differences.

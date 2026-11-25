@@ -341,12 +341,12 @@ func TestServiceIPFamilies(t *testing.T) {
 // check that GKE's automatic NEG annotation and the load balancer controllers' finalizers go, and a NEG annotation set on purpose and other finalizers stay
 func TestServicePlatformWrites(t *testing.T) {
 	o := parse(t, `{"apiVersion": "v1", "kind": "Service", "metadata": {"name": "web",
-	  "annotations": {"cloud.google.com/neg": "{\"ingress\":true}", "team": "shop"},
+	  "annotations": {"cloud.google.com/neg": "{\"ingress\":true}", "cloud.google.com/neg-status": "{\"network_endpoint_groups\":{}}", "team": "shop"},
 	  "finalizers": ["service.kubernetes.io/load-balancer-cleanup", "service.eks.amazonaws.com/resources", "acme.com/keep"]},
 	  "spec": {"type": "LoadBalancer", "ports": [{"port": 80}]}}`)
 	md := run(t, o)["metadata"].(map[string]any)
 	ann, _ := md["annotations"].(map[string]any)
-	if _, ok := ann["cloud.google.com/neg"]; ok || ann["team"] != "shop" {
+	if _, ok := ann["cloud.google.com/neg"]; ok || ann["cloud.google.com/neg-status"] != nil || ann["team"] != "shop" {
 		t.Errorf("annotations %v", ann)
 	}
 	if fins, _ := md["finalizers"].([]any); len(fins) != 1 || fins[0] != "acme.com/keep" {

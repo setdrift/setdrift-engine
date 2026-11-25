@@ -648,6 +648,7 @@ func printSorted(w io.Writer, r diff.Result) {
 		{"Translated on purpose (%d), not counted", r.Translated},
 		{"Decided in translate-decisions.yaml (%d), not counted", r.Decided},
 		{"Not moved by design (%d), not counted", r.NotMoved},
+		{"Already true of the source (%d), not counted, they name another platform's features there", r.OnSource},
 	} {
 		if len(g.items) == 0 {
 			continue

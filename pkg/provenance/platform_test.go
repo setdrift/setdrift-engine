@@ -48,6 +48,9 @@ func TestPlatform(t *testing.T) {
 		{"VPC CNI CRD", mk("apiextensions.k8s.io/v1", "CustomResourceDefinition", "policyendpoints.networking.k8s.aws", nil, "kubectl-client-side-apply", "kube-apiserver"), true},
 		{"own CRD", mk("apiextensions.k8s.io/v1", "CustomResourceDefinition", "widgets.example.com", nil, "kubectl-client-side-apply", "kube-apiserver"), false},
 		{"own ClusterRole", mk("rbac.authorization.k8s.io/v1", "ClusterRole", "reader", nil, "kubectl-client-side-apply"), false},
+		// the namespaces Kubernetes creates in every cluster, even once kubectl applied them, are the cluster's own
+		{"built-in namespace", mk("v1", "Namespace", "kube-system", nil, "kubectl"), true},
+		{"own namespace", mk("v1", "Namespace", "shop", nil, "kubectl"), false},
 		{"no managers", mk("v1", "ConfigMap", "x", nil), false},
 	} {
 		got := LabelClassifier{}.Classify(tc.o).Source == snapshotv1alpha1.Source_SOURCE_PLATFORM
