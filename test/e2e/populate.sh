@@ -48,11 +48,12 @@ k wait --for condition=established --timeout=120s \
 k apply -f "$here/fixtures/10-cluster.yaml"
 k wait --for condition=established --timeout=60s crd/widgets.example.com crd/buckets.s3.services.k8s.aws
 k apply -f "$here/fixtures/20-apps.yaml"
+k apply -f "$here/fixtures/20-apps-$platform.yaml"
 k apply -f "$here/fixtures/25-cloud-resources.yaml"
 k apply --server-side -f "$here/fixtures/30-ssa.yaml"
 k apply -f "$here/fixtures/40-argocd.yaml"
 k apply -f "$here/fixtures/50-flux.yaml"
-sed "s/REGION/$region/" "$here/fixtures/60-external-secrets.yaml" | k apply -f -
+[[ $platform == eks ]] && sed "s/REGION/$region/" "$here/fixtures/60-external-secrets.yaml" | k apply -f -
 
 # Imperative objects: no last-applied annotation, one field manager per command.
 ns=sd-imperative
