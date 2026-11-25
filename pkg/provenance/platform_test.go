@@ -184,6 +184,7 @@ func TestAKSAndGKE(t *testing.T) {
 		{"Managed Prometheus's OperatorConfig as GKE wrote it", in(mk("config", nil, "kube-addon-manager", "operator"), "gmp-public", "OperatorConfig"), on(platform.GKE), "gke", false},
 		{"Managed Prometheus's OperatorConfig once you edit it", in(mk("config", nil, "kube-addon-manager", "operator", "kubectl-edit"), "gmp-public", "OperatorConfig"), on(platform.GKE), "", false},
 		{"kube-dns's autoscaler", mk("kube-dns-autoscaler", nil, "cluster-proportional-autoscaler"), on(platform.GKE), "gke", false},
+		{"GKE's cloud-provider ServiceAccount", in(mk("cloud-provider", nil, "kubectl"), "kube-system", "ServiceAccount"), on(platform.GKE), "gke", false},
 		{"GKE's leader election Role, written with kubectl", in(mk("system:gke-kcm-ccm-leader-election", nil, "kubectl"), "kube-system", "Role"), on(platform.GKE), "gke", false},
 		{"the same Role name on AKS isnt GKE's", in(mk("system:gke-kcm-ccm-leader-election", nil, "kubectl"), "kube-system", "Role"), on(platform.AKS), "", false},
 	} {

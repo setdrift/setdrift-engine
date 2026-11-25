@@ -345,8 +345,8 @@ func (o *verifyOptions) networkPolicies(cmd *cobra.Command, dyn dynamic.Interfac
 		return nil, nil
 	}
 	// invoking targetNetworkPolicy to read this cluster's engine, its defined in verifynetpol.go
-	tgt, why := targetNetworkPolicy(cmd.Context(), dyn)
-	return checkNetworkPolicies(n, source, tgt, why, accepted, string(cls.Distribution)), nil
+	tgt, why, idle := targetNetworkPolicy(cmd.Context(), dyn)
+	return checkNetworkPolicies(n, source, tgt, why, idle, accepted, string(cls.Distribution)), nil
 }
 
 // namespacesGVR is how the dynamic client finds namespaces, sameCluster reads kube-system through it

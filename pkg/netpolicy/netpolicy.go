@@ -84,6 +84,21 @@ func Detect(objs []*unstructured.Unstructured) string {
 	return strings.Join(slices.Compact(found), ", ")
 }
 
+// Idle gives back the engines installed among live DaemonSets that run no ready Pods yet, like GKE's calico-node before its nodes are recreated
+func Idle(objs []*unstructured.Unstructured) []string {
+	var out []string
+	for _, o := range objs {
+		if o.GetKind() != "DaemonSet" || !slices.Contains(Namespaces, o.GetNamespace()) {
+			continue
+		}
+		if ready, ok, _ := unstructured.NestedInt64(o.Object, "status", "numberReady"); ok && ready == 0 && engines[o.GetName()] != "" {
+			out = append(out, engines[o.GetName()])
+		}
+	}
+	slices.Sort(out)
+	return slices.Compact(out)
+}
+
 // vpcCNIAgentOn tells if the aws-node DaemonSet runs its network policy agent switched on
 func vpcCNIAgentOn(o *unstructured.Unstructured) bool {
 	cs, _, _ := unstructured.NestedSlice(o.Object, "spec", "template", "spec", "containers")
@@ -131,7 +146,7 @@ func HowToEnforce(distribution string) string {
 	case "aks":
 		return "choose a network policy engine for the cluster (az aks create --network-policy cilium, calico or azure; an existing cluster can switch to one with az aks update --network-policy)"
 	case "gke":
-		return "use GKE Dataplane V2 (gcloud container clusters create --enable-dataplane-v2), or on an existing cluster without it, turn on network policy enforcement (gcloud container clusters update --update-addons=NetworkPolicy=ENABLED, then --enable-network-policy)"
+		return "use GKE Dataplane V2 (gcloud container clusters create --enable-dataplane-v2), or on an existing cluster without it, turn on network policy enforcement (gcloud container clusters update --update-addons=NetworkPolicy=ENABLED, then --enable-network-policy, and if the nodes don't pick it up, recreate them, like gcloud container clusters upgrade --node-pool <pool>)"
 	}
 	return "run a network policy engine, like Calico or Cilium"
 }

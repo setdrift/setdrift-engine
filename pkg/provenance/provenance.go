@@ -341,7 +341,9 @@ var gkeNamespaceManagers = map[string]map[string]bool{
 // the rule is to recognize a platform's objects by the markers it writes, these are the known exceptions, named and checked only on GKE
 // gke-common-webhook-heartbeat is a ConfigMap GKE rewrites constantly, so left in it shows as a difference in every verify
 // system:gke-kcm-ccm-leader-election is a Role and RoleBinding GKE creates with kubectl, the same field manager a person's commands have
+// cloud-provider is a ServiceAccount GKE creates with the cluster (seen on 1.36), shown as applied by hand without this
 var gkeUnmarked = map[string]bool{
+	"kube-system/ServiceAccount/cloud-provider":                  true,
 	"kube-system/ConfigMap/gke-common-webhook-heartbeat":         true,
 	"kube-system/Role/system:gke-kcm-ccm-leader-election":        true,
 	"kube-system/RoleBinding/system:gke-kcm-ccm-leader-election": true,

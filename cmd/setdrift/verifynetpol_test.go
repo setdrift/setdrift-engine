@@ -35,7 +35,7 @@ func TestCheckNetworkPolicies(t *testing.T) {
 		{name: "older export", policies: 2, source: netpolicy.Unknown, target: netpolicy.None, warn: true, says: "export again with this version"},
 	}
 	for _, c := range cases {
-		got := checkNetworkPolicies(c.policies, c.source, c.target, "no access", c.accepted, "eks")
+		got := checkNetworkPolicies(c.policies, c.source, c.target, "no access", "", c.accepted, "eks")
 		if c.none {
 			if got != nil {
 				t.Errorf("%s: %+v", c.name, got)
@@ -57,19 +57,36 @@ func TestTargetNetworkPolicy(t *testing.T) {
 		"metadata": map[string]any{"namespace": "kube-system", "name": "anetd"}}}
 	lists := map[schema.GroupVersionResource]string{daemonSetsGVR: "DaemonSetList", configMapsGVR: "ConfigMapList"}
 	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), lists, ds)
-	if e, why := targetNetworkPolicy(context.Background(), dyn); e != "GKE Dataplane V2" || why != "" {
+	if e, why, _ := targetNetworkPolicy(context.Background(), dyn); e != "GKE Dataplane V2" || why != "" {
 		t.Errorf("%q %q", e, why)
 	}
 	empty := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), lists)
-	if e, _ := targetNetworkPolicy(context.Background(), empty); e != netpolicy.None {
+	if e, _, _ := targetNetworkPolicy(context.Background(), empty); e != netpolicy.None {
 		t.Errorf("no engine: %q", e)
 	}
 	locked := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), lists)
 	locked.PrependReactor("list", "daemonsets", func(k8stesting.Action) (bool, runtime.Object, error) {
 		return true, nil, apierrors.NewForbidden(schema.GroupResource{Group: "apps", Resource: "daemonsets"}, "", nil)
 	})
-	if e, why := targetNetworkPolicy(context.Background(), locked); e != netpolicy.Unknown || !strings.Contains(why, "list on daemonsets.apps") {
+	if e, why, _ := targetNetworkPolicy(context.Background(), locked); e != netpolicy.Unknown || !strings.Contains(why, "list on daemonsets.apps") {
 		t.Errorf("forbidden: %q %q", e, why)
+	}
+}
+
+// check GKE's calico-node with no ready Pods, as before its nodes are recreated, reads as installed but not enforcing, and the message says so
+func TestIdleEngine(t *testing.T) {
+	ds := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "apps/v1", "kind": "DaemonSet",
+		"metadata": map[string]any{"namespace": "kube-system", "name": "calico-node"},
+		"status":   map[string]any{"numberReady": int64(0), "desiredNumberScheduled": int64(0)}}}
+	lists := map[schema.GroupVersionResource]string{daemonSetsGVR: "DaemonSetList", configMapsGVR: "ConfigMapList"}
+	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), lists, ds)
+	e, why, idle := targetNetworkPolicy(context.Background(), dyn)
+	if e != netpolicy.None || why != "" || idle != "Calico" {
+		t.Fatalf("%q %q %q", e, why, idle)
+	}
+	c := checkNetworkPolicies(12, "Calico", e, why, idle, "", "gke")
+	if !c.Failed || !strings.Contains(c.Message, "Calico is installed but runs on no nodes") || !strings.Contains(c.Message, "--node-pool") {
+		t.Errorf("%+v", c)
 	}
 }
 
