@@ -191,6 +191,13 @@ func TestAKSAndGKE(t *testing.T) {
 		{"GKE's cloud-provider ServiceAccount", in(mk("cloud-provider", nil, "kubectl"), "kube-system", "ServiceAccount"), on(platform.GKE), "gke", false},
 		{"GKE's leader election Role, written with kubectl", in(mk("system:gke-kcm-ccm-leader-election", nil, "kubectl"), "kube-system", "Role"), on(platform.GKE), "gke", false},
 		{"the same Role name on AKS isnt GKE's", in(mk("system:gke-kcm-ccm-leader-election", nil, "kubectl"), "kube-system", "Role"), on(platform.AKS), "", false},
+		// AKS's objects found in v0.3.0's Azure run
+		{"CoreDNS's autoscaler on AKS", mk("coredns-autoscaler", nil, "cluster-proportional-autoscaler"), on(platform.AKS), "aks", false},
+		{"AKS's azure-cns ServiceAccount, with no manager", in(mk("azure-cns", nil), "kube-system", "ServiceAccount"), on(platform.AKS), "aks", false},
+		{"AKS's bootstrap-signer ServiceAccount, with no manager", in(mk("bootstrap-signer", nil), "kube-system", "ServiceAccount"), on(platform.AKS), "aks", false},
+		{"AKS's overlay-upgrade-data, from its own Flux", mk("overlay-upgrade-data", map[string]string{"k8s-app": "overlay-upgrade"}), on(platform.AKS), "aks", false},
+		{"the same ServiceAccount name on GKE isnt AKS's", in(mk("azure-cns", nil), "kube-system", "ServiceAccount"), on(platform.GKE), "", false},
+		{"azure-cns in another namespace isnt AKS's", in(mk("azure-cns", nil), "shop", "ServiceAccount"), on(platform.AKS), "", false},
 	} {
 		p := LabelClassifier{Platform: tc.cluster}.Classify(tc.o)
 		got := ""

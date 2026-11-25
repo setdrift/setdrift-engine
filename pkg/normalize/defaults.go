@@ -551,6 +551,78 @@ func injectedCABundles(o *resource.Object) {
 	unstructured.RemoveNestedField(o.Object, "spec", "conversion", "webhook", "clientConfig", "caBundle")
 }
 
+// aksAdmissionsEnforcer drops the namespace selector expressions AKS's admissions enforcer adds to every webhook, so a webhook never sees AKS's own namespaces
+// theyre AKS's, a new AKS cluster adds them again, exported they would carry AKS's selector to another cloud, and on an AKS target they would show as a difference
+// the evidence is the enforcer's own field manager, admissionsenforcer, and only the two expressions it adds are dropped, anything else in the selector is the user's
+func aksAdmissionsEnforcer(o *resource.Object) {
+	enforced := false
+	// going through each managedFields entry, looking for the enforcer's
+	for _, e := range o.GetManagedFields() {
+		// checking if its the enforcer, if so its expressions are in the object
+		if e.Manager == "admissionsenforcer" {
+			enforced = true
+		}
+	}
+	// checking if the enforcer never wrote the object, if so the selectors are the user's
+	if !enforced {
+		return
+	}
+	// going through each webhook, removing the enforcer's expressions from its namespace selector
+	for _, w := range items(o.Object, "webhooks") {
+		exprs, _, _ := unstructured.NestedSlice(w, "namespaceSelector", "matchExpressions")
+		var kept []any
+		// keeping every expression but the enforcer's two
+		for _, x := range exprs {
+			// invoking enforcerExpression to check if its one the enforcer adds, its defined below
+			if !enforcerExpression(x) {
+				kept = append(kept, x)
+			}
+		}
+		// checking if nothing was removed, if so the selector is left as it is
+		if len(kept) == len(exprs) {
+			continue
+		}
+		// checking if nothing is left, if so the expressions go, else the rest stay
+		if len(kept) == 0 {
+			unstructured.RemoveNestedField(w, "namespaceSelector", "matchExpressions")
+		} else {
+			_ = unstructured.SetNestedSlice(w, kept, "namespaceSelector", "matchExpressions")
+		}
+	}
+}
+
+// enforcerExpression tells if x is one of the two expressions AKS's admissions enforcer adds, control-plane NotIn [true] and kubernetes.azure.com/managedby NotIn [aks]
+func enforcerExpression(x any) bool {
+	m, ok := x.(map[string]any)
+	// checking if its not a map, if so its not one of them
+	if !ok {
+		return false
+	}
+	key, _ := m["key"].(string)
+	op, _ := m["operator"].(string)
+	values, _ := m["values"].([]any)
+	// checking if its a NotIn with one value, the enforcer's form
+	if op != "NotIn" || len(values) != 1 {
+		return false
+	}
+	v, _ := values[0].(string)
+	return (key == "control-plane" && v == "true") || (key == "kubernetes.azure.com/managedby" && v == "aks")
+}
+
+// webhookDefaults takes a webhook configuration and removes the empty namespace and object selectors the API server sets on each webhook by default
+// applied, an empty selector claims the field, and fights a platform component that writes it, like AKS's admissions enforcer
+func webhookDefaults(o *resource.Object) {
+	// going through each webhook, removing each selector thats empty
+	for _, w := range items(o.Object, "webhooks") {
+		for _, f := range []string{"namespaceSelector", "objectSelector"} {
+			// checking if the selector is an empty map, if so its the default
+			if sel, ok := w[f].(map[string]any); ok && len(sel) == 0 {
+				delete(w, f)
+			}
+		}
+	}
+}
+
 // ownsField tells if s holds a field named name, at any depth
 func ownsField(s *fieldpath.Set, name string) bool {
 	found := false

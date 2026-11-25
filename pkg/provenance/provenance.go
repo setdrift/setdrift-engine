@@ -322,7 +322,19 @@ var coreManagers = map[string]bool{
 }
 
 // aksManagers are the field managers of the components AKS runs in the cluster, eno and its reconciler (AKS's own deployer of its add-ons), the live patching controller, azure cni's dnc-rc, and the reconciler of AKS's webhooks
-var aksManagers = map[string]bool{"eno": true, "eno-reconciler": true, "live-patching-controller": true, "dnc-rc": true, "aks-webhook-reconciler": true}
+var aksManagers = map[string]bool{"eno": true, "eno-reconciler": true, "live-patching-controller": true, "dnc-rc": true, "aks-webhook-reconciler": true,
+	// CoreDNS's autoscaler, seen writing coredns-autoscaler on AKS 1.36 (v0.3.0's Azure run)
+	"cluster-proportional-autoscaler": true,
+}
+
+// aksUnmarked are AKS's own objects that carry no label and no field manager of AKS's, keyed by namespace/kind/name, the known exceptions, named and checked only on AKS like gkeUnmarked
+// azure-cns and bootstrap-signer are ServiceAccounts AKS creates with the cluster with no field manager at all (AKS 1.36)
+// overlay-upgrade-data is a ConfigMap AKS's own Flux writes from its control plane, its Flux labels name a namespace that isnt in the cluster
+var aksUnmarked = map[string]bool{
+	"kube-system/ServiceAccount/azure-cns":        true,
+	"kube-system/ServiceAccount/bootstrap-signer": true,
+	"kube-system/ConfigMap/overlay-upgrade-data":  true,
+}
 
 // gkeManagers are the field managers of the components GKE runs in the cluster, its add-on manager, its common webhooks, the load balancer controller (glbc), the GCP controller manager, the volume populator and its managed cluster autoscaler
 var gkeManagers = map[string]bool{
@@ -401,6 +413,10 @@ func platformObject(o *resource.Object, cls *platform.Classification) (string, m
 		// invoking onlyManagers to check every writer is one of AKS's, its defined below
 		if ev := onlyManagers(o, aksManagers); ev != nil {
 			return "aks", ev
+		}
+		// checking if its one of AKS's known objects that carry no marker of AKS's, if so its AKS's by name
+		if aksUnmarked[o.GetNamespace()+"/"+o.GroupVersionKind().Kind+"/"+o.GetName()] {
+			return "aks", map[string]string{"name": o.GetName()}
 		}
 	}
 	if cls.Is(platform.GKE) {
