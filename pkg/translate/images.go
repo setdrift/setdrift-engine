@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -37,6 +38,19 @@ var (
 
 // publicRepos are well-known public repositories on a cloud's registry hosts, pulled from anywhere without credentials
 var publicRepos = []string{"gcr.io/google-samples/", "gcr.io/google-containers/", "gcr.io/distroless/", "gcr.io/kaniko-project/", "gcr.io/cloud-builders/", "gcr.io/k8s-staging-"}
+
+// shellSafe matches a word a shell reads as it is, nothing in it expands or ends the command
+var shellSafe = regexp.MustCompile(`^[A-Za-z0-9@%+=:,./_-]+$`)
+
+// shq quotes s for a shell command a user pastes, so a value from the cluster, like an image or an annotation, is only ever one word
+// a value that needs no quoting stays as it is, so ordinary commands read plainly
+func shq(s string) string {
+	// checking if the shell reads it as it is, if so its left unquoted
+	if shellSafe.MatchString(s) {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
 
 // cloudOf takes an image's registry host and gives back its cloud and region, empty for a public or other registry
 func cloudOf(host string) (cloud, region string) {
@@ -131,18 +145,18 @@ func imagesStep(b *strings.Builder, imgs []Image, to platform.Distribution, dir 
 	}
 	switch to {
 	case platform.AKS:
-		cmds = append(cmds, "ACR=<your registry's name>   # az acr create, or one you have; the cluster pulls from it once attached: az aks update --attach-acr \"$ACR\"")
+		cmds = append(cmds, "ACR=<your registry name>   # az acr create, or one you have; the cluster pulls from it once attached: az aks update --attach-acr \"$ACR\"")
 		// az acr import pulls from the source with a password, one command per image
 		for _, img := range imgs {
 			user, pw := sourceLogin(img)
-			cmds = append(cmds, fmt.Sprintf("az acr import --name \"$ACR\" --source %s --image %s%s --username %s --password \"$(%s)\"", img.Ref, img.Repo, tagOrLatest(img.Tag), user, pw))
+			cmds = append(cmds, fmt.Sprintf("az acr import --name \"$ACR\" --source %s --image %s --username %s --password \"$(%s)\"", shq(img.Ref), shq(img.Repo+tagOrLatest(img.Tag)), user, pw))
 		}
 	case platform.GKE:
 		cmds = append(cmds, "REGISTRY=<location>-docker.pkg.dev/<project>/<repository>   # an Artifact Registry Docker repository; GKE's nodes pull from their own project's",
 			"gcloud auth print-access-token | crane auth login \"${REGISTRY%%/*}\" -u oauth2accesstoken --password-stdin")
 		cmds = append(cmds, loginLines(imgs, hosts)...)
 		for _, img := range imgs {
-			cmds = append(cmds, fmt.Sprintf("crane copy %s \"$REGISTRY/%s%s\"", img.Ref, img.Repo, tagOrLatest(img.Tag)))
+			cmds = append(cmds, fmt.Sprintf("crane copy %s \"$REGISTRY\"/%s", shq(img.Ref), shq(img.Repo+tagOrLatest(img.Tag))))
 		}
 	case platform.EKS:
 		cmds = append(cmds, "REGISTRY=<account>.dkr.ecr.<region>.amazonaws.com   # the cluster's account and region; EKS nodes pull from it",
@@ -152,11 +166,11 @@ func imagesStep(b *strings.Builder, imgs []Image, to platform.Distribution, dir 
 		for _, img := range imgs {
 			if !slices.Contains(repos, img.Repo) {
 				repos = append(repos, img.Repo)
-				cmds = append(cmds, fmt.Sprintf("aws ecr create-repository --repository-name %s --region <region> >/dev/null", img.Repo))
+				cmds = append(cmds, fmt.Sprintf("aws ecr create-repository --repository-name %s --region <region> >/dev/null", shq(img.Repo)))
 			}
 		}
 		for _, img := range imgs {
-			cmds = append(cmds, fmt.Sprintf("crane copy %s \"$REGISTRY/%s%s\"", img.Ref, img.Repo, tagOrLatest(img.Tag)))
+			cmds = append(cmds, fmt.Sprintf("crane copy %s \"$REGISTRY\"/%s", shq(img.Ref), shq(img.Repo+tagOrLatest(img.Tag))))
 		}
 	}
 	fmt.Fprintf(b, "```sh\n%s\n```\n\n", strings.Join(cmds, "\n"))
@@ -166,7 +180,8 @@ func imagesStep(b *strings.Builder, imgs []Image, to platform.Distribution, dir 
 		name := img.Host + "/" + img.Repo
 		if !slices.Contains(names, name) {
 			names = append(names, name)
-			fmt.Fprintf(b, "- name: %s\n  newName: <registry>/%s\n", name, img.Repo)
+			// quoted, so a value from the cluster stays one YAML string
+			fmt.Fprintf(b, "- name: %s\n  newName: %s\n", strconv.Quote(name), strconv.Quote("<registry>/"+img.Repo))
 		}
 	}
 	b.WriteString("```\n\n")

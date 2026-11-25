@@ -277,7 +277,11 @@ func heldObjects(root string) ([]*unstructured.Unstructured, error) {
 		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".yaml") {
 			return err
 		}
-		b, err := os.ReadFile(path) //#nosec G304 -- inside the export directory the user named
+		// checking if its a regular file, a link could point outside the export, at a file that isnt the export's to read, like verify's sealed build refuses
+		if !d.Type().IsRegular() {
+			return fmt.Errorf("%s isn't a regular file: an export holds only files, so a link here isn't followed", path)
+		}
+		b, err := os.ReadFile(path) //#nosec G304,G122 -- a regular file inside the export directory the user named
 		if err != nil {
 			return err
 		}
@@ -345,7 +349,11 @@ func sourceShape(root string, info *kustomize.ExportInfo) translate.Shape {
 	if err != nil {
 		return sh
 	}
-	raw, err := os.ReadFile(path)
+	// checking if its a regular file, a link could point outside the export
+	if fi, err := os.Lstat(path); err != nil || !fi.Mode().IsRegular() {
+		return sh
+	}
+	raw, err := os.ReadFile(path) //#nosec G304 -- the export's own snapshot, a regular file found by the time the export recorded
 	if err != nil {
 		return sh
 	}

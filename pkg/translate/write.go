@@ -179,6 +179,10 @@ func Write(root string, r *Result, resources []string, version string, ri Restor
 		if a.GetNamespace() != "" {
 			name = a.GetNamespace() + "-" + name
 		}
+		// checking if the name is a plain file name, an export read from disk isnt held to Kubernetes' naming rules, so a name like ../x must not write outside the overlay
+		if name != filepath.Base(name) || strings.Contains(name, "..") || strings.ContainsAny(name, `/\`) {
+			return fmt.Errorf("%s %s/%s: its name isn't a valid Kubernetes name, so translate won't write a file for it", a.GetKind(), a.GetNamespace(), a.GetName())
+		}
 		b, err := yaml.Marshal(a.Object)
 		if err != nil {
 			return err

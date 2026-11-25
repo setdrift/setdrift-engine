@@ -4,9 +4,11 @@
 package translate
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"net/netip"
+	"regexp"
 	"strings"
 
 	"setdrift.io/setdrift-engine/pkg/platform"
@@ -51,6 +53,22 @@ func (s Shape) perNode() (vcpus, gib int) {
 	return vcpus, gib
 }
 
+// minorDigits matches a major.minor version, digits only
+var minorDigits = regexp.MustCompile(`^\d+\.\d+$`)
+
+// firstPrefix gives back the first range as netip parses and writes it, an error when theres none or it isnt a range
+func firstPrefix(cidrs []string) (string, error) {
+	// checking if theres a range at all
+	if len(cidrs) == 0 {
+		return "", errors.New("no range")
+	}
+	p, err := netip.ParsePrefix(cidrs[0])
+	if err != nil {
+		return "", err
+	}
+	return p.String(), nil
+}
+
 // dnsServiceIP gives back the cluster DNS address AKS takes in a Service range, the tenth address, as EKS's and kubeadm's DNS use
 func dnsServiceIP(cidr string) string {
 	p, err := netip.ParsePrefix(cidr)
@@ -74,8 +92,8 @@ func createStep(b *strings.Builder, r *Result, ri RestoreInfo) bool {
 	}
 	s := ri.Shape
 	lines := []string{"az aks create --resource-group <resource group> --name <new cluster> --location <location> --tier standard"}
-	// checking if the source's version is known, if so the same minor version is asked for
-	if v := minorVersion(ri.SourceVersion); v != "" {
+	// checking if the source's version is known, and only digits, if so the same minor version is asked for
+	if v := minorVersion(ri.SourceVersion); minorDigits.MatchString(v) {
 		lines = append(lines, "--kubernetes-version "+v)
 	}
 	count := max(s.Nodes, 1)
@@ -90,16 +108,13 @@ func createStep(b *strings.Builder, r *Result, ri RestoreInfo) bool {
 		lines = append(lines, "--zones 1 2 3")
 	}
 	net := "--network-plugin azure --network-plugin-mode overlay"
-	// checking if the pods had their own range, if so its kept
-	if len(s.PodCIDRs) > 0 {
-		net += " --pod-cidr " + s.PodCIDRs[0]
+	// checking if the pods had their own range, if so its kept, written as parsed so nothing else from the cluster reaches the command
+	if p, err := firstPrefix(s.PodCIDRs); err == nil {
+		net += " --pod-cidr " + p
 	}
 	// checking if the Service range is known, if so its kept, with DNS at the same address, so nothing that names a Service address changes
-	if len(s.ServiceCIDRs) > 0 {
-		net += " --service-cidr " + s.ServiceCIDRs[0]
-		if ip := dnsServiceIP(s.ServiceCIDRs[0]); ip != "" {
-			net += " --dns-service-ip " + ip
-		}
+	if p, err := firstPrefix(s.ServiceCIDRs); err == nil {
+		net += " --service-cidr " + p + " --dns-service-ip " + dnsServiceIP(p)
 	}
 	lines = append(lines, net)
 	// checking if the source enforced its NetworkPolicies, if so the new cluster does too, with Cilium

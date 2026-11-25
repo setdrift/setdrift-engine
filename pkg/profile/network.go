@@ -193,7 +193,8 @@ func (b *builder) ciliumConfig(data map[string]string, src string) {
 		}
 	}
 	// checking if cilium says how big each node's pod range is
-	if n, err := strconv.Atoi(data["cluster-pool-ipv4-mask-size"]); err == nil && b.p.Network.NodePodPrefix == 0 {
+	// a mask size outside 0 to 128 isnt a range, so its left out
+	if n, err := strconv.ParseInt(data["cluster-pool-ipv4-mask-size"], 10, 32); err == nil && n >= 0 && n <= 128 && b.p.Network.NodePodPrefix == 0 {
 		b.p.Network.NodePodPrefix = int32(n)
 		b.found("node pod range /"+data["cluster-pool-ipv4-mask-size"], src)
 	}
@@ -327,7 +328,8 @@ func (b *builder) calicoPool(o *resource.Object, src string) {
 	cidr, _, _ := unstructured.NestedString(o.Object, "spec", "cidr")
 	b.add(&b.p.Network.PodCidrs, cidr, "pod network", src)
 	// checking if the pool says how big each node's block is
-	if n, ok, _ := unstructured.NestedInt64(o.Object, "spec", "blockSize"); ok && b.p.Network.NodePodPrefix == 0 {
+	// a block size outside 0 to 128 isnt a range, so its left out
+	if n, ok, _ := unstructured.NestedInt64(o.Object, "spec", "blockSize"); ok && n >= 0 && n <= 128 && b.p.Network.NodePodPrefix == 0 {
 		b.p.Network.NodePodPrefix = int32(n)
 		b.found("node pod range /"+strconv.FormatInt(n, 10), src)
 	}

@@ -2,6 +2,7 @@ package translate
 
 import (
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -125,6 +126,9 @@ func restore(r *Result, ri RestoreInfo) string {
 	return b.String()
 }
 
+// azureGUID matches an Azure client ID, a GUID
+var azureGUID = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+
 // cloudResourceRow says what happens to a cloud-resource object in the translation, and what to do about it
 func cloudResourceRow(c CloudResource, to string) (why, todo string) {
 	switch c.Choice {
@@ -178,15 +182,20 @@ func trustSteps(id Identity) string {
 			account = parts[4]
 		}
 		role := id.ID[strings.LastIndex(id.ID, "/")+1:]
-		fmt.Fprintf(&b, " keeps AWS IAM role `%s`. Register the issuer with AWS IAM once, then add a statement to the role's trust policy (`aws iam get-role --role-name %s` shows it; keep its other statements).\n\n", id.ID, role)
+		fmt.Fprintf(&b, " keeps AWS IAM role `%s`. Register the issuer with AWS IAM once, then add a statement to the role's trust policy (`aws iam get-role --role-name %s` shows it; keep its other statements).\n\n", id.ID, shq(role))
 		fmt.Fprintf(&b, "```sh\naws iam create-open-id-connect-provider --url \"$ISSUER\" --client-id-list sts.amazonaws.com\n```\n\n")
 		fmt.Fprintf(&b, "```json\n{\n  \"Effect\": \"Allow\",\n  \"Principal\": {\"Federated\": \"arn:aws:iam::%s:oidc-provider/<ISSUER without https://>\"},\n  \"Action\": \"sts:AssumeRoleWithWebIdentity\",\n  \"Condition\": {\"StringEquals\": {\n    \"<ISSUER without https://>:sub\": \"%s\",\n    \"<ISSUER without https://>:aud\": \"sts.amazonaws.com\"\n  }}\n}\n```\n\n", account, subject)
 	case "azure":
-		fmt.Fprintf(&b, " keeps Azure managed identity `%s`. Add a federated credential for the new cluster (`az identity list --query \"[?clientId=='%s']\"` finds the identity's name and resource group).\n\n", id.ID, id.ID)
+		find := "`az identity list` finds the identity with this client ID, and its name and resource group"
+		// checking if the client ID is a GUID, as Azure's are, if so the lookup names it, anything else from the cluster stays out of a command
+		if azureGUID.MatchString(id.ID) {
+			find = fmt.Sprintf("`az identity list --query \"[?clientId=='%s']\"` finds the identity's name and resource group", id.ID)
+		}
+		fmt.Fprintf(&b, " keeps Azure managed identity `%s`. Add a federated credential for the new cluster (%s).\n\n", id.ID, find)
 		fmt.Fprintf(&b, "```sh\naz identity federated-credential create --name %s-%s --identity-name <identity name> --resource-group <resource group> \\\n  --issuer \"$ISSUER\" --subject %s --audiences api://AzureADTokenExchange\n```\n\n", id.Namespace, id.ServiceAccount, subject)
 	case "gcp":
 		fmt.Fprintf(&b, " keeps Google service account `%s`. Google Cloud federates another cluster through a workload identity pool and a credential configuration file, which isn't added to the Pods for you. Create the pool's provider for the issuer and let the ServiceAccount act as the Google service account, then follow Google's guide to mount the configuration (create-cred-config) and a projected token, with GOOGLE_APPLICATION_CREDENTIALS pointing at it.\n\n", id.ID)
-		fmt.Fprintf(&b, "```sh\ngcloud iam workload-identity-pools providers create-oidc <provider> --location global --workload-identity-pool <pool> \\\n  --issuer-uri \"$ISSUER\" --attribute-mapping google.subject=assertion.sub\ngcloud iam service-accounts add-iam-policy-binding %s --role roles/iam.workloadIdentityUser \\\n  --member \"principal://iam.googleapis.com/projects/<project number>/locations/global/workloadIdentityPools/<pool>/subject/%s\"\n```\n\n", id.ID, subject)
+		fmt.Fprintf(&b, "```sh\ngcloud iam workload-identity-pools providers create-oidc <provider> --location global --workload-identity-pool <pool> \\\n  --issuer-uri \"$ISSUER\" --attribute-mapping google.subject=assertion.sub\ngcloud iam service-accounts add-iam-policy-binding %s --role roles/iam.workloadIdentityUser \\\n  --member \"principal://iam.googleapis.com/projects/<project number>/locations/global/workloadIdentityPools/<pool>/subject/%s\"\n```\n\n", shq(id.ID), subject)
 	}
 	return b.String()
 }
