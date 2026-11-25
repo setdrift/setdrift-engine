@@ -1,0 +1,94 @@
+# The example cluster for docs/understanding-your-export.md: a small shop app
+# applied with kubectl, a Secret, a claim with data in it and a one-off Job, so
+# one export shows each kind of output. Apply it to a throwaway cluster:
+#
+#   kind create cluster --name setdrift-tour
+#   kubectl apply -f shop.yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: shop
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: web-config
+  namespace: shop
+data:
+  STORE_NAME: Acme Shop
+  CURRENCY: USD
+---
+# a Secret: export writes it with its values taken out, to redacted/
+apiVersion: v1
+kind: Secret
+metadata:
+  name: db
+  namespace: shop
+type: Opaque
+stringData:
+  username: shop
+  password: example-only-not-a-real-password
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: shop
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: web}
+  template:
+    metadata:
+      labels: {app: web}
+    spec:
+      containers:
+      - name: web
+        image: public.ecr.aws/nginx/nginx:1.27
+        ports: [{containerPort: 80}]
+        envFrom: [{configMapRef: {name: web-config}}]
+        env:
+        - name: DB_PASSWORD
+          valueFrom: {secretKeyRef: {name: db, key: password}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web
+  namespace: shop
+spec:
+  selector: {app: web}
+  ports: [{port: 80, targetPort: 80}]
+---
+# a claim with data in it: RESTORE.md says how to bring the data over
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: orders-data
+  namespace: shop
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests: {storage: 1Gi}
+---
+# a one-off Job that writes the data, it completes and export leaves it out
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: seed
+  namespace: shop
+spec:
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: seed
+        image: public.ecr.aws/docker/library/busybox:1.36
+        command: [sh, -c, "echo order-1001 > /data/orders.txt"]
+        volumeMounts: [{name: data, mountPath: /data}]
+      volumes:
+      - name: data
+        persistentVolumeClaim: {claimName: orders-data}
+
+# Copyright The SetDrift Authors
+# SPDX-License-Identifier: Apache-2.0
