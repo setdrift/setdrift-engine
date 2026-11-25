@@ -701,7 +701,7 @@ func printSides(w io.Writer, r diff.Result, nodes bool) {
 		var about []string
 		// invoking kubeVersion and account to word those values, theyre defined below
 		// going through the platform, version, region and account and keeping the ones that are known
-		for _, v := range []string{s.Platform, kubeVersion(s.KubernetesVersion), s.Region, account(s.Account)} {
+		for _, v := range []string{s.Platform, kubeVersion(s.KubernetesVersion), s.Region, account(s.AccountKind, s.Account)} {
 			// checking if the value is known, if so its shown
 			if v != "" {
 				about = append(about, v)
@@ -741,9 +741,10 @@ func printSides(w io.Writer, r diff.Result, nodes bool) {
 	if r.A.PlatformObjects+r.B.PlatformObjects > 0 {
 		fmt.Fprintf(w, "Not compared: each platform's own objects (%d in %s, %d in %s)\n", r.A.PlatformObjects, la, r.B.PlatformObjects, lb)
 	}
-	// checking if the nodes are wanted, if so printNodes prints their shape, its defined below
+	// checking if the nodes are wanted, if so printNodes prints their shape and printProfile the infrastructure, theyre defined below
 	if nodes {
 		printNodes(w, r)
+		printProfile(w, r)
 	}
 }
 
@@ -783,7 +784,12 @@ func printEnvOnly(w io.Writer, r diff.Result, envOnly int) {
 	for _, c := range r.Changed {
 		// invoking EnvOnly and checking if thats all this one differs in, if so describe names it, EnvOnly is defined in pkg/diff/diff.go, describe below
 		if c.EnvOnly() {
-			names = append(names, describe(c.A.Key))
+			name := describe(c.A.Key)
+			// checking if a field was set apart as bound to each cluster's region or account, if so the name says so
+			if slices.ContainsFunc(c.Reasons, func(r string) bool { return strings.HasPrefix(r, "region-bound") }) {
+				name += " (region-bound)"
+			}
+			names = append(names, name)
 		}
 	}
 	// invoking truncate to keep the line to 300 characters, its defined in summary.go
@@ -815,6 +821,24 @@ func printNodes(w io.Writer, r diff.Result) {
 	// printing each difference in the nodes' shape
 	for _, n := range r.Nodes {
 		fmt.Fprintf(w, "  %-*s  %s -> %s\n", width, n.What, n.A, n.B)
+	}
+}
+
+// printProfile shows how the clusters differ as infrastructure, not counted as a difference since each cluster has its own
+func printProfile(w io.Writer, r diff.Result) {
+	// checking if the profiles differ, if not theres nothing to show
+	if len(r.Profile) == 0 {
+		return
+	}
+	fmt.Fprintln(w, "\nCluster profile (shown, not counted as a difference: each cluster has its own infrastructure):")
+	width := 0
+	// finding the longest description, so the values line up
+	for _, p := range r.Profile {
+		width = max(width, len(p.What))
+	}
+	// printing each difference in the profiles
+	for _, p := range r.Profile {
+		fmt.Fprintf(w, "  %-*s  %s -> %s\n", width, p.What, p.A, p.B)
 	}
 }
 
@@ -915,13 +939,13 @@ func kubeVersion(v string) string {
 	return "Kubernetes " + strings.TrimPrefix(v, "v")
 }
 
-// account words a cloud account, like "account 1234", or gives back "" when its unknown
-func account(a string) string {
+// account words a cloud account by its kind, like "account 1234" or "project acme-prod", or gives back "" when its unknown
+func account(kind, a string) string {
 	// checking if the account is unknown, if so theres nothing to show
 	if a == "" {
 		return ""
 	}
-	return "account " + a
+	return kind + " " + a
 }
 
 // Copyright The SetDrift Authors

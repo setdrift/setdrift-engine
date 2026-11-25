@@ -89,6 +89,24 @@ They're held back because applied to a second cluster, its operator would manage
 - **On the same cloud,** RESTORE.md's "Cloud resources" step moves each one to the new cluster one controller at a time. You set the operator's retain setting on the source cluster's object, delete that object (the resource stays), then apply the object on the new cluster, which takes the resource over.
 - **On another cloud,** [`setdrift translate`](commands/translate.md) asks what to do with each one, keep it with the source cluster, leave it out, or for a bucket, write the target's equivalent.
 
+## Values bound to a region or account
+
+Some values work only in the cluster's own region or cloud account, and break when the cluster is rebuilt elsewhere. Export looks for these in every manifest it writes, Secrets and CRDs aside.
+
+| Kind | Example | Bound to |
+|---|---|---|
+| ECR image | `111122223333.dkr.ecr.us-east-2.amazonaws.com/acme/shop:1.4` | The region and account |
+| AWS ARN (ACM, KMS, SQS, SNS, IAM and others) | `arn:aws:kms:us-east-2:111122223333:key/…` | The region and account, IAM's the account only |
+| AWS subnet and security group IDs | `subnet-0a1b2c3d4e5f6a7b8`, `sg-0c3d4e5f6a7b8c9d0` | One VPC |
+| EKS OIDC issuer | `oidc.eks.us-east-2.amazonaws.com/id/…` | One EKS cluster |
+| Azure resource ID | `/subscriptions/…/resourceGroups/acme-shop/…` | The subscription and resource group |
+| Azure Key Vault URL | `https://acme-shop-kv.vault.azure.net/` | One Key Vault |
+| Artifact Registry image | `us-central1-docker.pkg.dev/acme-shop/acme/shop:1.4` | The region and project |
+
+The cluster's README.md lists each value once under "Bound to one region or account", and RESTORE.md's "Values bound to a region or account" step lists every place one is, by file and line, to change before applying the export in another region, account or cloud. A role named in an IRSA annotation is in the IRSA step instead, with the trust policy to change.
+
+[`setdrift diff`](commands/diff.md#what-counts-as-a-difference) between two clusters in different regions or accounts counts two values of the same kind, like each cluster's subnet IDs, as differing by design.
+
 ## NetworkPolicy enforcement
 
 A NetworkPolicy applies on any cluster, but only does anything where a network policy engine enforces it, and whether one runs is a cluster setting. `.setdrift-export` records the engine that enforced them on the source, like Calico, Cilium or GKE Dataplane V2, or that none did. [`setdrift verify`](commands/verify.md) checks the cluster it runs against enforces them too.

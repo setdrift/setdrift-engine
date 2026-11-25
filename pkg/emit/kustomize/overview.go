@@ -5,11 +5,14 @@ package kustomize
 
 import (
 	"cmp"
+	"encoding/json"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
 	"setdrift.io/setdrift-engine/internal/text"
+	"setdrift.io/setdrift-engine/pkg/portability"
 	snapshotv1alpha1 "setdrift.io/setdrift-engine/pkg/snapshot/v1alpha1"
 )
 
@@ -33,6 +36,8 @@ type Overview struct {
 	Secrets int
 	// Cleanup are the cleanup suggestions, e.g. Jobs without a ttl
 	Cleanup []string
+	// RegionBound are the values in the written manifests bound to this cluster's region or account, once each, as "`value`: kind, bound to ..."
+	RegionBound []string
 }
 
 // Held is a resource written to redacted/ for a secret value in its manifest
@@ -76,6 +81,21 @@ func NewOverview(s *snapshotv1alpha1.Snapshot, unmanagedOnly bool) Overview {
 					}
 				}
 				o.HeldBack = append(o.HeldBack, h)
+			}
+		}
+		// checking if its neither a Secret nor a CRD, whose schemas show example values, if so its values bound to a region or account are listed
+		if !isSecret && r.Kind != "CustomResourceDefinition" {
+			var m map[string]any
+			// checking if the manifest reads as JSON, if not theres nothing to look through
+			if json.Unmarshal([]byte(r.GetManifestJson()), &m) == nil {
+				// invoking portability.Scan for the values, its defined in pkg/portability/portability.go
+				for _, f := range portability.Scan(r.Kind+" "+qualified(r), m) {
+					line := fmt.Sprintf("`%s`: %s, bound to %s", f.Value, f.Kind, f.Bound)
+					// checking if its listed already, if not its added
+					if !slices.Contains(o.RegionBound, line) {
+						o.RegionBound = append(o.RegionBound, line)
+					}
+				}
 			}
 		}
 		// checking if nothing manages r and its not a built-in Namespace, if so it was applied by hand
@@ -145,7 +165,7 @@ func Grouped(entries []string) string {
 // markdown builds the overview's section of README.md, empty when theres nothing to say
 func (o Overview) markdown() string {
 	// invoking ByHandCount, its defined above, and checking if the overview has nothing at all, if so theres no section
-	if o.ByHandCount() == 0 && len(o.HeldBack) == 0 && o.Secrets == 0 && len(o.Cleanup) == 0 {
+	if o.ByHandCount() == 0 && len(o.HeldBack) == 0 && o.Secrets == 0 && len(o.Cleanup) == 0 && len(o.RegionBound) == 0 {
 		return ""
 	}
 	var b strings.Builder
@@ -179,6 +199,16 @@ func (o Overview) markdown() string {
 	if o.Secrets > 0 {
 		fmt.Fprintf(&b, "**Secrets: %s whose values were left out.** RESTORE.md's secrets step\n"+
 			"says how to supply them.\n\n", text.Plural(o.Secrets, "Secret", "Secrets"))
+	}
+	// checking if any value is bound to this cluster's region or account, if so each is listed, since a rebuild elsewhere needs its own
+	if len(o.RegionBound) > 0 {
+		fmt.Fprintf(&b, "**Bound to one region or account: %s.** They work here and break in\n"+
+			"another region, account or cloud. RESTORE.md lists where each one is:\n\n", text.Plural(len(o.RegionBound), "value", "values"))
+		// adding a line for each value
+		for _, v := range o.RegionBound {
+			fmt.Fprintf(&b, "- %s\n", v)
+		}
+		b.WriteString("\n")
 	}
 	// checking if there are cleanup suggestions, if so each gets a line
 	if len(o.Cleanup) > 0 {
