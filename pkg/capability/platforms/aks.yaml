@@ -59,6 +59,7 @@ cloudResources:
 translate:
   dir: platform/azure/aks
   storage:
+    # the limits are Azure's, from its disk types docs (2026): Premium SSD v2 is gp3's model (3000 IOPS and 125 MB/s free, up to 80,000 and 2,000), Ultra Disk goes to 400,000
     - tier: hdd
       provisioners: [disk.csi.azure.com, kubernetes.io/azure-disk]
       parameter: skuName
@@ -67,20 +68,29 @@ translate:
     - tier: general-ssd
       provisioners: [disk.csi.azure.com, kubernetes.io/azure-disk]
       parameter: skuName
-      values: [StandardSSD_LRS, StandardSSD_ZRS, PremiumV2_LRS]
+      # Premium SSD (v1) sets its performance by size, so it reads as general SSD, gp3 on EKS
+      values: [StandardSSD_LRS, StandardSSD_ZRS, PremiumV2_LRS, Premium_LRS, Premium_ZRS]
       default: true
-      # matched by capability: Premium SSD v2 has gp3's adjustable IOPS and throughput, 3000 and 125 included
       class: {provisioner: disk.csi.azure.com, parameters: {skuName: PremiumV2_LRS, cachingMode: None, DiskIOPSReadWrite: "3000", DiskMBpsReadWrite: "125"}}
+      performance: {iops: DiskIOPSReadWrite, throughput: DiskMBpsReadWrite, maxIOPS: 80000, maxThroughput: 2000, baseIOPS: 3000, baseThroughput: 125}
+      zoneRedundant: [StandardSSD_ZRS, Premium_ZRS]
+      shape: [cachingMode]
     - tier: premium-ssd
-      provisioners: [disk.csi.azure.com, kubernetes.io/azure-disk]
+      provisioners: [disk.csi.azure.com]
       parameter: skuName
-      values: [Premium_LRS, Premium_ZRS]
-      class: {provisioner: disk.csi.azure.com, parameters: {skuName: Premium_LRS}}
+      # nothing on AKS reads as premium, another platform's provisioned-IOPS disks are written as Premium SSD v2, or Ultra Disk above its maximum
+      values: []
+      class: {provisioner: disk.csi.azure.com, parameters: {skuName: PremiumV2_LRS, cachingMode: None, DiskIOPSReadWrite: "3000", DiskMBpsReadWrite: "125"}}
+      performance: {iops: DiskIOPSReadWrite, throughput: DiskMBpsReadWrite, maxIOPS: 80000, maxThroughput: 2000, baseIOPS: 3000, baseThroughput: 125}
+      promoteAbove: 80000
+      promote: extreme
     - tier: extreme
       provisioners: [disk.csi.azure.com]
       parameter: skuName
       values: [UltraSSD_LRS]
       class: {provisioner: disk.csi.azure.com, parameters: {skuName: UltraSSD_LRS, cachingMode: None}}
+      shape: [cachingMode]
+      performance: {iops: DiskIOPSReadWrite, throughput: DiskMBpsReadWrite, maxIOPS: 400000, maxThroughput: 10000}
     - tier: shared-file
       provisioners: [file.csi.azure.com, kubernetes.io/azure-file]
       default: true

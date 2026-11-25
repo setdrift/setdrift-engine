@@ -874,7 +874,7 @@ func reasons(a, b entry, la, lb string) []string {
 // compareKeys does the work, its defined below, and pkg/verify/dryrun.go uses it to compare a dry-run result with the live object
 func Fields(a, b any) []Field { return compareKeys("", nil, a, b, nil) }
 
-// WithoutTranslationMark gives back a manifest without the annotation a translation stamps on every object it applies, on the object and on its Pod template
+// WithoutTranslationMark gives back a manifest without the annotations a translation keeps for itself, the one it stamps on every object it applies, on the object and on its Pod template, and a StorageClass's record of its original
 // it copies only the maps it changes, the manifest itself is left as it is
 func WithoutTranslationMark(m any) any {
 	var strip func(v any, path []string) any
@@ -884,11 +884,14 @@ func WithoutTranslationMark(m any) any {
 			return v
 		}
 		if len(path) == 0 {
-			if _, has := mv[capability.TranslationAnnotation]; !has {
+			_, a := mv[capability.TranslationAnnotation]
+			_, b := mv[capability.SourceClassAnnotation]
+			if !a && !b {
 				return v
 			}
 			out := maps.Clone(mv)
 			delete(out, capability.TranslationAnnotation)
+			delete(out, capability.SourceClassAnnotation)
 			if len(out) == 0 {
 				return nil
 			}

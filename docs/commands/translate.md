@@ -21,7 +21,7 @@ Each translation is in the export's `translations/<code>/`, named by its directi
 | `ta2e` | AKS to EKS |
 | `ta2g` | AKS to GKE |
 
-A source on no known platform is `x`, like `tx2g`. The directory holds the overlay, its `translation.yaml` (from, to and when), README.md, RESTORE.md and `translate-decisions.yaml`. Every object the overlay applies carries the annotation `setdrift.io/translation` with the code, so the target cluster's objects say they arrived through a translation. `diff` leaves it out of a comparison.
+A source on no known platform is `x`, like `tx2g`. The directory holds the overlay, its `translation.yaml` (from, to and when), README.md, RESTORE.md and `translate-decisions.yaml`. Every object the overlay applies carries the annotation `setdrift.io/translation` with the code, so the target cluster's objects say they arrived through a translation, and a translated StorageClass also carries `setdrift.io/source-class`, its original, see [Mapping isn't always 1:1](#mapping-isnt-always-11-or-both-ways). `diff` leaves both out of a comparison.
 
 A translation isn't an export, and the two aren't interchangeable. Given a translation or the export's own platform set, `translate` says so and names the export to give instead. Exporting again keeps the translations and their decisions, and says to run `translate` again so each is in step with the new export.
 
@@ -31,7 +31,7 @@ Objects keep their kind, names and intent. Only what the target reads differentl
 
 | What | On the target |
 |---|---|
-| StorageClasses of another platform's provisioner | The target's class of the same kind of storage, under the same name, so claims need no change. EKS gp3 becomes GKE's dynamic disk (Hyperdisk Balanced where the machine supports it, pd-balanced where not) or AKS Premium SSD v2. The target keeps its own default class |
+| StorageClasses of another platform's provisioner | The target's class of the same kind of storage, under the same name, so claims need no change. EKS gp3 becomes GKE's dynamic disk (Hyperdisk Balanced where the machine supports it, pd-balanced where not) or AKS Premium SSD v2, and the IOPS and throughput set on it carry over where the target's class takes them. The target keeps its own default class. See [Mapping isn't always 1:1](#mapping-isnt-always-11-or-both-ways) |
 | Load balancer Services | Internal stays internal and public stays public, written explicitly in the target's annotation, since each platform defaults differently. Another platform's load balancer class and annotations go |
 | Node pool and spot labels in Pod templates | The target's labels, keeping the pool name, with the toleration the target's spot taint needs. Other node labels of another platform go, and the README says the placement was relaxed |
 | Another platform's finalizers | Removed, since nothing on the target would ever remove them |
@@ -43,6 +43,24 @@ Objects keep their kind, names and intent. Only what the target reads differentl
 | Objects that manage real cloud resources, from the export's `cloud-resources/` | A decision for each, below. Kept with the source cluster, left out, or for a bucket, written as the target's own bucket (an ACK `Bucket`, a Config Connector `StorageBucket`, or an Azure Service Operator storage account and container), new and empty, with the name, versioning and public access block carried over. What doesn't carry over, like tags or lifecycle rules, is listed to set by hand, and its location (and on Azure, its resource group) is left to fill in |
 
 The overlay also holds its own RESTORE.md, the cross-cloud version of the export's. It says what comes over and what doesn't (a volume's data, since the target can't attach the source's disks, comes over separately, and a cloud resource kept with the source stays there, with the setting that keeps it if that cluster's object is ever deleted). It also has the Kubernetes version check, turning on network policy enforcement when the source enforced its NetworkPolicies, the commands that make a kept identity's cloud trust the new cluster, and when to apply.
+
+## Mapping isn't always 1:1, or both ways
+
+**A translation is the closest equivalent the target has, not always an exact one, and the more a setting is tuned to its cloud, the less of it carries over.** Clouds don't offer the same things, a disk type one has another doesn't, a setting one reads another ignores. translate never drops a setting silently. What doesn't carry over is listed in the overlay's README.md, under "Before you apply", and what's lost outright is in bold in RESTORE.md's "What comes over, and what doesn't". Read both before applying.
+
+Translating back gives the original. A translated StorageClass carries the annotation `setdrift.io/source-class`, a record of the class it was translated from, and a translation back to that platform restores it exactly, whatever was lost on the way, while a translation on to a third platform starts from it. One way, though, each step gets only what its target offers. The table below is storage between EKS and AKS.
+
+| Source class | On the target | Comes over |
+|---|---|---|
+| EKS gp3, with its IOPS and throughput | AKS Premium SSD v2 | Exactly, both clouds set them the same way (3,000 IOPS and 125 free, up to 80,000 and 2,000) |
+| EKS io1 or io2 | AKS Premium SSD v2 with its IOPS, or Ultra Disk above 80,000 | Exactly, up to each disk's limit |
+| AKS Ultra Disk | EKS io2 with its IOPS | Up to io2's 256,000 IOPS, capped and said above that |
+| AKS Premium SSD (v1) or Standard SSD | EKS gp3 | As the same or better, AWS's cheapest SSD is faster than Standard SSD, and Premium SSD (v1) sets its speed by size, which gp3 doesn't |
+| AKS Standard HDD | EKS st1 when every claim of the class is at least 125 GiB, st1's smallest, otherwise gp3 | As the closest that works, st1 is built for throughput, and a smaller claim would fail on it |
+| AKS zone-redundant disks (ZRS) | EKS gp3 | **Not their zone redundancy.** An EBS volume is in one zone, so a zone outage takes it down. RESTORE.md says so in bold. Replicate the data across zones yourself, like a database's replicas |
+| EKS gp3's IOPS and throughput, to GKE | GKE's dynamic disk | **Not the IOPS and throughput**, GKE's class doesn't take them, so set them on the disks by hand if the workload needs them. Translated back to EKS, the class has them again |
+
+Settings outside a class's kind, like EBS's `encrypted` or a KMS key, don't carry over to another cloud and are listed to set by hand, with a key of the target cloud's. The CSI settings every driver reads, like `csi.storage.k8s.io/fstype`, carry over as they are.
 
 ## Decisions
 

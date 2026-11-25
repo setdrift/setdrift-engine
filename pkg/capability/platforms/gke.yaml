@@ -72,6 +72,7 @@ translate:
       values: [pd-balanced, hyperdisk-balanced, dynamic]
       # dynamic: Hyperdisk Balanced where the node's machine supports it, pd-balanced where not (E2 machines can't attach Hyperdisk), found in M1
       class: {provisioner: pd.csi.storage.gke.io, parameters: {type: dynamic, hyperdisk-type: hyperdisk-balanced, pd-type: pd-balanced, use-allowed-disk-topology: "true"}}
+      shape: [hyperdisk-type, pd-type, use-allowed-disk-topology]
     - tier: premium-ssd
       provisioners: [pd.csi.storage.gke.io]
       parameter: type

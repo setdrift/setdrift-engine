@@ -53,6 +53,9 @@ func restore(r *Result, ri RestoreInfo) string {
 		why, todo := cloudResourceRow(c, to)
 		fmt.Fprintf(&b, "| %s (a real %s resource, through %s) | %s | %s |\n", c.Ref, c.Cloud, c.Operator, why, todo)
 	}
+	for _, l := range r.Lost {
+		fmt.Fprintf(&b, "| **%s** | %s | %s |\n", l.What, l.Why, l.ToDo)
+	}
 	b.WriteString("| Secret values | SetDrift never copies them | Supply them, below |\n")
 	b.WriteString("| Load balancer addresses | A new cluster gets new addresses | Point DNS and clients at the new ones once they're assigned |\n\n")
 
