@@ -1,6 +1,6 @@
 # Output
 
-What `setdrift export` writes.
+What `setdrift export` writes. For a walkthrough of one export and what to take from each part, see [Understanding your export](understanding-your-export.md).
 
 ```
 .gitignore                  keeps snapshots/ out of Git
