@@ -16,6 +16,12 @@ so this export is the only record of them. Adopt them into Git (export with
 | kube-system | ConfigMap aws-auth |
 | shop | Endpoints legacy-db; PersistentVolumeClaim data-db-x, logs-db-0; Service legacy-db, web; ServiceAccount default; StatefulSet db |
 
+**Bound to one region or account: 2 values.** They work here and break in
+another region, account or cloud. RESTORE.md lists where each one is:
+
+- `arn:aws:iam::111122223333:role/nodes`: AWS ARN (iam), bound to account 111122223333
+- `arn:aws:iam::111122223333:role/shop`: AWS ARN (iam), bound to account 111122223333
+
 ## Applying to a new cluster
 
 RESTORE.md is the full checklist: secrets to fill in, volumes to copy,

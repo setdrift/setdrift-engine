@@ -60,7 +60,7 @@ A cluster with no context yet gets one from its cloud's CLI, for example `aws ek
 
 ### What counts as a difference
 
-Both sides are normalized the way `export` normalizes them, so server defaults, status and secret values never show up as differences, and Secrets compare by their keys. Each platform's own objects (EKS's, kind's) are not compared. [What counts as a difference](../which-comparison.md#what-counts-as-a-difference) has the details, like why the same ECR image in two regions matches.
+Both sides are normalized the way `export` normalizes them, so server defaults, status and secret values never show up as differences, and Secrets compare by their keys. Each platform's own objects (EKS's, kind's) are not compared. Each cluster's own values never count either, its name, region and account (the AWS account, the GCP project or the Azure subscription). When the two clusters are in different regions or accounts, two values bound to each one, like two subnet IDs or two Key Vault URLs, show as region-bound and differ by design, see [Values bound to a region or account](../output.md#values-bound-to-a-region-or-account). [What counts as a difference](../which-comparison.md#what-counts-as-a-difference) has the details, like why the same ECR image in two regions matches.
 
 The annotations a [translation](translate.md#where-translations-go) keeps for itself, `setdrift.io/translation` on every object it applies and `setdrift.io/source-class` on a StorageClass, never count as one. A translation itself isn't a side `diff` takes, it's changes to an export, so `diff` says so and names the export to compare instead.
 
@@ -265,8 +265,9 @@ The text output names both sides, counts what is in both (identical or not) and 
 
 - **Differ -** Each resource that differs beyond the clusters' own values, with who manages it on each side and up to `--max-fields` fields as `path: A -> B`. Secret values show as `(redacted)`.
 - **Only in A, Only in B -** By namespace and manager. A resource `helm template | kubectl apply` deployed is applied by hand, see [Pipeline resources showing as unmanaged](../pipeline-integration/unmanaged-pipeline-resources.md).
-- **Differ only in each cluster's own values -** Resources whose every difference is a cluster's name, region, account or mapped namespace.
+- **Differ only in each cluster's own values -** Resources whose every difference is a cluster's name, region, account or mapped namespace, or a region-bound value, marked `(region-bound)`.
 - **Nodes -** The shape of each side's nodes (count, instance types, zones), shown but never counted as a difference.
+- **Cluster profile -** How the two clusters differ as infrastructure, their cloud, region, network plugin and settings, pod and service ranges, kube-proxy mode, IP families, cluster domain and components, shown but never counted as a difference.
 
 When one side read less, some namespaces or a type it could not list, the other is limited to the same, so nothing shows as in one side only for not having been read. What was left out is named.
 

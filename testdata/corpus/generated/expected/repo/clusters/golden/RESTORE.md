@@ -34,15 +34,16 @@ Workload Identity, a Secret), or leave the annotation, which does nothing:
 | shop/default | `arn:aws:iam::111122223333:role/shop` |
 
 
-## 3. AWS resources the manifests name
+## 3. Values bound to a region or account
 
-**AWS resources the manifests name.** Check that the new cluster can reach
-each (same account and region, security groups, subnets); change the ones
-that differ before applying:
+**Values bound to a region or account.** They work in this cluster's
+region and account. Restoring in another region, account or cloud, give
+each its new value before applying (an image copied to the new registry,
+a certificate, key or queue made there, the new network's subnets):
 
-| ID | Where |
-|---|---|
-| `arn:aws:iam::111122223333:role/nodes` | namespaces/kube-system/configmap/aws-auth.yaml:4 |
+| Value | Kind | Bound to | Where |
+|---|---|---|---|
+| `arn:aws:iam::111122223333:role/nodes` | AWS ARN (iam) | account 111122223333 | namespaces/kube-system/configmap/aws-auth.yaml:4 |
 
 
 ## 4. Apply the export

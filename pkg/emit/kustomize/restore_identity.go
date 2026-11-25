@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"setdrift.io/setdrift-engine/internal/text"
+	"setdrift.io/setdrift-engine/pkg/portability"
 	snapshotv1alpha1 "setdrift.io/setdrift-engine/pkg/snapshot/v1alpha1"
 )
 
@@ -44,6 +45,55 @@ func (d *restoreData) identity(p *playbook) {
 	if len(ids) > 0 {
 		d.awsIDsStep(p, ids)
 	}
+	// invoking regionBound for the values bound to this cluster's region or account, and regionBoundStep to list them, theyre defined below
+	if bound := d.regionBound(); len(bound) > 0 {
+		regionBoundStep(p, bound)
+	}
+}
+
+// boundRef is a value bound to one region or account in a written manifest, and where, as the file and line
+type boundRef struct {
+	portability.Match
+	where string
+}
+
+// regionBound gives back the values in the written manifests bound to one region or account, by file and line, CRDs and Secrets left out
+func (d *restoreData) regionBound() []boundRef {
+	var out []boundRef
+	// going through what was written
+	for _, w := range d.written {
+		r := w.resource
+		// invoking isCRD and checking if its a CRD or a Secret, if so its skipped, CRD schemas show example values and Secrets hold placeholders
+		if isCRD(r) || (r.Kind == "Secret" && r.ApiVersion == "v1") {
+			continue
+		}
+		// going through the file line by line, invoking portability.Find on each, its defined in pkg/portability/portability.go
+		for i, line := range strings.Split(string(w.yaml), "\n") {
+			// checking if its the IRSA annotation line, if so its skipped, the IRSA step lists the role with what to change
+			if strings.Contains(line, irsaAnnotation) {
+				continue
+			}
+			for _, m := range portability.Find(line) {
+				out = append(out, boundRef{m, fmt.Sprintf("%s:%d", w.path, i+1)})
+			}
+		}
+	}
+	return out
+}
+
+// regionBoundStep lists the values bound to this cluster's region or account, what each is bound to and where it is
+func regionBoundStep(p *playbook, refs []boundRef) {
+	p.section("Values bound to a region or account")
+	p.printf("**Values bound to a region or account.** They work in this cluster's\n" +
+		"region and account. Restoring in another region, account or cloud, give\n" +
+		"each its new value before applying (an image copied to the new registry,\n" +
+		"a certificate, key or queue made there, the new network's subnets):\n\n")
+	p.printf("| Value | Kind | Bound to | Where |\n|---|---|---|---|\n")
+	// writing a table row per value and place
+	for _, r := range refs {
+		p.printf("| `%s` | %s | %s | %s |\n", cell(r.Value), cell(r.Kind), cell(r.Bound), cell(r.where))
+	}
+	p.printf("\n")
 }
 
 // awsReferences gives back the service accounts with an IRSA role, and the aws ids the written manifests name, by file and line
@@ -71,6 +121,10 @@ func (d *restoreData) awsReferences() (roles []irsaRole, ids []awsIDRef) {
 			}
 			// going through each id on the line
 			for _, id := range awsID.FindAllString(line, -1) {
+				// checking if its bound to a region or account, if so the region-bound step lists it with what its bound to, invoking portability.Find, its defined in pkg/portability/portability.go
+				if len(portability.Find(id)) > 0 {
+					continue
+				}
 				where := fmt.Sprintf("%s:%d", w.path, i+1)
 				// checking if this id at this place isnt listed yet
 				if !seen[id+where] {

@@ -20,6 +20,7 @@ import (
 	"setdrift.io/setdrift-engine/pkg/capability"
 	"setdrift.io/setdrift-engine/pkg/normalize"
 	"setdrift.io/setdrift-engine/pkg/platform"
+	"setdrift.io/setdrift-engine/pkg/portability"
 	"setdrift.io/setdrift-engine/pkg/snapshot"
 	snapshotv1alpha1 "setdrift.io/setdrift-engine/pkg/snapshot/v1alpha1"
 )
@@ -56,6 +57,8 @@ type Side struct {
 	Platform          string `json:"platform,omitempty"`
 	Region            string `json:"region,omitempty"`
 	Account           string `json:"account,omitempty"`
+	// AccountKind words what Account is on its cloud, account (AWS), project (GCP) or subscription (Azure)
+	AccountKind string `json:"accountKind,omitempty"`
 	// PlatformObjects counts the platform's own objects (EKS's, kind's), which arent compared since each platform creates its own
 	PlatformObjects int `json:"platformObjects"`
 }
@@ -110,6 +113,8 @@ type Result struct {
 	Nodes []NodeChange `json:"nodes,omitempty"`
 	// NodesUnknown names the sides whose nodes the snapshot lacks, read from a directory or with credentials that cant list nodes
 	NodesUnknown []string `json:"nodesUnknown,omitempty"`
+	// Profile lists how the clusters differ as infrastructure (cloud, region, network, components), shown and not counted, since each cluster has its own
+	Profile []NodeChange `json:"profile,omitempty"`
 	// Limited says what the comparison left out because a side read only some namespaces
 	// only what both read is compared, so nothing shows as in one side only for not having been read in the other
 	Limited []string `json:"limited,omitempty"`
@@ -237,6 +242,8 @@ func Compare(a, b *snapshotv1alpha1.Snapshot, opts Options) (Result, error) {
 	res.A.PlatformObjects, res.B.PlatformObjects = ia.platform, ib.platform
 	// invoking compareNodes to say how the node summaries differ, its defined below
 	res.Nodes, res.NodesUnknown = compareNodes(a.GetInventory().GetNodes(), b.GetInventory().GetNodes(), res.A.Label, res.B.Label)
+	// invoking compareProfiles to say how the clusters differ as infrastructure, its defined below
+	res.Profile = compareProfiles(a.GetInventory().GetProfile(), b.GetInventory().GetProfile())
 
 	// invoking substitutions to set aside each side's own values, so fields differing only in them count as env fields, its defined below
 	subA, subB := substitutions(res.A, opts.NamespaceMap, opts.ValueMap, true), substitutions(res.B, opts.NamespaceMap, opts.ValueMap, false)
@@ -260,6 +267,10 @@ func Compare(a, b *snapshotv1alpha1.Snapshot, opts Options) (Result, error) {
 			continue
 		}
 		c := Change{A: ea.obj, B: eb.obj, Fields: vol}
+		// the sides are in different regions or accounts, so values bound to each one differ by design
+		apart := res.A.Region != res.B.Region || res.A.Account != res.B.Account
+		// the fields set apart as region-bound, said in the reasons
+		var bound []string
 		// sorting each differing field into the real differences and those only in the clusters' own values
 		for _, f := range raw {
 			// checking if its the namespace and the map pairs the two, if so thats no difference at all
@@ -269,6 +280,10 @@ func Compare(a, b *snapshotv1alpha1.Snapshot, opts Options) (Result, error) {
 			// invoking apply on both values and checking if they match once each side's own values are set aside, its defined below
 			if reflect.DeepEqual(subA.apply(f.A), subB.apply(f.B)) {
 				c.EnvFields = append(c.EnvFields, f)
+			} else if apart && regionBound(f.A, f.B) {
+				// both values are bound to their own region or account, like each cluster's subnet IDs, so its the clusters' own infrastructure
+				c.EnvFields = append(c.EnvFields, f)
+				bound = append(bound, "region-bound, differs by design: "+f.Path)
 			} else {
 				c.Fields = append(c.Fields, f)
 			}
@@ -279,7 +294,7 @@ func Compare(a, b *snapshotv1alpha1.Snapshot, opts Options) (Result, error) {
 			continue
 		}
 		// invoking reasons to say what the snapshots tell about why it differs, its defined below
-		c.Reasons = append(reasons(ea, eb, res.A.Label, res.B.Label), volWhy...)
+		c.Reasons = append(append(reasons(ea, eb, res.A.Label, res.B.Label), volWhy...), bound...)
 		res.Changed = append(res.Changed, c)
 	}
 	// going through the second side's resources in sorted order, for those the first side lacks
@@ -362,6 +377,23 @@ func side(s *snapshotv1alpha1.Snapshot) Side {
 		if sd.Account == "" {
 			sd.Account = parts[4]
 		}
+	}
+	cloud := s.GetInventory().GetProfile().GetCloud()
+	// checking if the account is still unknown, if so the profile's is used, the GCP project or Azure subscription read from the nodes
+	if sd.Account == "" {
+		sd.Account = cloud.GetAccount()
+	}
+	// checking if the account is known, if so its kind is worded by the cloud
+	if sd.Account != "" {
+		sd.AccountKind = map[string]string{"gcp": "project", "azure": "subscription"}[cloud.GetProvider()]
+		// checking if its another cloud, if so its an account, like AWS's
+		if sd.AccountKind == "" {
+			sd.AccountKind = "account"
+		}
+	}
+	// checking if the region is still unknown, if so the profile's is used
+	if sd.Region == "" {
+		sd.Region = cloud.GetRegion()
 	}
 	return sd
 }
@@ -593,6 +625,63 @@ func compareNodes(a, b *snapshotv1alpha1.NodeSummary, la, lb string) ([]NodeChan
 	add("allocatable memory", gib(a.GetMemory()), gib(b.GetMemory()))
 	add("allocatable pods", strconv.FormatInt(a.GetPods(), 10), strconv.FormatInt(b.GetPods(), 10))
 	return out, nil
+}
+
+// regionBound tells if two field values are both strings holding region- or account-bound values of the same kinds, like two subnet IDs
+func regionBound(a, b any) bool {
+	sa, okA := a.(string)
+	sb, okB := b.(string)
+	// invoking portability.SameKinds to compare what each value is bound to, its defined in pkg/portability/portability.go
+	return okA && okB && portability.SameKinds(sa, sb)
+}
+
+// compareProfiles takes two cluster profiles and lists how they differ as infrastructure, nil when either is missing
+func compareProfiles(a, b *snapshotv1alpha1.Profile) []NodeChange {
+	// checking if either side has no profile, if so theres nothing to compare
+	if a == nil || b == nil {
+		return nil
+	}
+	var out []NodeChange
+	// add records one property when the two sides differ, "-" standing for a value thats unknown
+	add := func(what, x, y string) {
+		// checking if the two values differ
+		if x != y {
+			out = append(out, NodeChange{What: what, A: orDash(x), B: orDash(y)})
+		}
+	}
+	na, nb := a.GetNetwork(), b.GetNetwork()
+	add("cloud", a.GetCloud().GetProvider(), b.GetCloud().GetProvider())
+	add("region", a.GetCloud().GetRegion(), b.GetCloud().GetRegion())
+	add("network plugin", na.GetCni(), nb.GetCni())
+	add("network settings", strings.Join(na.GetCniSettings(), ", "), strings.Join(nb.GetCniSettings(), ", "))
+	add("pod ranges", strings.Join(na.GetPodCidrs(), ", "), strings.Join(nb.GetPodCidrs(), ", "))
+	add("service ranges", strings.Join(na.GetServiceCidrs(), ", "), strings.Join(nb.GetServiceCidrs(), ", "))
+	add("kube-proxy mode", na.GetKubeProxyMode(), nb.GetKubeProxyMode())
+	add("IP families", strings.Join(na.GetIpFamilies(), ", "), strings.Join(nb.GetIpFamilies(), ", "))
+	add("cluster domain", a.GetDns().GetClusterDomain(), b.GetDns().GetClusterDomain())
+	// invoking components to render each side's components by role, its defined below
+	add("components", components(a.GetComponents()), components(b.GetComponents()))
+	return out
+}
+
+// components renders a profile's components by role, sorted, like "cni: cilium, dns: coredns"
+func components(cs []*snapshotv1alpha1.ProfileComponent) string {
+	parts := make([]string, 0, len(cs))
+	// rendering each component as role: name
+	for _, c := range cs {
+		parts = append(parts, c.GetRole()+": "+c.GetName())
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, ", ")
+}
+
+// orDash gives back s, or "-" when its empty
+func orDash(s string) string {
+	// checking if its empty, if so its shown as a dash
+	if s == "" {
+		return "-"
+	}
+	return s
 }
 
 // gib takes a memory quantity and renders it in GiB, like "7.7Gi"
