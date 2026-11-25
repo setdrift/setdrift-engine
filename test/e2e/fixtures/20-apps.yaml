@@ -335,48 +335,6 @@ metadata:
   namespace: sd-apps
   finalizers: [example.com/block]
 data: {a: b}
----
-# IRSA: the playbook must say the role's trust policy needs the new
-# cluster's OIDC provider. The role need not exist.
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: reports
-  namespace: sd-apps
-  annotations: {eks.amazonaws.com/role-arn: "arn:aws:iam::111122223333:role/setdrift-e2e-reports"}
----
-# A workload using that identity, so a translation for another cloud gives
-# its Pods the token and settings EKS's webhook would (keep-source).
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: reports
-  namespace: sd-apps
-spec:
-  replicas: 1
-  selector: {matchLabels: {app: reports}}
-  template:
-    metadata: {labels: {app: reports}}
-    spec:
-      serviceAccountName: reports
-      containers:
-      - name: reports
-        image: public.ecr.aws/docker/library/busybox:1.36
-        command: [sleep, infinity]
-        resources: {requests: {cpu: 10m, memory: 16Mi}}
----
-# An internal NLB (EKS Auto Mode), whose address changes in a new cluster.
-apiVersion: v1
-kind: Service
-metadata:
-  name: web-lb
-  namespace: sd-apps
-  annotations: {service.beta.kubernetes.io/aws-load-balancer-scheme: internal}
-spec:
-  type: LoadBalancer
-  loadBalancerClass: eks.amazonaws.com/nlb
-  selector: {app: web}
-  ports: [{port: 80, targetPort: 80}]
 
 # Copyright The SetDrift Authors
 # SPDX-License-Identifier: Apache-2.0

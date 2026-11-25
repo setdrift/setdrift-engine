@@ -1,0 +1,74 @@
+# AKS's own objects, applied on AKS only (populate.sh): the equivalents of
+# 20-apps-eks.yaml's.
+---
+# Azure Workload Identity: the managed identity need not exist.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: reports
+  namespace: sd-apps
+  annotations: {azure.workload.identity/client-id: "00000000-0000-0000-0000-000000000000"}
+---
+# A workload using that identity, so a translation for another cloud gives
+# its Pods the token and settings this cloud's webhook would (keep-source).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: reports
+  namespace: sd-apps
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: reports}}
+  template:
+    metadata: {labels: {app: reports, azure.workload.identity/use: "true"}}
+    spec:
+      serviceAccountName: reports
+      containers:
+      - name: reports
+        image: public.ecr.aws/docker/library/busybox:1.36
+        command: [sleep, infinity]
+        resources: {requests: {cpu: 10m, memory: 16Mi}}
+---
+# Values bound to one region or account, which break a rebuild elsewhere:
+# export and diff flag them (region-portability findings). Fake, in each
+# value's real format; nothing reads them.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: shop-config
+  namespace: sd-apps
+data:
+  IDENTITY_ID: /subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/acme-shop/providers/Microsoft.ManagedIdentity/userAssignedIdentities/shop
+  KEY_VAULT_URL: https://acme-shop-kv.vault.azure.net/
+---
+# An image in this cloud's own registry. Scaled to 0, so nothing pulls it.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shop-worker
+  namespace: sd-apps
+spec:
+  replicas: 0
+  selector: {matchLabels: {app: shop-worker}}
+  template:
+    metadata: {labels: {app: shop-worker}}
+    spec:
+      containers:
+      - name: worker
+        image: acmeshop.azurecr.io/acme/shop:1.4
+        resources: {requests: {cpu: 10m, memory: 16Mi}}
+---
+# An internal Azure load balancer, whose address changes in a new cluster.
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-lb
+  namespace: sd-apps
+  annotations: {service.beta.kubernetes.io/azure-load-balancer-internal: "true"}
+spec:
+  type: LoadBalancer
+  selector: {app: web}
+  ports: [{port: 80, targetPort: 80}]
+
+# Copyright The SetDrift Authors
+# SPDX-License-Identifier: Apache-2.0
