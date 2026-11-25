@@ -236,6 +236,10 @@ func (o *verifyOptions) run(cmd *cobra.Command, dir string) error {
 			decisions = ds
 		case len(others) > 0:
 			why += fmt.Sprintf(". This export also has a translation for %s, and this cluster is %s: run setdrift translate --to %s, or verify against a %s cluster", strings.Join(others, " and "), cls.Summary(), cls.Distribution, strings.Join(others, " or "))
+			// checking if no context was given, if so the current one may be the wrong cluster, so its said plainly
+			if o.context == "" {
+				why += fmt.Sprintf(". This is your current context: did you mean --context <your %s context>?", strings.Join(others, " or "))
+			}
 		}
 	}
 	if err != nil {
@@ -248,7 +252,12 @@ func (o *verifyOptions) run(cmd *cobra.Command, dir string) error {
 	if set != "" {
 		target = filepath.Join(root, set)
 	}
-	fmt.Fprintf(w, "Verifying %s against context %s (%s)\n", target, kc.name, why)
+	which := "context"
+	// checking if no context was given, if so its said that the current one was used
+	if o.context == "" {
+		which = "your current context"
+	}
+	fmt.Fprintf(w, "Verifying %s against %s %s (%s)\n", target, which, kc.name, why)
 	// checking if its a translation older than the export, if so its decisions may be about objects the export has changed since
 	if strings.HasPrefix(set, capability.TranslationsDir+"/") {
 		// invoking staleTranslation to compare the two times, its defined in folders.go
