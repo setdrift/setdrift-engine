@@ -74,6 +74,26 @@ spec:
             properties:
               color: {type: string}
               size: {type: integer, default: 3}
+---
+# A stand-in for ACK's S3 Bucket definition, with no controller, so its
+# objects create nothing: export holds them back in cloud-resources/, and
+# restore.sh follows RESTORE.md's hand-over (retain, delete, apply here).
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: buckets.s3.services.k8s.aws
+spec:
+  group: s3.services.k8s.aws
+  names: {kind: Bucket, plural: buckets, singular: bucket}
+  scope: Namespaced
+  versions:
+  - name: v1alpha1
+    served: true
+    storage: true
+    schema:
+      openAPIV3Schema:
+        type: object
+        x-kubernetes-preserve-unknown-fields: true
 
 # Copyright The SetDrift Authors
 # SPDX-License-Identifier: Apache-2.0

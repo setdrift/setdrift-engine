@@ -46,8 +46,9 @@ k wait --for condition=established --timeout=120s \
 # Fixtures.
 [[ $platform == eks ]] && k apply -f "$here/fixtures/05-storage-eks.yaml"
 k apply -f "$here/fixtures/10-cluster.yaml"
-k wait --for condition=established --timeout=60s crd/widgets.example.com
+k wait --for condition=established --timeout=60s crd/widgets.example.com crd/buckets.s3.services.k8s.aws
 k apply -f "$here/fixtures/20-apps.yaml"
+k apply -f "$here/fixtures/25-cloud-resources.yaml"
 k apply --server-side -f "$here/fixtures/30-ssa.yaml"
 k apply -f "$here/fixtures/40-argocd.yaml"
 k apply -f "$here/fixtures/50-flux.yaml"

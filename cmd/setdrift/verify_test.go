@@ -106,6 +106,9 @@ func TestLikelyCause(t *testing.T) {
 		{"changed since, time unknown", verifyDocument{SameCluster: &yes, Report: verify.Report{Diffs: changed(3, byHand)}}, "The cluster changed after the export: 3 of the 3 resources were written since"},
 		{"one field everywhere", verifyDocument{Report: verify.Report{Diffs: changed(4, verify.Diff{Kind: verify.KindChanged, Fields: []verify.Field{{Path: "metadata.labels.x"}}})}}, "One field differs on 4 of the changed resources: metadata.labels.x"},
 		{"gone", verifyDocument{Report: verify.Report{Diffs: changed(2, verify.Diff{Kind: verify.KindNotInCluster})}}, "2 of the 2 are not in the cluster"},
+		// a translation's decided items are no cause, so with only those theres nothing to say, and one undecided is
+		{"all decided", verifyDocument{SameCluster: &no, Report: verify.Report{Diffs: changed(2, verify.Diff{Kind: verify.KindWontWork, Explanation: "decided"})}}, ""},
+		{"one undecided", verifyDocument{Report: verify.Report{Diffs: append(changed(1, verify.Diff{Kind: verify.KindWontWork, Explanation: "decided"}), verify.Diff{Kind: verify.KindWontWork})}}, "1 resource would apply here but not work"},
 	} {
 		c.doc.Analysis = c.doc.Report.Analyze()
 		got := likelyCause(c.doc)

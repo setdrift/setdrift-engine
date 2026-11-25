@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"slices"
+	"strings"
 
 	"github.com/spf13/pflag"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -46,17 +47,18 @@ var (
 
 // targetNetworkPolicy reads this cluster's system DaemonSets and the VPC CNI's ConfigMap for netpolicy.Detect
 // it gives back netpolicy.Unknown and why when it cant read them, like a CI identity limited to its own namespaces
-func targetNetworkPolicy(ctx context.Context, dyn dynamic.Interface) (engine, unknownWhy string) {
+// idle names the engines installed but running on no nodes yet, like GKE's calico-node before its nodes are recreated
+func targetNetworkPolicy(ctx context.Context, dyn dynamic.Interface) (engine, unknownWhy, idle string) {
 	var objs []*unstructured.Unstructured
 	for _, ns := range netpolicy.Namespaces {
 		l, err := dyn.Resource(daemonSetsGVR).Namespace(ns).List(ctx, metav1.ListOptions{})
 		switch {
 		case apierrors.IsForbidden(err):
-			return netpolicy.Unknown, fmt.Sprintf("these credentials can't list DaemonSets in %s (verify needs list on daemonsets.apps there to see the network policy engine)", ns)
+			return netpolicy.Unknown, fmt.Sprintf("these credentials can't list DaemonSets in %s (verify needs list on daemonsets.apps there to see the network policy engine)", ns), ""
 		case apierrors.IsNotFound(err):
 			continue
 		case err != nil:
-			return netpolicy.Unknown, fmt.Sprintf("listing DaemonSets in %s failed: %v", ns, err)
+			return netpolicy.Unknown, fmt.Sprintf("listing DaemonSets in %s failed: %v", ns, err), ""
 		}
 		for i := range l.Items {
 			objs = append(objs, &l.Items[i])
@@ -69,18 +71,20 @@ func targetNetworkPolicy(ctx context.Context, dyn dynamic.Interface) (engine, un
 	case apierrors.IsForbidden(err):
 		// checking if a DaemonSet already shows an engine, if so the ConfigMap doesnt matter
 		if e := netpolicy.Detect(objs); netpolicy.Enforced(e) {
-			return e, ""
+			return e, "", ""
 		}
-		return netpolicy.Unknown, fmt.Sprintf("these credentials can't read the ConfigMap kube-system/%s (verify needs get on it to see EKS's network policy setting)", netpolicy.VPCCNIConfigMap)
+		return netpolicy.Unknown, fmt.Sprintf("these credentials can't read the ConfigMap kube-system/%s (verify needs get on it to see EKS's network policy setting)", netpolicy.VPCCNIConfigMap), ""
 	case !apierrors.IsNotFound(err):
-		return netpolicy.Unknown, fmt.Sprintf("reading the ConfigMap kube-system/%s failed: %v", netpolicy.VPCCNIConfigMap, err)
+		return netpolicy.Unknown, fmt.Sprintf("reading the ConfigMap kube-system/%s failed: %v", netpolicy.VPCCNIConfigMap, err), ""
 	}
-	return netpolicy.Detect(objs), ""
+	// invoking netpolicy.Idle for the engines installed but not running yet, its defined in pkg/netpolicy/netpolicy.go
+	return netpolicy.Detect(objs), "", strings.Join(netpolicy.Idle(objs), ", ")
 }
 
 // checkNetworkPolicies weighs the source's enforcement, this cluster's and how many policies the export has, and gives back nil when theres nothing to say
 // accepted names how unenforced policies were accepted, empty when they werent, distribution is this cluster's, for how to turn enforcement on
-func checkNetworkPolicies(policies int, source, target, unknownWhy, accepted, distribution string) *networkPolicyCheck {
+// idle names an engine installed here but running on no nodes yet
+func checkNetworkPolicies(policies int, source, target, unknownWhy, idle, accepted, distribution string) *networkPolicyCheck {
 	// checking if the export has no NetworkPolicies, or the source didnt enforce them, if so nothing changes on any cluster
 	if policies == 0 || source == netpolicy.None {
 		return nil
@@ -95,10 +99,10 @@ func checkNetworkPolicies(policies int, source, target, unknownWhy, accepted, di
 	case source == netpolicy.Unknown:
 		// an export from an earlier version, or of some namespaces, doesnt say, so its a warning, not a failure
 		c.Warning = true
-		c.Message = fmt.Sprintf("The export doesn't record whether the source enforced its %s (export again with this version to record it), and %s. If the source enforced them, they do nothing here: %s.", n, targetState(target, unknownWhy), how)
+		c.Message = fmt.Sprintf("The export doesn't record whether the source enforced its %s (export again with this version to record it), and %s. If the source enforced them, they do nothing here: %s.", n, targetState(target, unknownWhy, idle), how)
 		return c
 	}
-	c.Message = fmt.Sprintf("The source enforced its %s with %s, and %s, so here they apply and do nothing. To enforce them, %s.", n, source, targetState(target, unknownWhy), how)
+	c.Message = fmt.Sprintf("The source enforced its %s with %s, and %s, so here they apply and do nothing. To enforce them, %s.", n, source, targetState(target, unknownWhy, idle), how)
 	if accepted != "" {
 		c.Accepted, c.Warning = accepted, true
 		c.Message += " Accepted unenforced (" + accepted + ")."
@@ -110,9 +114,12 @@ func checkNetworkPolicies(policies int, source, target, unknownWhy, accepted, di
 }
 
 // targetState says what verify found about this cluster's enforcement
-func targetState(target, unknownWhy string) string {
-	if target == netpolicy.Unknown {
+func targetState(target, unknownWhy, idle string) string {
+	switch {
+	case target == netpolicy.Unknown:
 		return "verify can't tell if this cluster enforces them: " + unknownWhy
+	case idle != "":
+		return "this cluster doesn't enforce them yet: " + idle + " is installed but runs on no nodes"
 	}
 	return "this cluster doesn't enforce them"
 }

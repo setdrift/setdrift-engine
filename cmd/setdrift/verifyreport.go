@@ -75,11 +75,18 @@ func likelyCause(d verifyDocument) string {
 	a, r := d.Analysis, d.Report
 	n := len(r.Diffs)
 	// checking if resources name another platform's features, if so thats the cause to fix first, since the rest may follow from it
-	wont := 0
+	// one a translation's decision explains is no cause, its decided, and when every difference is explained theres nothing to say
+	wont, explained := 0, 0
 	for _, df := range r.Diffs {
-		if df.Kind == verify.KindWontWork {
+		switch {
+		case df.Explanation != "":
+			explained++
+		case df.Kind == verify.KindWontWork:
 			wont++
 		}
+	}
+	if n > 0 && explained == n && len(r.NotChecked) == 0 {
+		return ""
 	}
 	if wont > 0 {
 		return fmt.Sprintf("%s would apply here but not work: %s another platform's features, like its load balancer class, storage provisioner or identity annotation. Each one below says what it names.", text.Plural(wont, "resource", "resources"), text.Word(wont, "it names", "they name"))

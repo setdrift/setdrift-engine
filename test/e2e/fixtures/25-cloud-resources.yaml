@@ -1,0 +1,16 @@
+# An object of an operator that creates cloud resources (ACK), with the
+# stand-in definition from 10-cluster.yaml and no controller: nothing is
+# created on AWS. Export holds it back in cloud-resources/; translate asks
+# keep-source, equivalent or leave-out for it on another cloud.
+apiVersion: s3.services.k8s.aws/v1alpha1
+kind: Bucket
+metadata:
+  name: orders
+  namespace: sd-apps
+spec:
+  name: setdrift-e2e-orders
+  versioning: {status: Enabled}
+  publicAccessBlock: {blockPublicACLs: true, blockPublicPolicy: true, ignorePublicACLs: true, restrictPublicBuckets: true}
+
+# Copyright The SetDrift Authors
+# SPDX-License-Identifier: Apache-2.0
