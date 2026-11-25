@@ -18,6 +18,8 @@ type RestoreInfo struct {
 	SourceVersion string
 	// Volumes are the claims with a volume RESTORE.md pre-binds, namespace/claim, whose disks stay on the source cloud
 	Volumes []string
+	// Shape is what the source cluster was built as, for the target's create command
+	Shape Shape
 }
 
 // restore writes the translation's RESTORE.md, the cross-cloud version of the export's, what comes over and what doesnt, then the steps in order
@@ -56,11 +58,22 @@ func restore(r *Result, ri RestoreInfo) string {
 	for _, l := range r.Lost {
 		fmt.Fprintf(&b, "| **%s** | %s | %s |\n", l.What, l.Why, l.ToDo)
 	}
+	// checking if any image is in another cloud's private registry, if so its a row, with the step below
+	if len(r.Images) > 0 {
+		fmt.Fprintf(&b, "| %s in another cloud's registry | The new cluster can't pull from it without that cloud's credentials | Copy them to %s's registry, below |\n", text.Plural(len(r.Images), "image", "images"), to)
+	}
 	b.WriteString("| Secret values | SetDrift never copies them | Supply them, below |\n")
 	b.WriteString("| Load balancer addresses | A new cluster gets new addresses | Point DNS and clients at the new ones once they're assigned |\n\n")
 
 	step := 0
 	next := func(title string) { step++; fmt.Fprintf(&b, "## %d. %s\n\n", step, title) }
+
+	var create strings.Builder
+	// invoking createStep for the target cluster's create command, its defined in infra.go
+	if createStep(&create, r, ri) {
+		next("Create the " + to + " cluster")
+		b.WriteString(create.String())
+	}
 
 	next("Check the Kubernetes version")
 	fmt.Fprintf(&b, "The source ran Kubernetes %s.\n\n```sh\nkubectl --context \"$DST\" version\n```\n\n", ri.SourceVersion)
@@ -87,6 +100,12 @@ func restore(r *Result, ri RestoreInfo) string {
 			// invoking trustSteps to write the commands for the identity's cloud, its defined below
 			b.WriteString(trustSteps(id))
 		}
+	}
+
+	if len(r.Images) > 0 {
+		next("Copy the images")
+		// invoking imagesStep for the commands, its defined in images.go
+		imagesStep(&b, r.Images, r.To, r.Dir)
 	}
 
 	next("Apply the translation")

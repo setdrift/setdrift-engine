@@ -186,6 +186,8 @@ type Result struct {
 	// NetworkPolicies counts the export's NetworkPolicies, NetworkPolicyEngine is what enforced them on the source, empty when unknown
 	NetworkPolicies     int
 	NetworkPolicyEngine string
+	// Images are the images in another cloud's private registry, for RESTORE.md's step that copies them to the target's
+	Images []Image
 }
 
 // Lost is something a translation can't bring over, with why and what to do instead, for RESTORE.md's list
@@ -243,6 +245,8 @@ func Translate(objs []*unstructured.Unstructured, from, to platform.Distribution
 	}
 	// invoking networkPolicies for the decision on the export's NetworkPolicies, its defined below
 	t.networkPolicies(objs, src.NetworkPolicy)
+	// invoking imagesToCopy for the images the target can't pull as they are, its defined in images.go
+	r.Images = imagesToCopy(objs, to)
 	// a second pass, now that every kept identity is known, gives the Pods using one what its cloud's webhook would have
 	// and takes out what an earlier translation injected where its no longer needed, like back on the identity's own cloud
 	for _, o := range objs {
