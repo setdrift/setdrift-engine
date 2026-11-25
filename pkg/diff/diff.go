@@ -116,6 +116,14 @@ type Result struct {
 	// WontWork are the resources that name another platform's features than their own side's, like an EKS load balancer class in a GKE cluster
 	// a migration can look identical and not work, so they count as differences for Same
 	WontWork []WontWork `json:"wontWork,omitempty"`
+	// Translation is the code of the translation compared through, like te2g, empty without one, see ApplyTranslation in translation.go
+	Translation string `json:"translation,omitempty"`
+	// AsTranslated counts the resources in both whose every difference the translation sorted out
+	AsTranslated int `json:"asTranslated,omitempty"`
+	// Translated, Decided and NotMoved are the differences sorted out through it, shown and not counted
+	Translated []Sorted `json:"translated,omitempty"`
+	Decided    []Sorted `json:"decided,omitempty"`
+	NotMoved   []Sorted `json:"notMoved,omitempty"`
 }
 
 // WontWork is a resource on one side that names features its side's platform doesnt have, from the capability map
@@ -908,6 +916,10 @@ func WithoutTranslationMark(m any) any {
 		out := maps.Clone(mv)
 		if nc == nil {
 			delete(out, path[0])
+			// a map the stamp alone was in, like a template's metadata, goes too, as it was before the translation
+			if len(out) == 0 {
+				return nil
+			}
 		} else {
 			out[path[0]] = nc
 		}
@@ -916,6 +928,7 @@ func WithoutTranslationMark(m any) any {
 	for _, p := range [][]string{
 		{"metadata", "annotations"},
 		{"spec", "template", "metadata", "annotations"},
+		{"spec", "jobTemplate", "metadata", "annotations"},
 		{"spec", "jobTemplate", "spec", "template", "metadata", "annotations"},
 	} {
 		m = strip(m, p)

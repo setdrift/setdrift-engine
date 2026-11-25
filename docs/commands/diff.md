@@ -64,6 +64,23 @@ Both sides are normalized the way `export` normalizes them, so server defaults, 
 
 The annotations a [translation](translate.md#where-translations-go) keeps for itself, `setdrift.io/translation` on every object it applies and `setdrift.io/source-class` on a StorageClass, never count as one. A translation itself isn't a side `diff` takes, it's changes to an export, so `diff` says so and names the export to compare instead.
 
+## Comparing across a translation
+
+After a migration with [`translate`](translate.md), `diff` with `--translation-dir` answers whether the new cluster is the old one, translated. It sorts every difference into one of four groups.
+
+| Group | What's in it | Counted |
+|---|---|---|
+| Translated on purpose | What the translation changed, like a StorageClass's provisioner or a load balancer's annotation, and what it left out or added | No |
+| Decided | What its `translate-decisions.yaml` covers, like an identity kept on the source cloud | No |
+| Not moved by design | Secrets and objects holding secret values, which SetDrift never moves, and jobs that ran once | No |
+| A real difference | Anything else, with why, changed on the source after the export it was translated from, or differing on the target from the translation | Yes |
+
+It tells them apart by lining up four versions of each object, the source as exported, the export translated, the source now and the target now, so it never guesses what the translation changed. With no real differences it says the target is the source, translated, and `--exit-code` fails only on real differences.
+
+A decision only explains a difference while the target is as the translation made it, so a decided object changed on the target since is a real difference. When the target's objects were applied from another run of the translation, by the id in their annotation, `diff` says so and names the translation to apply.
+
+The target is the side whose objects carry the translation's annotation, `setdrift.io/translation`. Given the other way around, `diff` swaps the sides and says so. A translation is one way, so `diff` never judges it backwards, a translation back is a translation of its own, with its own decisions.
+
 ## Examples
 
 Two clusters, by their kubeconfig contexts.
@@ -121,6 +138,18 @@ Every field, for a script or a report.
 
 ```sh
 setdrift diff east west --format json
+```
+
+After migrating prod from EKS to GKE, the GKE cluster against the EKS one, through the translation.
+
+```sh
+setdrift diff eks-prod gke-prod --translation-dir ./prod-export/clusters/prod/translations/te2g
+```
+
+The same once the EKS cluster is gone, from the snapshot the export took.
+
+```sh
+setdrift diff ./prod-export/snapshots/2026-11-25T010605Z-prod.pb gke-prod --translation-dir ./prod-export/clusters/prod/translations/te2g
 ```
 
 ## Flags
@@ -218,6 +247,16 @@ setdrift diff east west --kubeconfig ~/.kube/multi-region
 *on/off · default off*
 
 Prints the command's help.
+
+### `--translation-dir`
+
+*text · default none*
+
+Compares through a translation, its directory in the export (`translations/te2g`), so what it changed on purpose and what its decisions cover show apart and don't count, see [Comparing across a translation](#comparing-across-a-translation). It takes the translation itself, given an export it names the export's translations. The export needs the snapshot it took when it was written, which `--no-snapshot` leaves out.
+
+```sh
+setdrift diff eks-prod gke-prod --translation-dir ./prod-export/clusters/prod/translations/te2g
+```
 
 ## Output
 

@@ -158,6 +158,11 @@ func (o *translateOptions) run(cmd *cobra.Command, dir string) error {
 		}
 		fmt.Fprintf(w, "%s no equivalent on %s and %s your decision:\n", text.Plural(len(und), "feature has", "features have"), tgt.Name, text.Word(len(und), "needs", "need"))
 		for _, d := range und {
+			// checking if the source changed under an earlier choice, if so the message says so, with the choice
+			if d.Waiting() {
+				fmt.Fprintf(w, "  %s\n      Earlier you chose %s. It has changed on the source since then, so translate needs you to choose again. Your earlier choice is kept in the file as previous.\n      %s\n", d.Feature, d.Describe(d.Previous), d.What)
+				continue
+			}
 			fmt.Fprintf(w, "  %s\n      %s\n", d.Feature, d.What)
 		}
 		fmt.Fprintf(w, "\nWrote %s: set choose for each (%s), then run translate again, or pass --unmatched.\n", filepath.Join(outDir, translate.DecisionsFile), strings.Join(und[0].Options, ", "))

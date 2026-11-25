@@ -7,12 +7,16 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 
 	"sigs.k8s.io/yaml"
 
+	"setdrift.io/setdrift-engine/pkg/capability"
 	"setdrift.io/setdrift-engine/pkg/emit/kustomize"
 	"setdrift.io/setdrift-engine/pkg/platform"
 	"setdrift.io/setdrift-engine/pkg/translate"
+	"setdrift.io/setdrift-engine/pkg/verify"
 )
 
 // the kinds of folder folderKind tells apart
@@ -135,6 +139,39 @@ func clusterDirAbove(dir string) string {
 // exportRootOf gives back an export's root from its cluster's directory, two levels up from clusters/<cluster>
 func exportRootOf(clusterDir string) string {
 	return filepath.Dir(filepath.Dir(clusterDir))
+}
+
+// staleTranslation says when a translation is older than its export, so its overlay and decisions may be behind it, empty when it isnt
+func staleTranslation(root, rel string, info *kustomize.ExportInfo) string {
+	f := folderKind(filepath.Join(root, filepath.FromSlash(rel)))
+	if f.kind != folderTranslation || info == nil {
+		return ""
+	}
+	ex, e1 := time.Parse(time.RFC3339, info.ExportedAt)
+	tr, e2 := time.Parse(time.RFC3339, f.stamp.TranslatedAt)
+	if e1 != nil || e2 != nil || !ex.After(tr) {
+		return ""
+	}
+	return fmt.Sprintf("Note: the export was taken again (%s) after this translation (%s), so it may be behind it: run setdrift translate %s --to %s, which asks again about any decision whose object changed.",
+		info.ExportedAt, f.stamp.TranslatedAt, exportRootOf(root), f.stamp.To)
+}
+
+// olderApplyNote says when verify found objects whose translation annotation differs from the translation's, applied from another run of it, empty when none
+func olderApplyNote(r *verify.Report) string {
+	n, from, to := 0, "", ""
+	for _, d := range r.Diffs {
+		for _, f := range d.Fields {
+			if strings.HasSuffix(f.Path, capability.TranslationAnnotation) || strings.Contains(f.Path, `"`+capability.TranslationAnnotation+`"`) {
+				n++
+				from, to = fmt.Sprint(f.Cluster), fmt.Sprint(f.Export)
+				break
+			}
+		}
+	}
+	if n == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%d of the differences are objects applied from another run of this translation (%s, where the export's is %s): apply the current translation.", n, from, to)
 }
 
 // keptTranslations says, for each translation an export kept from before, that its older than the export now and how to bring it in step
