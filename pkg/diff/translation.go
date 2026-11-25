@@ -96,6 +96,11 @@ func (r *Result) ApplyTranslation(t Translation) {
 
 	var wont []WontWork
 	for _, ww := range r.WontWork {
+		// checking if its on the source, if so it was already so before the translation, its no difference between the two
+		if ww.Side == r.A.Label {
+			r.OnSource = append(r.OnSource, Sorted{Object: ww.Object, Why: ww.Reasons})
+			continue
+		}
 		// checking if the translation's decisions explain it, and the target still has it as translated, a decision holds only while thats so
 		if ww.Side == r.B.Label && t.Explain != nil && !changedOnTarget(r.Changed, ww.Object.Key) {
 			if m, ok := t.Translated[ww.Object.Key]; ok {

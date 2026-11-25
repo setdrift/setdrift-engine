@@ -100,5 +100,15 @@ func TestClaimWithoutClass(t *testing.T) {
 	}
 }
 
+// what wont work on the source was already so before the translation, so its shown apart and not counted
+func TestSourceWontWork(t *testing.T) {
+	sa := Key{Kind: "ServiceAccount", Namespace: "shop", Name: "orders"}
+	r := Result{A: Side{Label: "aks"}, B: Side{Label: "eks"}, WontWork: []WontWork{{Side: "aks", Object: Object{Key: sa}, Reasons: []string{"names EKS"}}}}
+	r.ApplyTranslation(Translation{Code: "ta2e", Exported: map[Key]any{}, Translated: map[Key]any{}})
+	if len(r.WontWork) != 0 || len(r.OnSource) != 1 || !r.Same() {
+		t.Errorf("%+v", r)
+	}
+}
+
 // Copyright The SetDrift Authors
 // SPDX-License-Identifier: Apache-2.0

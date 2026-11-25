@@ -42,7 +42,7 @@ case $E2E_TO in
     }
     trap cleanup EXIT INT TERM
     say "creating EKS cluster $E2E_CLUSTER"
-    "$here/cluster.sh" up >&2
+    "$here/cluster.sh" ensure >&2
     context=$("$here/cluster.sh" context)
     # shellcheck source=translate-steps.sh
     source "$E2E_STEPS"

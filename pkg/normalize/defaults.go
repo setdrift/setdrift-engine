@@ -344,6 +344,11 @@ func serviceDefaults(o *resource.Object) {
 		delete(ann, "cloud.google.com/neg")
 		o.SetAnnotations(ann)
 	}
+	// GKE's NEG controller writes the network endpoint groups it made in cloud.google.com/neg-status, state like status, a new cluster's controller writes its own
+	if ann := o.GetAnnotations(); ann["cloud.google.com/neg-status"] != "" {
+		delete(ann, "cloud.google.com/neg-status")
+		o.SetAnnotations(ann)
+	}
 	// dropping the finalizers a load balancer controller adds, Kubernetes' own and each cloud's, the target's controller adds its own
 	// an exported one only hurts, on another platform nothing would remove it and the Service could never be deleted
 	for _, f := range o.GetFinalizers() {
