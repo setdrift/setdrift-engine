@@ -2,8 +2,11 @@ package translate
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
+	"setdrift.io/setdrift-engine/internal/text"
+	"setdrift.io/setdrift-engine/pkg/netpolicy"
 	"setdrift.io/setdrift-engine/pkg/platform"
 )
 
@@ -35,9 +38,15 @@ func restore(r *Result, ri RestoreInfo) string {
 		fmt.Fprintf(&b, "| The data in claim %s | Its disk is %s, and a %s node can't attach it. The claim comes over and gets a new, empty disk | Copy the data with Velero (file system backup with Kopia) or the app's own tools, like a database's dump or replication |\n", v, diskOf(r.From), to)
 	}
 	for _, p := range r.Patches {
-		if p.Delete {
+		// checking if its a deleted object other than a cloud resource, those have rows of their own below
+		if p.Delete && !slices.ContainsFunc(r.CloudResources, func(c CloudResource) bool { return c.Ref == p.Kind+" "+qualifiedName(&p) }) {
 			fmt.Fprintf(&b, "| %s %s | Left out, as decided in %s | See the decision there |\n", p.Kind, qualifiedName(&p), DecisionsFile)
 		}
+	}
+	for _, c := range r.CloudResources {
+		// invoking cloudResourceRow for what happens to it and what to do, its defined below
+		why, todo := cloudResourceRow(c, to)
+		fmt.Fprintf(&b, "| %s (a real %s resource, through %s) | %s | %s |\n", c.Ref, c.Cloud, c.Operator, why, todo)
 	}
 	b.WriteString("| Secret values | SetDrift never copies them | Supply them, below |\n")
 	b.WriteString("| Load balancer addresses | A new cluster gets new addresses | Point DNS and clients at the new ones once they're assigned |\n\n")
@@ -48,6 +57,17 @@ func restore(r *Result, ri RestoreInfo) string {
 	next("Check the Kubernetes version")
 	fmt.Fprintf(&b, "The source ran Kubernetes %s.\n\n```sh\nkubectl --context \"$DST\" version\n```\n\n", ri.SourceVersion)
 	b.WriteString("If the target's version is older (clouds don't all offer the newest), the apply still goes ahead, and the API server refuses any object that uses a field or version it doesn't have yet. `setdrift verify` lists those.\n\n")
+
+	if r.NetworkPolicyEngine != "" {
+		next("Turn on network policy enforcement")
+		fmt.Fprintf(&b, "The source enforced its %s with %s. On a %s cluster that doesn't enforce them, they apply and do nothing, so turn enforcement on before applying: %s.\n\n",
+			text.Plural(r.NetworkPolicies, "NetworkPolicy", "NetworkPolicies"), r.NetworkPolicyEngine, to, netpolicy.HowToEnforce(string(r.To)))
+		if NetworkPolicyChoice(r.Decisions) == AcceptUnenforced {
+			fmt.Fprintf(&b, "**%s accepts them unenforced** (%s is accept-unenforced), so `setdrift verify` passes on a cluster that doesn't enforce them, and says so every run. Set it back to require once enforcement is on.\n\n", DecisionsFile, NetworkPolicyFeature)
+		} else {
+			b.WriteString("`setdrift verify` checks it on the new cluster and fails until enforcement is on.\n\n")
+		}
+	}
 
 	next("Create the CRDs and install the controllers")
 	b.WriteString("The \"CustomResourceDefinitions\" and \"Controllers to install first\" sections of RESTORE.md are the same on any cluster. Follow them now.\n\n")
@@ -76,6 +96,21 @@ func restore(r *Result, ri RestoreInfo) string {
 	b.WriteString("```sh\nsetdrift verify --context \"$DST\" .\n```\n\n")
 	fmt.Fprintf(&b, "Verify picks this translation for a %s cluster and counts what's decided in %s as explained.\n", to, DecisionsFile)
 	return b.String()
+}
+
+// cloudResourceRow says what happens to a cloud-resource object in the translation, and what to do about it
+func cloudResourceRow(c CloudResource, to string) (why, todo string) {
+	switch c.Choice {
+	case "":
+		return fmt.Sprintf("Its operator runs on %s, so it isn't translated", to), "Move it with the \"Cloud resources\" section of RESTORE.md, one controller at a time"
+	case KeepSource:
+		return "Stays with the source cluster, whose operator keeps managing it, as decided in " + DecisionsFile,
+			"Keep the source cluster's object. Before you ever delete that cluster or the object, set " + c.Retain + " on it, or the resource is deleted with it"
+	case Equivalent:
+		return fmt.Sprintf("Written as %s's own (%s), a new, empty resource, as decided in %s. The source's stays where it is", to, strings.Join(c.Equivalent, ", "), DecisionsFile),
+			"Fill in what README.md lists before applying, and install the target's operator. Copy the data across with the cloud's tools"
+	}
+	return "Left out, as decided in " + DecisionsFile, "Nothing on the new cluster manages it. Before you ever delete the source cluster or the object, set " + c.Retain + " on it if the resource must stay"
 }
 
 // diskOf names the disks of a platform's block storage, for the volumes that stay behind

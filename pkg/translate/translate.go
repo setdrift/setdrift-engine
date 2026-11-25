@@ -12,7 +12,9 @@ import (
 	"strings"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"setdrift.io/setdrift-engine/internal/text"
 	"setdrift.io/setdrift-engine/pkg/capability"
+	"setdrift.io/setdrift-engine/pkg/netpolicy"
 	"setdrift.io/setdrift-engine/pkg/platform"
 )
 
@@ -24,7 +26,39 @@ const (
 	Equivalent = "equivalent"
 	// LeaveOut leaves the object or setting out of the translation, and RESTORE.md lists it
 	LeaveOut = "leave-out"
+	// Require has setdrift verify fail on a target that doesnt enforce the export's NetworkPolicies
+	Require = "require"
+	// AcceptUnenforced lets verify pass on a target that doesnt enforce them, for an emergency, said loudly every run
+	AcceptUnenforced = "accept-unenforced"
 )
+
+// NetworkPolicyFeature is the decision for the export's NetworkPolicies, when the source enforced them
+const NetworkPolicyFeature = "network-policy-enforcement"
+
+// Choices are every choice a decision can take
+var Choices = []string{KeepSource, Equivalent, LeaveOut, Require, AcceptUnenforced}
+
+// Source is what a translation needs to know about the export besides its generic set
+type Source struct {
+	// Region is the source cluster's, for the AWS SDK's region in a kept AWS identity, empty when unknown
+	Region string
+	// NetworkPolicy is the engine that enforced NetworkPolicies on the source, netpolicy.None, or empty when the export doesnt say
+	NetworkPolicy string
+	// Held are the export's cloud-resource operator objects, from cloud-resources/, which arent in the generic set
+	Held []*unstructured.Unstructured
+}
+
+// CloudResource is one cloud-resource operator object and what the translation does with it, for RESTORE.md
+type CloudResource struct {
+	// Ref is its kind and namespace/name, Operator its operator, Cloud the cloud its resource is on
+	Ref, Operator, Cloud string
+	// Retain is the operator's setting that makes deleting the object leave the resource in place
+	Retain string
+	// Choice is the decision taken, empty when the operator is the target's own and the export's RESTORE.md step moves it
+	Choice string
+	// Equivalent names the objects written for it with equivalent
+	Equivalent []string
+}
 
 // Decision is one feature with no 1:1 equivalent on the target, and the user's choice for it
 type Decision struct {
@@ -79,6 +113,23 @@ type Result struct {
 	Stale []string
 	// Identities are the cloud identities kept, keep-source, for the RESTORE.md steps that federate the target to them
 	Identities []Identity
+	// Added are objects the translation writes into the overlay, the target's equivalents chosen for cloud resources
+	Added []*unstructured.Unstructured
+	// CloudResources are the export's cloud-resource operator objects and what happens to each
+	CloudResources []CloudResource
+	// NetworkPolicies counts the export's NetworkPolicies, NetworkPolicyEngine is what enforced them on the source, empty when unknown
+	NetworkPolicies     int
+	NetworkPolicyEngine string
+}
+
+// NetworkPolicyChoice gives back what the decisions say about unenforced NetworkPolicies, Require when nothing does
+func NetworkPolicyChoice(ds []Decision) string {
+	for _, d := range ds {
+		if d.Feature == NetworkPolicyFeature && d.choice() != "" {
+			return d.choice()
+		}
+	}
+	return Require
 }
 
 // Undecided gives back the decisions with neither a choice nor a default, which stop a translation
@@ -95,8 +146,8 @@ func (r *Result) Undecided() []Decision {
 // Translate works out the translation of the generic set's objects from one platform to another
 // from may be Unknown, for an export of a cluster on no known cloud, then only markers owned by a platform other than the target are rewritten
 // earlier holds the decisions from a previous run, their choices carry over by feature
-// region is the source cluster's, for the AWS SDK's region in a kept AWS identity, empty when unknown
-func Translate(objs []*unstructured.Unstructured, from, to platform.Distribution, m *capability.Map, earlier []Decision, region string) (*Result, error) {
+// src says what else the export knows, the source's region, its network policy engine and its held-back cloud-resource objects
+func Translate(objs []*unstructured.Unstructured, from, to platform.Distribution, m *capability.Map, earlier []Decision, src Source) (*Result, error) {
 	tgt := m.For(to)
 	if tgt == nil {
 		return nil, fmt.Errorf("no capability map for %s: translate knows eks, aks and gke", to)
@@ -109,11 +160,18 @@ func Translate(objs []*unstructured.Unstructured, from, to platform.Distribution
 	for _, d := range earlier {
 		chosen[d.Feature] = d.Choose
 	}
-	t := &translator{m: m, from: from, to: to, tgt: tgt, chosen: chosen, r: r, region: region, kept: map[string]Identity{}}
+	t := &translator{m: m, from: from, to: to, tgt: tgt, chosen: chosen, r: r, region: src.Region, kept: map[string]Identity{}}
 	for _, o := range objs {
 		// invoking object to work out one object's patch and decisions, its defined below
 		t.object(o)
 	}
+	// the held-back cloud-resource objects get their decisions too, theyre not in the generic set so nothing is patched
+	for _, o := range src.Held {
+		// invoking cloudResource to decide what happens to one, its defined below
+		t.cloudResource(o, false)
+	}
+	// invoking networkPolicies for the decision on the export's NetworkPolicies, its defined below
+	t.networkPolicies(objs, src.NetworkPolicy)
 	// a second pass, now that every kept identity is known, gives the Pods using one what its cloud's webhook would have
 	for _, o := range objs {
 		base, ok := podSpecPath(o.GetKind())
@@ -212,7 +270,13 @@ func (t *translator) object(o *unstructured.Unstructured) {
 	ref := strings.TrimPrefix(gvk.Kind+" "+qualified(o), " ")
 	c := o.Object
 
-	// an object whose kind belongs to another platform, like an ACK Bucket or an EC2NodeClass, has nothing to run it here
+	// an object of an operator that creates cloud resources, in the generic set of an export from before they were held back
+	if op, _ := t.m.CloudResourceOperator(gvk.Group); op != nil {
+		// invoking cloudResource to decide what happens to it, its defined below
+		t.cloudResource(o, true)
+		return
+	}
+	// an object whose kind belongs to another platform, like an EC2NodeClass, has nothing to run it here
 	if owners := t.m.GroupOwners(gvk.Group); t.foreign(owners) {
 		what := fmt.Sprintf("%s (%s) is a %s object: on %s nothing serves or acts on it", ref, gvk.Group, names(t.m, owners), t.tgt.Name)
 		switch t.decide(Decision{Feature: "object/" + gvk.Kind + "/" + qualified(o), What: what, Options: []string{KeepSource, LeaveOut}}) {
@@ -272,6 +336,76 @@ func (t *translator) object(o *unstructured.Unstructured) {
 	if len(p.Ops) > 0 || p.Delete {
 		t.r.Patches = append(t.r.Patches, p)
 	}
+}
+
+// cloudResource decides what happens to an object of an operator that creates cloud resources, like an ACK Bucket
+// on the target's own cloud its operator runs there, and the export's RESTORE.md moves it one controller at a time, so theres nothing to decide
+// on another cloud theres no safe default: keep-source leaves it with the source cluster, leave-out drops it, and where SetDrift knows the target's equivalent, equivalent writes it
+// inSet is true for an object in the generic set, of an export from before they were held back, its taken out of the translation unless its the target's own
+func (t *translator) cloudResource(o *unstructured.Unstructured, inSet bool) {
+	gvk := o.GroupVersionKind()
+	op, owner := t.m.CloudResourceOperator(gvk.Group)
+	ref := gvk.Kind + " " + qualified(o)
+	cr := CloudResource{Ref: ref, Operator: op.Name, Cloud: owner.Cloud, Retain: op.Retain.String()}
+	if owner.Distribution == t.to {
+		t.r.CloudResources = append(t.r.CloudResources, cr)
+		return
+	}
+	// invoking bucketEquivalent for the target's equivalent where SetDrift knows one, its defined in buckets.go
+	eq, eqNotes := bucketEquivalent(o, t.to)
+	options := []string{KeepSource, LeaveOut}
+	offer := ""
+	if eq != nil {
+		options = []string{KeepSource, Equivalent, LeaveOut}
+		offer = fmt.Sprintf("; equivalent writes %s's own, a new, empty %s with the same name, versioning and public access", t.tgt.Name, strings.ToLower(eq[len(eq)-1].GetKind()))
+	}
+	what := fmt.Sprintf("%s (%s) manages a real %s resource through %s, which doesn't run on %s. keep-source leaves it with the source cluster, whose operator keeps managing it; leave-out drops it%s",
+		ref, gvk.Group, owner.Cloud, op.Name, t.tgt.Name, offer)
+	c := t.decide(Decision{Feature: "cloud-resource/" + gvk.Kind + "/" + qualified(o), What: what, Options: options})
+	cr.Choice = c
+	if inSet && c != "" {
+		p := Patch{Group: gvk.Group, Version: gvk.Version, Kind: gvk.Kind, Namespace: o.GetNamespace(), Name: o.GetName(), Delete: true}
+		p.Why = append(p.Why, fmt.Sprintf("left out of the translation, as decided (%s): it manages a real %s resource through %s", c, owner.Cloud, op.Name))
+		t.r.Patches = append(t.r.Patches, p)
+	}
+	if c == Equivalent {
+		t.r.Added = append(t.r.Added, eq...)
+		for _, a := range eq {
+			cr.Equivalent = append(cr.Equivalent, a.GetKind()+" "+qualified(a))
+		}
+		for _, n := range eqNotes {
+			t.r.Notes = append(t.r.Notes, fmt.Sprintf("%s's equivalent (%s): %s", ref, strings.Join(cr.Equivalent, ", "), n))
+		}
+	}
+	t.r.CloudResources = append(t.r.CloudResources, cr)
+}
+
+// networkPolicies records the decision on the export's NetworkPolicies when the source enforced them
+// translate can't see the target, so setdrift verify checks it there, and fails when the target doesnt enforce them unless the decision is accept-unenforced
+func (t *translator) networkPolicies(objs []*unstructured.Unstructured, engine string) {
+	n := 0
+	for _, o := range objs {
+		if o.GroupVersionKind().Group == "networking.k8s.io" && o.GetKind() == "NetworkPolicy" {
+			n++
+		}
+	}
+	if n == 0 {
+		return
+	}
+	t.r.NetworkPolicies = n
+	// checking if the export doesnt say whether the source enforced them, if so theres no decision, only a note
+	if engine == netpolicy.Unknown {
+		t.r.Notes = append(t.r.Notes, fmt.Sprintf("the export doesn't record whether the source enforced its %s (export again with this version to record it). Make sure %s enforces them: %s",
+			text.Plural(n, "NetworkPolicy", "NetworkPolicies"), t.tgt.Name, netpolicy.HowToEnforce(string(t.to))))
+		return
+	}
+	if !netpolicy.Enforced(engine) {
+		return
+	}
+	t.r.NetworkPolicyEngine = engine
+	what := fmt.Sprintf("%s, enforced on the source by %s. On a %s cluster that doesn't enforce them, they apply and do nothing. require has setdrift verify fail on such a cluster; accept-unenforced lets it pass, for an emergency, and verify says so every run",
+		text.Plural(n, "NetworkPolicy", "NetworkPolicies"), engine, t.tgt.Name)
+	t.decide(Decision{Feature: NetworkPolicyFeature, What: what, Options: []string{Require, AcceptUnenforced}, Default: Require})
 }
 
 // storageClass rewrites a class of another platform's provisioner to the target's class of the same tier, keeping its name so claims need no change

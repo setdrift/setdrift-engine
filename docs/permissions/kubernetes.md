@@ -49,6 +49,8 @@ Reading only some namespaces, with `-n` or because that is all you can read, lea
 | every group | every resource the export builds | `patch` | the same | the server-side apply with `dryRun=All` and SetDrift's field manager, which gives what the object would become | the same |
 | (core) | `namespaces` | `get` | `kube-system`, and each one given with `-n` | telling whether the cluster is the export's own (by `kube-system`'s uid); checking `-n` | the check is skipped; `-n` is reported |
 | (core) | `nodes` | `list` | cluster-wide | choosing the platform set with `--set auto` | the generic set is verified |
+| `apps` | `daemonsets` | `list` | `kube-system` and `calico-system` | the network policy check, finding this cluster's engine, only when the export has NetworkPolicies its source enforced | the run fails, saying the engine couldn't be read, unless `--accept-unenforced-network-policies` |
+| (core) | `configmaps` | `get` | `amazon-vpc-cni` in `kube-system` | the same, EKS's network policy setting | the same, unless a DaemonSet already shows an engine |
 | `authorization.k8s.io` | `selfsubjectaccessreviews` | `create` | cluster-wide, stores nothing | asking before the dry-runs whether you may patch the export's types, so a run with no `patch` at all stops at once with the role to add | each resource is tried and counted as not checked |
 
 `verify` never needs `create`, since a resource missing from the cluster is found with `get` and reported, not applied.
@@ -101,7 +103,7 @@ Ready to apply, each a role and a binding to the group of the same name (`setdri
 | [setdrift-export.yaml](https://github.com/setdrift/setdrift-engine/blob/main/deploy/permissions/kubernetes/setdrift-export.yaml) | `get`, `list` on everything, cluster-wide | `export`, `diff` |
 | [setdrift-verify.yaml](https://github.com/setdrift/setdrift-engine/blob/main/deploy/permissions/kubernetes/setdrift-verify.yaml) | `get`, `list`, `patch` on everything, cluster-wide | `verify` (and `export`, `diff`) |
 | [setdrift-export-namespace.yaml](https://github.com/setdrift/setdrift-engine/blob/main/deploy/permissions/kubernetes/setdrift-export-namespace.yaml) | the same as `setdrift-export`, in one namespace | `export -n`, `diff -n` |
-| [setdrift-verify-namespace.yaml](https://github.com/setdrift/setdrift-engine/blob/main/deploy/permissions/kubernetes/setdrift-verify-namespace.yaml) | the same as `setdrift-verify`, in one namespace | `verify -n` |
+| [setdrift-verify-namespace.yaml](https://github.com/setdrift/setdrift-engine/blob/main/deploy/permissions/kubernetes/setdrift-verify-namespace.yaml) | the same as `setdrift-verify`, in one namespace | `verify -n`. It can't read `kube-system`, so for an export whose source enforced NetworkPolicies, `verify` can't confirm this cluster enforces them and fails, unless you pass `--accept-unenforced-network-policies` once you know it does |
 
 ```sh
 kubectl apply -f https://raw.githubusercontent.com/setdrift/setdrift-engine/main/deploy/permissions/kubernetes/setdrift-export.yaml

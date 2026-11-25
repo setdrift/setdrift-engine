@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/yaml"
 
 	"setdrift.io/setdrift-engine/internal/text"
@@ -26,13 +27,15 @@ import (
 type translateOptions struct {
 	to        string
 	unmatched string
+	// acceptUnenforced chooses accept-unenforced for the export's NetworkPolicies, for an emergency
+	acceptUnenforced bool
 }
 
 // newTranslateCmd builds the translate command, main.go adds it to the command tree
 func newTranslateCmd() *cobra.Command {
 	o := &translateOptions{}
 	cmd := &cobra.Command{
-		Use:   "translate EXPORT --to PLATFORM",
+		Use:   "translate <path-to-export> --to <platform>",
 		Short: "Write an export's set for another platform",
 		Long: "Writes the export's generic set for another platform, like an EKS export for GKE, as an overlay at that platform's directory (platform/gcp/gke): " +
 			"storage classes, load balancers and node placement are rewritten for it, and what has no 1:1 equivalent is a decision in translate-decisions.yaml.",
@@ -44,6 +47,10 @@ func newTranslateCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&o.to, "to", "", "the platform to translate for: eks, aks or gke")
 	cmd.Flags().StringVar(&o.unmatched, "unmatched", "", "one choice for every undecided feature with no 1:1 equivalent: keep-source or leave-out")
+	cmd.Flags().BoolVar(&o.acceptUnenforced, "accept-unenforced-network-policies", false,
+		"choose accept-unenforced for the export's NetworkPolicies, so setdrift verify passes on a target that doesn't enforce them (for an emergency; recorded in translate-decisions.yaml)")
+	// invoking acceptSingular so the singular is the same flag, like --to gcp for gke, its defined in verifynetpol.go
+	cmd.Flags().SetNormalizeFunc(acceptSingular)
 	return cmd
 }
 
@@ -96,25 +103,41 @@ func (o *translateOptions) run(cmd *cobra.Command, dir string) error {
 	if err != nil {
 		return err
 	}
-	region := ""
-	// checking if the export recorded the source's region, if so a kept AWS identity's SDK is given it
+	known := translate.Source{}
+	// checking if the export recorded the source's region and network policy engine, if so the translation uses them
 	if info != nil {
-		region = info.Region
+		known.Region, known.NetworkPolicy = info.Region, info.NetworkPolicy
+	}
+	// invoking heldObjects to read the cloud-resource objects export held back, its defined below
+	if known.Held, err = heldObjects(root); err != nil {
+		return err
 	}
 	// invoking translate.Translate to work out the patches and decisions, its defined in pkg/translate/translate.go
-	r, err := translate.Translate(objs, from, to, m, earlier, region)
+	r, err := translate.Translate(objs, from, to, m, earlier, known)
 	if err != nil {
 		return err
 	}
-	// checking if a choice was given for every undecided feature, if so its applied to them
-	if o.unmatched != "" {
+	// checking if the NetworkPolicies were accepted unenforced, if so the decision records it, and a flag with nothing to accept says so
+	if o.acceptUnenforced {
+		i := slices.IndexFunc(r.Decisions, func(d translate.Decision) bool { return d.Feature == translate.NetworkPolicyFeature })
+		switch {
+		case i >= 0:
+			r.Decisions[i].Choose = translate.AcceptUnenforced
+		case r.NetworkPolicies == 0:
+			fmt.Fprintln(cmd.ErrOrStderr(), "--accept-unenforced-network-policies: the export has no NetworkPolicies, so there's nothing to accept")
+		default:
+			fmt.Fprintln(cmd.ErrOrStderr(), "--accept-unenforced-network-policies: the export doesn't say the source enforced its NetworkPolicies, so there's no decision to record")
+		}
+	}
+	// checking if a choice was given for every undecided feature, or the NetworkPolicies accepted, if so the translation is worked out again with them
+	if o.unmatched != "" || o.acceptUnenforced {
 		for i := range r.Decisions {
-			if r.Decisions[i].Choose == "" && slices.Contains(r.Decisions[i].Options, o.unmatched) {
+			if o.unmatched != "" && r.Decisions[i].Choose == "" && slices.Contains(r.Decisions[i].Options, o.unmatched) {
 				r.Decisions[i].Choose = o.unmatched
 			}
 		}
 		// working the translation out again, so the choices take effect
-		r, err = translate.Translate(objs, from, to, m, r.Decisions, region)
+		r, err = translate.Translate(objs, from, to, m, r.Decisions, known)
 		if err != nil {
 			return err
 		}
@@ -162,6 +185,11 @@ func (o *translateOptions) run(cmd *cobra.Command, dir string) error {
 	for _, n := range r.Notes {
 		fmt.Fprintf(w, "  - %s\n", n)
 	}
+	// checking if the NetworkPolicies were accepted unenforced, if so its said loudly, every run
+	if r.NetworkPolicyEngine != "" && translate.NetworkPolicyChoice(r.Decisions) == translate.AcceptUnenforced {
+		fmt.Fprintf(w, "WARNING: %s accepted unenforced (%s): on a %s cluster that doesn't enforce them, they apply and do nothing.\n",
+			text.Plural(r.NetworkPolicies, "NetworkPolicy is", "NetworkPolicies are"), translate.DecisionsFile, tgt.Name)
+	}
 	fmt.Fprintf(w, "Apply it on %s with: kubectl apply --server-side -k %s\n", tgt.Name, outDir)
 	return nil
 }
@@ -195,9 +223,35 @@ func checkExportPath(dir string) error {
 	}
 	// checking if its a snapshot, by its name, if so it says what to use instead
 	if strings.HasSuffix(dir, ".pb") || strings.HasSuffix(dir, ".json") {
-		return fmt.Errorf("%s is a snapshot, and translate works on an export, the directory setdrift export writes (setdrift export -o DIR). A snapshot can be compared with setdrift diff", dir)
+		return fmt.Errorf("%s is a snapshot, and translate works on an export, the directory setdrift export writes (setdrift export -o <directory>). A snapshot can be compared with setdrift diff", dir)
 	}
 	return fmt.Errorf("%s is a file: give the directory setdrift export wrote", dir)
+}
+
+// heldObjects reads the cloud-resource objects export held back in cloud-resources/, none for an export without it
+func heldObjects(root string) ([]*unstructured.Unstructured, error) {
+	var out []*unstructured.Unstructured
+	dir := filepath.Join(root, "cloud-resources")
+	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if errors.Is(err, os.ErrNotExist) && path == dir {
+			return filepath.SkipDir
+		}
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".yaml") {
+			return err
+		}
+		b, err := os.ReadFile(path) //#nosec G304 -- inside the export directory the user named
+		if err != nil {
+			return err
+		}
+		var m map[string]any
+		// checking if the file is a readable object, if not its named in the error
+		if err := yaml.Unmarshal(b, &m); err != nil || m == nil {
+			return fmt.Errorf("%s isn't a readable Kubernetes object: fix it, or export again", path)
+		}
+		out = append(out, &unstructured.Unstructured{Object: m})
+		return nil
+	})
+	return out, err
 }
 
 // volumeClaims lists the claims the export pre-binds a volume for, restore/volumes/<namespace>/<claim>.yaml, as namespace/claim

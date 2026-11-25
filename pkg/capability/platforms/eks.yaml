@@ -49,6 +49,16 @@ markers:
     - eks.amazonaws.com
     - elbv2.k8s.aws
     - services.k8s.aws
+cloudResources:
+  - name: AWS Controllers for Kubernetes (ACK)
+    groupSuffixes: [services.k8s.aws]
+    retain: {annotation: services.k8s.aws/deletion-policy, value: retain}
+    adopt: {annotation: services.k8s.aws/adoption-policy, value: adopt}
+    adoptNote: "with the annotation, ACK takes over the existing resource of the same name instead of creating one (some kinds also need services.k8s.aws/adoption-fields naming it)"
+  - name: Crossplane's AWS provider
+    groupSuffixes: [aws.upbound.io, aws.m.upbound.io, aws.crossplane.io]
+    retain: {field: spec.deletionPolicy, value: Orphan}
+    adoptNote: "the exported object keeps its crossplane.io/external-name annotation, so Crossplane takes over the existing resource instead of creating one"
 translate:
   # where a translation for EKS goes in an export
   dir: platform/aws/eks

@@ -28,6 +28,59 @@ type Platform struct {
 	Cloud     string    `json:"cloud,omitempty"`
 	Markers   Markers   `json:"markers"`
 	Translate Translate `json:"translate"`
+	// CloudResources are the operators on this cloud that create and manage real cloud resources from objects in the cluster, like ACK
+	CloudResources []CloudResourceOperator `json:"cloudResources,omitempty"`
+}
+
+// CloudResourceOperator is an operator that creates a real cloud resource for each of its objects, like an S3 bucket for an ACK Bucket, and keeps managing it
+// its objects are never applied to a second cluster on their own, two controllers would manage one resource, and deleting the object from either can delete the resource
+type CloudResourceOperator struct {
+	// Name is how its written for people, like AWS Controllers for Kubernetes (ACK)
+	Name string `json:"name"`
+	// GroupSuffixes recognize its API groups, the group itself or a suffix after a dot, ExceptSuffixes are groups under them that arent its own
+	GroupSuffixes  []string `json:"groupSuffixes"`
+	ExceptSuffixes []string `json:"exceptSuffixes,omitempty"`
+	// Retain is the setting that makes deleting an object leave its cloud resource in place
+	Retain Setting `json:"retain"`
+	// Adopt is the setting that makes an object on another cluster take over the existing resource instead of creating one, empty when the operator takes it over by itself, AdoptNote says how
+	Adopt     *Setting `json:"adopt,omitempty"`
+	AdoptNote string   `json:"adoptNote"`
+}
+
+// Setting is an annotation or a spec field set to a value
+type Setting struct {
+	// Annotation or Field, a dotted path like spec.deletionPolicy, is what gets set
+	Annotation string `json:"annotation,omitempty"`
+	Field      string `json:"field,omitempty"`
+	Value      string `json:"value"`
+}
+
+// String writes the setting as a person sets it, like the annotation services.k8s.aws/deletion-policy: retain
+func (s Setting) String() string {
+	if s.Annotation != "" {
+		return "the annotation `" + s.Annotation + ": " + s.Value + "`"
+	}
+	return "`" + s.Field + ": " + s.Value + "`"
+}
+
+// matches tells if an API group is this operator's
+func (o *CloudResourceOperator) matches(group string) bool {
+	under := func(sfx []string) bool {
+		return slices.ContainsFunc(sfx, func(s string) bool { return group == s || strings.HasSuffix(group, "."+s) })
+	}
+	return group != "" && under(o.GroupSuffixes) && !under(o.ExceptSuffixes)
+}
+
+// CloudResourceOperator gives back the operator an API group belongs to and its platform, nil when its no cloud-resource operator's
+func (m *Map) CloudResourceOperator(group string) (*CloudResourceOperator, *Platform) {
+	for i := range m.Platforms {
+		for j := range m.Platforms[i].CloudResources {
+			if m.Platforms[i].CloudResources[j].matches(group) {
+				return &m.Platforms[i].CloudResources[j], &m.Platforms[i]
+			}
+		}
+	}
+	return nil, nil
 }
 
 // Translate holds how a translation reads this platform's settings and writes them for it
@@ -223,11 +276,16 @@ func (m *Map) groupOwners(group string) []platform.Distribution {
 	}
 	var out []platform.Distribution
 	for _, p := range m.Platforms {
+		// a cloud-resource operator's groups are the platform's too
+		mine := slices.ContainsFunc(p.CloudResources, func(o CloudResourceOperator) bool { return o.matches(group) })
 		for _, s := range p.Markers.APIGroupSuffixes {
 			if group == s || strings.HasSuffix(group, "."+s) {
-				out = append(out, p.Distribution)
+				mine = true
 				break
 			}
+		}
+		if mine {
+			out = append(out, p.Distribution)
 		}
 	}
 	return out

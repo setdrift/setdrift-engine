@@ -7,12 +7,12 @@ It answers two questions. Is the export right, does it hold what the cluster run
 ## Synopsis
 
 ```sh
-setdrift verify DIR [flags]
+setdrift verify <path-to-export> [flags]
 ```
 
 ## Inputs
 
-`DIR` is an export, or one cluster's directory in it.
+`<path-to-export>` is an export, or one cluster's directory in it.
 
 | Argument | Checks | Example |
 |---|---|---|
@@ -29,6 +29,18 @@ The cluster is the current kubeconfig context, or the one `--context` names. To 
 It passes when at least 95% of the resources (`--threshold`) would not change and every remaining difference has a known explanation. The differences are grouped by cause, with the cluster's and the export's values, who changed the resource after the export was taken, and the likely cause overall.
 
 A server-side apply only changes the fields it sends, so `verify` can't see a field the export left out, since the cluster keeps it. It flags a resource that lost all of its spec or data. Other missing fields only show when the export is applied to a new cluster.
+
+### Network policies
+
+A NetworkPolicy applies on any cluster, but only does anything where a network policy engine enforces it. When the export has NetworkPolicies and its source enforced them, `verify` reads this cluster's system DaemonSets in `kube-system` and `calico-system`, and EKS's `amazon-vpc-cni` ConfigMap, to find its engine.
+
+| This cluster | Result |
+|---|---|
+| Enforces them, like with Calico, Cilium, GKE Dataplane V2, the EKS VPC CNI's agent or Azure Network Policy Manager | Passes this check, and says which engine |
+| Doesn't enforce them | Fails, since the policies would apply and do nothing, saying how to turn enforcement on for this platform |
+| Can't be read, like by a pipeline's credentials limited to their own namespaces | Fails the same way, naming the permission it lacked |
+
+To pass without enforcement on purpose, in an emergency or when you know the cluster enforces them but the pipeline can't see it, pass `--accept-unenforced-network-policies`, or for a translation choose `accept-unenforced` in its `translate-decisions.yaml`. The result still says, loudly, that the policies aren't confirmed enforced. An export from before SetDrift recorded the source's engine only gets a warning.
 
 ## Examples
 
@@ -58,6 +70,12 @@ Every resource must match, with the reports kept outside the export.
 
 ```sh
 setdrift verify setdrift-export -o ./verify-reports --threshold 100
+```
+
+A restore onto a cluster that doesn't enforce NetworkPolicies yet, in an emergency, passing on purpose.
+
+```sh
+setdrift verify setdrift-export --context dr-prod --accept-unenforced-network-policies
 ```
 
 One namespace, in CI, printing the result only.
@@ -136,7 +154,7 @@ setdrift verify setdrift-export --threshold 100
 
 *text · default none · not with `--no-report`*
 
-The directory the report goes to. Without it the report goes to `DIR/verify/`, which the export's `.gitignore` keeps out of Git. Each run writes Markdown and JSON, named for when it ran and the cluster, like `2026-11-20T191402Z-prod-report.md`.
+The directory the report goes to. Without it the report goes to `<path-to-export>/verify/`, which the export's `.gitignore` keeps out of Git. Each run writes Markdown and JSON, named for when it ran and the cluster, like `2026-11-20T191402Z-prod-report.md`.
 
 ```sh
 setdrift verify setdrift-export -o ./verify-reports
@@ -158,6 +176,12 @@ setdrift verify setdrift-export --no-report
 
 Prints the command's help.
 
+### `--accept-unenforced-network-policies`
+
+*on/off · default off*
+
+`--accept-unenforced-network-policy` is the same flag. The NetworkPolicies themselves are applied either way: the flag only decides whether an unconfirmed enforcement passes. Lets the run pass when the source enforced the export's NetworkPolicies and this cluster doesn't, or verify can't tell. Without it, that fails the run, since the policies would apply here and do nothing. Meant for an emergency: the result still says, loudly, that the policies aren't enforced. For a translation, choosing `accept-unenforced` in its `translate-decisions.yaml` does the same and keeps the choice on record.
+
 ## Output
 
 The terminal shows which set was checked against which context, how many resources would not change out of how many, what was skipped and why, the differences grouped by cause, and where the report is. The last line is `Passed.`, or the reason it failed.
@@ -171,7 +195,7 @@ A resource `verify` may not get, or may not patch for the dry-run, counts as not
 
 ## Permissions
 
-`get` and `patch` on what the export holds, the dry-run changes nothing but the API server checks `patch` as it would for a real apply. Every verb is in [Kubernetes permissions](../permissions/kubernetes.md), and [deploy/permissions](https://github.com/setdrift/setdrift-engine/tree/main/deploy/permissions/kubernetes) has a `setdrift-verify` role to apply.
+`get` and `patch` on what the export holds, the dry-run changes nothing but the API server checks `patch` as it would for a real apply. For the network policy check, `list` on DaemonSets in `kube-system` and `calico-system`, and `get` on the ConfigMap `kube-system/amazon-vpc-cni`. Every verb is in [Kubernetes permissions](../permissions/kubernetes.md), and [deploy/permissions](https://github.com/setdrift/setdrift-engine/tree/main/deploy/permissions/kubernetes) has a `setdrift-verify` role to apply.
 
 ## See also
 

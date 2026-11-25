@@ -46,6 +46,15 @@ markers:
     - networking.gke.io
     - cnrm.cloud.google.com
     - monitoring.googleapis.com
+cloudResources:
+  - name: Config Connector
+    groupSuffixes: [cnrm.cloud.google.com]
+    retain: {annotation: cnrm.cloud.google.com/deletion-policy, value: abandon}
+    adoptNote: "Config Connector takes over an existing resource of the same name by itself"
+  - name: Crossplane's Google Cloud provider
+    groupSuffixes: [gcp.upbound.io, gcp.m.upbound.io, gcp.crossplane.io]
+    retain: {field: spec.deletionPolicy, value: Orphan}
+    adoptNote: "the exported object keeps its crossplane.io/external-name annotation, so Crossplane takes over the existing resource instead of creating one"
 translate:
   dir: platform/gcp/gke
   storage:

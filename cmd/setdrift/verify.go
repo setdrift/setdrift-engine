@@ -23,6 +23,7 @@ import (
 	"setdrift.io/setdrift-engine/pkg/capability"
 	"setdrift.io/setdrift-engine/pkg/collect"
 	"setdrift.io/setdrift-engine/pkg/emit/kustomize"
+	"setdrift.io/setdrift-engine/pkg/netpolicy"
 	"setdrift.io/setdrift-engine/pkg/platform"
 	snapshotv1alpha1 "setdrift.io/setdrift-engine/pkg/snapshot/v1alpha1"
 	"setdrift.io/setdrift-engine/pkg/translate"
@@ -35,7 +36,7 @@ type verifyOptions struct {
 	context    string
 	// which part of the export to check, auto, generic or platform
 	set string
-	// the directory the report goes to, DIR/verify when its empty
+	// the directory the report goes to, <path-to-export>/verify when its empty
 	output string
 	// skips writing the report, the result is only printed
 	noReport bool
@@ -43,21 +44,23 @@ type verifyOptions struct {
 	threshold int
 	// limits the check to these namespaces, the same way export -n does
 	namespaces []string
+	// lets the run pass when the source enforced the export's NetworkPolicies and this cluster doesnt, for an emergency
+	acceptUnenforced bool
 }
 
 // newVerifyCmd builds the verify command with its help text and flags, main.go adds it to the command tree
 func newVerifyCmd() *cobra.Command {
 	o := &verifyOptions{}
 	cmd := &cobra.Command{
-		Use:   "verify DIR",
+		Use:   "verify <path-to-export>",
 		Short: "Check an exported repository against the cluster with a server-side dry-run",
 		Long: `Verify server-side applies every resource in an exported repository with
 dryRun=All, and compares the result with the live object. Nothing in the
 cluster changes.
 
-DIR is a cluster's directory (clusters/<cluster>) or an export holding one
-cluster. What its kustomization.yaml builds is checked, as kubectl kustomize
-builds it. Secrets under redacted/ are skipped: they hold placeholders and are
+<path-to-export> is an export holding one cluster, or a cluster's directory
+in it (clusters/<cluster>). What its kustomization.yaml builds is checked, as
+kubectl kustomize builds it. Secrets under redacted/ are skipped: they hold placeholders and are
 never applied. external-secrets/ is not applied, so not checked.
 
 It passes when at least 95% of resources (--threshold) would not change
@@ -65,7 +68,7 @@ and every remaining difference has a known explanation. The differences are
 grouped by cause, with the cluster's and the export's values, who changed
 the resource after the export was taken, and the likely cause overall.
 
-Each run writes a report, in Markdown and JSON, to DIR/verify/ (-o for
+Each run writes a report, in Markdown and JSON, to <path-to-export>/verify/ (-o for
 another directory, --no-report for none), named for when it ran and the
 cluster: verify/2026-11-20T191402Z-prod-report.md.
 
@@ -85,12 +88,16 @@ is applied to a new cluster.`,
 	cmd.Flags().StringVar(&o.context, "context", "", "kubeconfig context (default: current context)")
 	cmd.Flags().StringVar(&o.set, "set", "auto", "what to check: generic (the cluster's directory), platform (its platform set, e.g. platform/aws/eks), "+
 		"or auto: the platform set when this cluster is on the export's platform, else generic")
-	cmd.Flags().StringVarP(&o.output, "output", "o", "", "directory to write the report to (default: DIR/verify)")
+	cmd.Flags().StringVarP(&o.output, "output", "o", "", "directory to write the report to (default: <path-to-export>/verify)")
 	cmd.Flags().BoolVar(&o.noReport, "no-report", false, "write no report, only print the result")
 	// invoking cannotUseWith to declare that -o and --no-report contradict each other, checkFlags enforces it, its defined in flagrules.go
 	cannotUseWith(cmd.Flags(), "names where to write the report", "output", "no-report")
 	cmd.Flags().IntVar(&o.threshold, "threshold", verify.AcceptancePercent, "percent of resources that must not change to pass, 0 to 100")
 	cmd.Flags().StringSliceVarP(&o.namespaces, "namespace", "n", nil, "check only the export's resources in these namespaces, and their Namespace objects; skips cluster-scoped resources (repeatable)")
+	cmd.Flags().BoolVar(&o.acceptUnenforced, "accept-unenforced-network-policies", false,
+		"pass even though the source enforced the export's NetworkPolicies and this cluster doesn't (or verify can't tell), for an emergency; said loudly in the result")
+	// invoking acceptSingular so the singular is the same flag, like --to gcp for gke, its defined in verifynetpol.go
+	cmd.Flags().SetNormalizeFunc(acceptSingular)
 	return cmd
 }
 
@@ -187,6 +194,8 @@ func (o *verifyOptions) run(cmd *cobra.Command, dir string) error {
 		}
 		v.Target, v.Capability = cls.Distribution, capMap
 	}
+	// the decisions of the translation checked, if its one, for the network policy check
+	var decisions []translate.Decision
 	// invoking chooseSet to pick the part of the export to check and say why, its defined below
 	set, why, err := o.chooseSet(info, cls)
 	// checking if auto picked no platform set, if so a translation for this cluster's platform is the one to check
@@ -202,6 +211,7 @@ func (o *verifyOptions) run(cmd *cobra.Command, dir string) error {
 				return derr
 			}
 			v.Explain = translate.Explainer(ds)
+			decisions = ds
 		case len(others) > 0:
 			why += fmt.Sprintf(". This export also has a translation for %s, and this cluster is %s: run setdrift translate --to %s, or verify against a %s cluster", strings.Join(others, " and "), cls.Summary(), cls.Distribution, strings.Join(others, " or "))
 		}
@@ -269,15 +279,26 @@ func (o *verifyOptions) run(cmd *cobra.Command, dir string) error {
 	if !doc.Passed {
 		doc.FailReason = failReason(report)
 	}
+	// invoking networkPolicies to check this cluster enforces what the source did, its defined below
+	if doc.NetworkPolicy, err = o.networkPolicies(cmd, dyn, info, root, target, cls, decisions); err != nil {
+		return err
+	}
+	// checking if the network policy check failed, if so the run fails with it
+	if doc.NetworkPolicy != nil && doc.NetworkPolicy.Failed {
+		doc.Passed = false
+		doc.FailReason = strings.TrimPrefix(doc.FailReason+"; NetworkPolicies the source enforced aren't enforced here", "; ")
+	}
 	// invoking likelyCause to sum up why things differ, its defined in verifyreport.go
 	doc.LikelyCause = likelyCause(doc)
 
 	// invoking printVerify to print the result, its defined in verifyreport.go
 	printVerify(w, doc, root, kc.name)
+	// invoking printNetworkPolicy to say what the network policy check found, its defined in verifynetpol.go
+	printNetworkPolicy(w, doc.NetworkPolicy)
 	// checking if a report was wanted, if so its written next to the export or where -o says
 	if !o.noReport {
 		out, ignore := o.output, false
-		// checking if -o was left out, if so the report goes to DIR/verify, which git is told to ignore
+		// checking if -o was left out, if so the report goes to <path-to-export>/verify, which git is told to ignore
 		if out == "" {
 			out, ignore = filepath.Join(dir, "verify"), true
 		}
@@ -294,6 +315,38 @@ func (o *verifyOptions) run(cmd *cobra.Command, dir string) error {
 	}
 	fmt.Fprintln(w, "Passed.")
 	return nil
+}
+
+// networkPolicies runs the network policy check, nil when theres nothing to say: no NetworkPolicies, or a source that didnt enforce them
+func (o *verifyOptions) networkPolicies(cmd *cobra.Command, dyn dynamic.Interface, info *kustomize.ExportInfo, root, target string, cls *platform.Classification, decisions []translate.Decision) (*networkPolicyCheck, error) {
+	source := netpolicy.Unknown
+	if info != nil {
+		source = info.NetworkPolicy
+	}
+	// invoking verify.Build to build what was checked, to count its NetworkPolicies, its defined in pkg/verify/dryrun.go
+	objs, err := verify.Build(root, target)
+	if err != nil {
+		return nil, err
+	}
+	// invoking countNetworkPolicies, its defined in verifynetpol.go
+	n := countNetworkPolicies(objs, o.namespaces)
+	accepted := ""
+	switch {
+	case o.acceptUnenforced:
+		accepted = "--accept-unenforced-network-policies"
+	case translate.NetworkPolicyChoice(decisions) == translate.AcceptUnenforced:
+		accepted = "accept-unenforced in " + translate.DecisionsFile
+	}
+	// checking if theres nothing the check could fail on, if so the flag, when given, has nothing to accept
+	if n == 0 || source == netpolicy.None {
+		if o.acceptUnenforced {
+			fmt.Fprintln(cmd.ErrOrStderr(), "--accept-unenforced-network-policies: nothing to accept, the export has no NetworkPolicies the source enforced")
+		}
+		return nil, nil
+	}
+	// invoking targetNetworkPolicy to read this cluster's engine, its defined in verifynetpol.go
+	tgt, why := targetNetworkPolicy(cmd.Context(), dyn)
+	return checkNetworkPolicies(n, source, tgt, why, accepted, string(cls.Distribution)), nil
 }
 
 // namespacesGVR is how the dynamic client finds namespaces, sameCluster reads kube-system through it

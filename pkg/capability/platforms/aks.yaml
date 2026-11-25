@@ -43,6 +43,17 @@ markers:
     - approuting.kubernetes.azure.com
     - alb.networking.azure.io
     - azure.com
+cloudResources:
+  - name: Azure Service Operator
+    groupSuffixes: [azure.com]
+    # AKS's own groups under azure.com, which aren't cloud resources
+    exceptSuffixes: [karpenter.azure.com, kubernetes.azure.com]
+    retain: {annotation: serviceoperator.azure.com/reconcile-policy, value: detach-on-delete}
+    adoptNote: "Azure Service Operator takes over an existing resource of the same name and resource group by itself"
+  - name: Crossplane's Azure provider
+    groupSuffixes: [azure.upbound.io, azure.m.upbound.io, azure.crossplane.io]
+    retain: {field: spec.deletionPolicy, value: Orphan}
+    adoptNote: "the exported object keeps its crossplane.io/external-name annotation, so Crossplane takes over the existing resource instead of creating one"
 translate:
   dir: platform/azure/aks
   storage:

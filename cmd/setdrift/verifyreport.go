@@ -51,6 +51,8 @@ type verifyDocument struct {
 	Report verify.Report `json:"report"`
 	// the summary of the differences that likelyCause reads
 	Analysis verify.Analysis `json:"analysis"`
+	// NetworkPolicy is the network policy check, absent when it had nothing to say
+	NetworkPolicy *networkPolicyCheck `json:"networkPolicy,omitempty"`
 }
 
 // causes are the groups the differences print in, by Diff.Kind, in this order, with the heading each group gets
@@ -445,6 +447,17 @@ func verifyMarkdown(d verifyDocument) []byte {
 	// checking if the export has CRDs the cluster lacks, if so the table lists them
 	if len(r.MissingCRDs) > 0 {
 		fmt.Fprintf(&b, "| CRDs missing from the cluster | %s |\n", strings.Join(r.MissingCRDs, ", "))
+	}
+	// checking if the network policy check had something to say, if so the table has it
+	if c := d.NetworkPolicy; c != nil {
+		label := "Network policies"
+		switch {
+		case c.Failed:
+			label = "**Network policies not enforced**"
+		case c.Warning:
+			label = "**Network policies (warning)**"
+		}
+		fmt.Fprintf(&b, "| %s | %s |\n", label, c.Message)
 	}
 	// checking if a likely cause was found, if so it goes right under the table
 	if d.LikelyCause != "" {

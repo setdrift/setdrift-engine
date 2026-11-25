@@ -3,14 +3,18 @@
 package kustomize
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/yaml"
 
+	"setdrift.io/setdrift-engine/pkg/netpolicy"
 	snapshotv1alpha1 "setdrift.io/setdrift-engine/pkg/snapshot/v1alpha1"
 )
 
@@ -37,6 +41,8 @@ type ExportInfo struct {
 	SetDriftVersion string `json:"setdriftVersion,omitempty"`
 	// Region is the aws region, when known
 	Region string `json:"region,omitempty"`
+	// NetworkPolicy is the engine that enforced NetworkPolicies on the source, like Calico, or none, empty when the export couldnt tell (it didnt read kube-system, or its from an earlier version)
+	NetworkPolicy string `json:"networkPolicy,omitempty"`
 }
 
 // exportInfoHeader goes at the top of ExportInfoFile, so a person opening it knows what its for
@@ -57,6 +63,8 @@ func exportInfo(s *snapshotv1alpha1.Snapshot) ExportInfo {
 	}
 	// invoking exportPlatform for the platform set's directory, its defined in platformset.go
 	_, info.PlatformDir = exportPlatform(s)
+	// invoking sourceNetworkPolicy to tell if the source enforced NetworkPolicies, its defined below
+	info.NetworkPolicy = sourceNetworkPolicy(s)
 	// going through the resources to find the kube-system Namespace
 	for _, r := range s.GetResources() {
 		// checking if this is the kube-system Namespace, if so its uid is kept
@@ -65,6 +73,32 @@ func exportInfo(s *snapshotv1alpha1.Snapshot) ExportInfo {
 		}
 	}
 	return info
+}
+
+// sourceNetworkPolicy reads the source's system DaemonSets and the VPC CNI's ConfigMap from the snapshot, for netpolicy.Detect
+// its unknown when the snapshot holds nothing from kube-system, as with export -n
+func sourceNetworkPolicy(s *snapshotv1alpha1.Snapshot) string {
+	var objs []*unstructured.Unstructured
+	readSystem := false
+	for _, r := range s.GetResources() {
+		if r.Namespace == "kube-system" {
+			readSystem = true
+		}
+		if !slices.Contains(netpolicy.Namespaces, r.Namespace) || (r.Kind != "DaemonSet" && !(r.Kind == "ConfigMap" && r.Name == netpolicy.VPCCNIConfigMap)) {
+			continue
+		}
+		var m map[string]any
+		// checking if the manifest parses, one that doesnt is passed over
+		if json.Unmarshal([]byte(r.ManifestJson), &m) != nil {
+			continue
+		}
+		objs = append(objs, &unstructured.Unstructured{Object: m})
+	}
+	if !readSystem {
+		return netpolicy.Unknown
+	}
+	// invoking netpolicy.Detect to name the engine, its defined in pkg/netpolicy/netpolicy.go
+	return netpolicy.Detect(objs)
 }
 
 // writeExportInfo writes ExportInfoFile into the export's directory

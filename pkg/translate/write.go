@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -18,6 +19,8 @@ const (
 	DecisionsFile = "translate-decisions.yaml"
 	// StampFile records that the directory is a translation, from which platform to which, so verify can say so
 	StampFile = "translation.yaml"
+	// equivalentsDir holds the target's equivalents chosen for cloud resources, inside the overlay
+	equivalentsDir = "equivalents"
 )
 
 // Stamp is what StampFile holds
@@ -50,8 +53,13 @@ func ReadDecisions(dir string) ([]Decision, error) {
 	}
 	for _, d := range ds {
 		// checking each choice is one of the three, a typo must not pass as undecided
-		if d.Choose != "" && d.Choose != KeepSource && d.Choose != Equivalent && d.Choose != LeaveOut {
-			return nil, fmt.Errorf("%s: %s: choose must be keep-source, equivalent or leave-out, not %q", DecisionsFile, d.Feature, d.Choose)
+		if d.Choose != "" && !slices.Contains(Choices, d.Choose) {
+			opts := d.Options
+			// checking if the entry lost its options, if so every choice is named
+			if len(opts) == 0 {
+				opts = Choices
+			}
+			return nil, fmt.Errorf("%s: %s: choose must be %s, not %q", DecisionsFile, d.Feature, strings.Join(opts, ", "), d.Choose)
 		}
 	}
 	return ds, nil
@@ -65,7 +73,7 @@ func Explainer(ds []Decision) func(*unstructured.Unstructured) string {
 	}
 	return func(o *unstructured.Unstructured) string {
 		q := qualified(o)
-		for _, f := range []string{"identity/" + q, "secret-store/" + q, "object/" + o.GetKind() + "/" + q, "storage/" + q} {
+		for _, f := range []string{"identity/" + q, "secret-store/" + q, "object/" + o.GetKind() + "/" + q, "cloud-resource/" + o.GetKind() + "/" + q, "storage/" + q} {
 			if d, ok := byFeature[f]; ok && d.choice() != "" {
 				how := "as chosen"
 				if d.Choose == "" {
@@ -123,7 +131,8 @@ func WriteDecisions(dir string, ds []Decision) error {
 		}
 	}
 	head := "# Written by setdrift translate: what has no 1:1 equivalent on the target.\n" +
-		"# For each, set choose to keep-source, equivalent or leave-out (from its options),\n" +
+		"# For each, set choose to one of its options (keep-source, equivalent, leave-out,\n" +
+		"# or for NetworkPolicies require or accept-unenforced),\n" +
 		"# then run setdrift translate again. An empty choose takes the default where there\n" +
 		"# is one; with no default, translate stops until you choose.\n"
 	return os.WriteFile(filepath.Join(dir, DecisionsFile), append([]byte(head), b...), 0o600)
@@ -135,8 +144,10 @@ func WriteDecisions(dir string, ds []Decision) error {
 func Write(root string, r *Result, resources []string, version string, ri RestoreInfo) error {
 	dir := filepath.Join(root, filepath.FromSlash(r.Dir))
 	// checking if the directory exists without a stamp, if so translate didnt write it and leaves it as it is
-	if _, err := os.Stat(dir); err == nil {
-		if _, err := os.Stat(filepath.Join(dir, StampFile)); err != nil {
+	// unless it holds only the decisions file, which a translation that stopped for decisions wrote
+	if entries, err := os.ReadDir(dir); err == nil {
+		onlyDecisions := len(entries) == 1 && entries[0].Name() == DecisionsFile
+		if _, err := os.Stat(filepath.Join(dir, StampFile)); err != nil && !onlyDecisions {
 			return fmt.Errorf("%s exists and wasn't written by setdrift translate (it has no %s). If it's this export's own platform set, the export is already for %s; otherwise move it aside and run translate again", dir, StampFile, r.To.Name())
 		}
 	}
@@ -148,6 +159,28 @@ func Write(root string, r *Result, resources []string, version string, ri Restor
 	var res []string
 	for _, rsc := range resources {
 		res = append(res, up+rsc)
+	}
+	// the equivalents chosen for cloud resources, each in its own file under equivalents/, written fresh each run
+	eqDir := filepath.Join(dir, equivalentsDir)
+	if err := os.RemoveAll(eqDir); err != nil {
+		return err
+	}
+	for _, a := range r.Added {
+		name := strings.ToLower(a.GetKind()) + "-" + a.GetName() + ".yaml"
+		if a.GetNamespace() != "" {
+			name = a.GetNamespace() + "-" + name
+		}
+		b, err := yaml.Marshal(a.Object)
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(eqDir, 0o750); err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(eqDir, name), b, 0o600); err != nil {
+			return err
+		}
+		res = append(res, equivalentsDir+"/"+name)
 	}
 	k["resources"] = res
 	var patches []map[string]any
@@ -235,6 +268,13 @@ func readme(r *Result) string {
 			for _, w := range p.Why {
 				fmt.Fprintf(&b, "  - %s\n", w)
 			}
+		}
+		b.WriteString("\n")
+	}
+	if len(r.Added) > 0 {
+		fmt.Fprintf(&b, "## Equivalents written\n\nChosen with equivalent in %s, in %s/. Each is new and empty: the source's resource and its data stay where they are.\n\n", DecisionsFile, equivalentsDir)
+		for _, a := range r.Added {
+			fmt.Fprintf(&b, "- %s %s (%s)\n", a.GetKind(), qualified(a), a.GetAPIVersion())
 		}
 		b.WriteString("\n")
 	}

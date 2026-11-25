@@ -116,6 +116,8 @@ type restoreData struct {
 	platformObjects int
 	// manifests are the resources' manifests, decoded once
 	manifests manifests
+	// held are the cloud-resource operator objects export held back in cloud-resources/
+	held []heldResource
 	// the platform's playbooks, for a new cluster on the same platform, RESTORE.md itself has only the steps that work on any cluster
 	// awsp is platform/aws/RESTORE.md (aws-wide, volumes, secrets, ids), eksp is platform/aws/eks/RESTORE.md (EKS settings and identity)
 	// theyre nil when the source isnt on aws, or isnt on EKS
@@ -141,8 +143,8 @@ func classification(s *snapshotv1alpha1.Snapshot) *platform.Classification {
 }
 
 // writeRestore takes the snapshot and what the export wrote, and writes RESTORE.md, the platform playbooks and restore/volumes/
-func (e Emitter) writeRestore(out *outDir, s *snapshotv1alpha1.Snapshot, written []writtenFile, remotes []remoteSecret, platformObjects int) error {
-	d := &restoreData{s: s, written: written, remotes: remotes, helmRepos: e.HelmRepos, platformObjects: platformObjects}
+func (e Emitter) writeRestore(out *outDir, s *snapshotv1alpha1.Snapshot, written []writtenFile, remotes []remoteSecret, platformObjects int, held []heldResource) error {
+	d := &restoreData{s: s, written: written, remotes: remotes, helmRepos: e.HelmRepos, platformObjects: platformObjects, held: held}
 	// checking if secrets go to an external store, if so the playbook needs to know which aws service holds them
 	if e.ExternalSecrets != nil {
 		// invoking resolved to fill in the store settings for this platform, its defined in externalsecrets.go
@@ -237,6 +239,8 @@ it. Set these first:
 	}
 	// invoking apply for the export itself, its defined below
 	d.apply(p, volumes)
+	// invoking cloudResources to move the held-back objects one controller at a time, its defined in restore_cloudresources.go
+	d.cloudResources(p)
 	// invoking secrets after the apply, which creates the namespaces, pods that need these values wait for them, its defined in restore_secrets.go
 	d.secrets(p)
 	// invoking after and verify for what changes once applied and how to check it, theyre defined below
