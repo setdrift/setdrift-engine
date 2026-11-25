@@ -22,7 +22,7 @@ setdrift verify <path-to-export> [flags]
 
 What the directory's `kustomization.yaml` builds is checked, as `kubectl kustomize` builds it, in a sealed build that refuses remote bases and files from outside the export. Secrets under `redacted/` are skipped, since they hold placeholders and are never applied, and `external-secrets/` is not applied, so not checked.
 
-The cluster is the current kubeconfig context, or the one `--context` names. To see your contexts, run `kubectl config get-contexts`, see [Finding your contexts](diff.md#finding-your-contexts).
+The cluster is the one `--context` names, or the current kubeconfig context without it, and `verify` says which it used. When the current context is a cluster of another platform than the export's translations, it asks if you meant another `--context`. To see your contexts, run `kubectl config get-contexts`, see [Finding your contexts](diff.md#finding-your-contexts).
 
 ### What passes
 
@@ -56,7 +56,7 @@ To pass without enforcement on purpose, in an emergency or when you know the clu
 The export against the cluster it came from.
 
 ```sh
-setdrift verify setdrift-export
+setdrift verify setdrift-export --context prod
 ```
 
 ```
@@ -78,7 +78,7 @@ setdrift verify setdrift-export --context restored-prod
 Every resource must match, with the reports kept outside the export.
 
 ```sh
-setdrift verify setdrift-export -o ./verify-reports --threshold 100
+setdrift verify setdrift-export --context prod -o ./verify-reports --threshold 100
 ```
 
 A restore onto a cluster that doesn't enforce NetworkPolicies yet, in an emergency, passing on purpose.
@@ -90,7 +90,7 @@ setdrift verify setdrift-export --context dr-prod --accept-unenforced-network-po
 One namespace, in CI, printing the result only.
 
 ```sh
-setdrift verify setdrift-export -n shop --no-report
+setdrift verify setdrift-export --context prod -n shop --no-report
 ```
 
 The generic set, on a cluster of another platform.
@@ -128,7 +128,7 @@ setdrift verify setdrift-export --kubeconfig ~/.kube/prod --context prod
 Checks only the export's resources in these namespaces and their Namespace objects, and leaves out cluster-scoped resources. Repeat it or separate names with commas. A namespace that doesn't exist in the cluster is not an error, its resources show as not in the cluster, as before a restore.
 
 ```sh
-setdrift verify setdrift-export -n shop -n billing
+setdrift verify setdrift-export --context prod -n shop -n billing
 ```
 
 ### `--set`
@@ -146,7 +146,7 @@ Which part of the export to check. An export is generic, it applies to any Kuber
 The first line of the output says which set was chosen and why.
 
 ```sh
-setdrift verify setdrift-export --set generic
+setdrift verify setdrift-export --context prod --set generic
 ```
 
 ### `--threshold`
@@ -156,7 +156,7 @@ setdrift verify setdrift-export --set generic
 The percent of checked resources that must not change for the run to pass, from 0 to 100. Use `100` after a restore, where everything should match.
 
 ```sh
-setdrift verify setdrift-export --threshold 100
+setdrift verify setdrift-export --context prod --threshold 100
 ```
 
 ### `--output`, `-o`
@@ -166,7 +166,7 @@ setdrift verify setdrift-export --threshold 100
 The directory the report goes to. Without it the report goes to `<path-to-export>/verify/`, which the export's `.gitignore` keeps out of Git. Each run writes Markdown and JSON, named for when it ran and the cluster, like `2026-11-20T191402Z-prod-report.md`.
 
 ```sh
-setdrift verify setdrift-export -o ./verify-reports
+setdrift verify setdrift-export --context prod -o ./verify-reports
 ```
 
 ### `--no-report`
@@ -176,7 +176,7 @@ setdrift verify setdrift-export -o ./verify-reports
 Writes no report, and only prints the result, for CI logs.
 
 ```sh
-setdrift verify setdrift-export --no-report
+setdrift verify setdrift-export --context prod --no-report
 ```
 
 ### `--help`, `-h`
