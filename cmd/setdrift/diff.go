@@ -139,6 +139,8 @@ with --map-namespace: setdrift diff prod prod --map-namespace shop=shop-prod.`,
 
 // run takes the two arguments, reads both sides, compares them and prints the result as text or json
 // with --exit-code it gives back an exitError with status 1 when the sides differ
+//
+//revive:disable-next-line:cognitive-complexity,function-length the command in order, from flags to report; split by step after v0.3.0 (BACKLOG)
 func (o *diffOptions) run(cmd *cobra.Command, a, b string) error {
 	// checking if --format is something other than text or json, if so the flag was given wrong
 	if o.format != "text" && o.format != "json" {

@@ -129,6 +129,8 @@ func (o *verifyOptions) connect(cmd *cobra.Command) (*kubeContext, *discover.Cli
 
 // run takes the export directory, checks it against the cluster, prints the result and writes the report
 // the directory is checked before the kubeconfig, so a wrong directory is reported as that and not as a cluster problem
+//
+//revive:disable-next-line:cognitive-complexity,function-length the command in order, from flags to report; split by step after v0.3.0 (BACKLOG)
 func (o *verifyOptions) run(cmd *cobra.Command, dir string) error {
 	// checking if the threshold is outside 0 to 100, if so the flag was given wrong
 	if o.threshold < 0 || o.threshold > 100 {

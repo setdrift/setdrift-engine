@@ -1,6 +1,5 @@
-// finds values bound to one region or cloud account, which work where they are and break when the cluster is rebuilt elsewhere
+// Package portability finds values bound to one region or cloud account, which work where they are and break when the cluster is rebuilt elsewhere
 // each kind names the cloud's own page on its format, so a pattern can be checked against the source
-
 package portability
 
 import (

@@ -83,20 +83,9 @@ func NewOverview(s *snapshotv1alpha1.Snapshot, unmanagedOnly bool) Overview {
 				o.HeldBack = append(o.HeldBack, h)
 			}
 		}
-		// checking if its neither a Secret nor a CRD, whose schemas show example values, if so its values bound to a region or account are listed
+		// checking if its neither a Secret nor a CRD, whose schemas show example values, if so regionBound lists its values bound to a region or account, its defined below
 		if !isSecret && r.Kind != "CustomResourceDefinition" {
-			var m map[string]any
-			// checking if the manifest reads as JSON, if not theres nothing to look through
-			if json.Unmarshal([]byte(r.GetManifestJson()), &m) == nil {
-				// invoking portability.Scan for the values, its defined in pkg/portability/portability.go
-				for _, f := range portability.Scan(r.Kind+" "+qualified(r), m) {
-					line := fmt.Sprintf("`%s`: %s, bound to %s", f.Value, f.Kind, f.Bound)
-					// checking if its listed already, if not its added
-					if !slices.Contains(o.RegionBound, line) {
-						o.RegionBound = append(o.RegionBound, line)
-					}
-				}
-			}
+			o.regionBound(r)
 		}
 		// checking if nothing manages r and its not a built-in Namespace, if so it was applied by hand
 		if Unmanaged(r) && !(r.Kind == "Namespace" && builtinNamespaces[r.Name]) {
@@ -114,6 +103,23 @@ func NewOverview(s *snapshotv1alpha1.Snapshot, unmanagedOnly bool) Overview {
 	// sorting the held back resources by name
 	sort.Slice(o.HeldBack, func(i, j int) bool { return o.HeldBack[i].Resource < o.HeldBack[j].Resource })
 	return o
+}
+
+// regionBound adds the values in r's manifest bound to one region or account, each once
+func (o *Overview) regionBound(r *snapshotv1alpha1.Resource) {
+	var m map[string]any
+	// checking if the manifest reads as JSON, if not theres nothing to look through
+	if json.Unmarshal([]byte(r.GetManifestJson()), &m) != nil {
+		return
+	}
+	// invoking portability.Scan for the values, its defined in pkg/portability/portability.go
+	for _, f := range portability.Scan(r.Kind+" "+qualified(r), m) {
+		line := fmt.Sprintf("`%s`: %s, bound to %s", f.Value, f.Kind, f.Bound)
+		// checking if its listed already, if not its added
+		if !slices.Contains(o.RegionBound, line) {
+			o.RegionBound = append(o.RegionBound, line)
+		}
+	}
 }
 
 // qualified gives r's name, with its namespace in front when it has one

@@ -57,6 +57,8 @@ func newTranslateCmd() *cobra.Command {
 }
 
 // run translates the export at dir
+//
+//revive:disable-next-line:cognitive-complexity,function-length the command in order, from flags to report; split by step after v0.3.0 (BACKLOG)
 func (o *translateOptions) run(cmd *cobra.Command, dir string) error {
 	// invoking targetPlatform to read --to, a platform or its cloud's name, its defined below
 	to, err := targetPlatform(o.to)
