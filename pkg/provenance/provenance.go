@@ -414,6 +414,11 @@ func platformObject(o *resource.Object, cls *platform.Classification) (string, m
 		if ev := onlyManagers(o, aksManagers); ev != nil {
 			return "aks", ev
 		}
+		// checking if its a CRD of Cilium's, the network AKS runs (Azure CNI powered by Cilium), whose operator and Helm release create them with no marker of AKS's
+		// a Cilium installed by hand on AKS is the cluster's network too, which a new cluster gets from its own setup, not from the export
+		if o.GroupVersionKind().Kind == "CustomResourceDefinition" && strings.HasSuffix(o.GetName(), ".cilium.io") {
+			return "aks", map[string]string{"crd": o.GetName()}
+		}
 		// checking if its one of AKS's known objects that carry no marker of AKS's, if so its AKS's by name
 		if aksUnmarked[o.GetNamespace()+"/"+o.GroupVersionKind().Kind+"/"+o.GetName()] {
 			return "aks", map[string]string{"name": o.GetName()}

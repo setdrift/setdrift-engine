@@ -198,6 +198,9 @@ func TestAKSAndGKE(t *testing.T) {
 		{"AKS's overlay-upgrade-data, from its own Flux", mk("overlay-upgrade-data", map[string]string{"k8s-app": "overlay-upgrade"}), on(platform.AKS), "aks", false},
 		{"the same ServiceAccount name on GKE isnt AKS's", in(mk("azure-cns", nil), "kube-system", "ServiceAccount"), on(platform.GKE), "", false},
 		{"azure-cns in another namespace isnt AKS's", in(mk("azure-cns", nil), "shop", "ServiceAccount"), on(platform.AKS), "", false},
+		{"AKS's managed Cilium CRD, with Helm's manager", in(mk("ciliumnodeconfigs.cilium.io", nil, "helm"), "", "CustomResourceDefinition"), on(platform.AKS), "aks", false},
+		{"a Cilium CRD its operator made on AKS", in(mk("ciliumendpoints.cilium.io", nil, "cilium-operator-generic"), "", "CustomResourceDefinition"), on(platform.AKS), "aks", false},
+		{"the same Cilium CRD on GKE isnt AKS's", in(mk("ciliumnodeconfigs.cilium.io", nil, "helm"), "", "CustomResourceDefinition"), on(platform.GKE), "", false},
 	} {
 		p := LabelClassifier{Platform: tc.cluster}.Classify(tc.o)
 		got := ""

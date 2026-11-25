@@ -113,6 +113,10 @@ func TestKubernetesGenerated(t *testing.T) {
 		{mk("scheduling.k8s.io/v1", "PriorityClass", "", "system-node-critical", true), true},
 		{mk("scheduling.k8s.io/v1", "PriorityClass", "", "high", true), false},
 		{mk("v1", "ConfigMap", "kube-system", "kube-apiserver-legacy-service-account-token-tracking", true), true},
+		{mk("cilium.io/v2", "CiliumEndpoint", "shop", "web-6d55c5b86-8wfsc", true), true},
+		{mk("cilium.io/v2alpha1", "CiliumEndpointSlice", "", "ces-7bsnrybbw-72qrx", true), true},
+		{mk("cilium.io/v2", "CiliumIdentity", "", "12345", true), true},
+		{mk("cilium.io/v2", "CiliumNetworkPolicy", "shop", "web", true), false},
 	} {
 		if got := generatedBy(tc.o, index{}) != ""; got != tc.want {
 			t.Errorf("%s: generated %v, want %v", tc.o.Ref(), got, tc.want)
