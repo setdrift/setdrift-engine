@@ -156,14 +156,30 @@ func (o *translateOptions) run(cmd *cobra.Command, dir string) error {
 		if err := translate.WriteDecisions(outDir, r.Decisions); err != nil {
 			return err
 		}
-		fmt.Fprintf(w, "%s no equivalent on %s and %s your decision:\n", text.Plural(len(und), "feature has", "features have"), tgt.Name, text.Word(len(und), "needs", "need"))
+		var fresh, again []translate.Decision
+		// sorting the new questions from the choices to make again, the source changed under them, each group gets its own heading
 		for _, d := range und {
-			// checking if the source changed under an earlier choice, if so the message says so, with the choice
 			if d.Waiting() {
-				fmt.Fprintf(w, "  %s\n      Earlier you chose %s. It has changed on the source since then, so translate needs you to choose again. Your earlier choice is kept in the file as previous.\n      %s\n", d.Feature, d.Describe(d.Previous), d.What)
-				continue
+				again = append(again, d)
+			} else {
+				fresh = append(fresh, d)
 			}
-			fmt.Fprintf(w, "  %s\n      %s\n", d.Feature, d.What)
+		}
+		if len(fresh) > 0 {
+			fmt.Fprintf(w, "%s no equivalent on %s and %s your decision:\n", text.Plural(len(fresh), "feature has", "features have"), tgt.Name, text.Word(len(fresh), "needs", "need"))
+			for _, d := range fresh {
+				fmt.Fprintf(w, "  %s\n      %s\n", d.Feature, d.What)
+			}
+		}
+		if len(again) > 0 {
+			// a blank line between the two groups
+			if len(fresh) > 0 {
+				fmt.Fprintln(w)
+			}
+			fmt.Fprintf(w, "%s on the source since you chose, and %s choosing again:\n", text.Plural(len(again), "decision changed", "decisions changed"), text.Word(len(again), "needs", "need"))
+			for _, d := range again {
+				fmt.Fprintf(w, "  %s\n      Earlier you chose %s. It has changed on the source since then, so translate needs you to choose again. Your earlier choice is kept in the file as previous.\n      %s\n", d.Feature, d.Describe(d.Previous), d.What)
+			}
 		}
 		fmt.Fprintf(w, "\nWrote %s: set choose for each (%s), then run translate again, or pass --unmatched.\n", filepath.Join(outDir, translate.DecisionsFile), strings.Join(und[0].Options, ", "))
 		return errors.New("translation stopped: decisions needed")
