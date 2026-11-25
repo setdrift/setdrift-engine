@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	apiresource "k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/yaml"
 
@@ -19,6 +20,7 @@ import (
 	"setdrift.io/setdrift-engine/pkg/capability"
 	"setdrift.io/setdrift-engine/pkg/emit/kustomize"
 	"setdrift.io/setdrift-engine/pkg/platform"
+	"setdrift.io/setdrift-engine/pkg/snapshot"
 	"setdrift.io/setdrift-engine/pkg/translate"
 	"setdrift.io/setdrift-engine/pkg/verify"
 )
@@ -201,6 +203,8 @@ func (o *translateOptions) run(cmd *cobra.Command, dir string) error {
 	}
 	// invoking volumeClaims to list the claims whose disks stay on the source cloud, its defined below
 	ri.Volumes = volumeClaims(root)
+	// invoking sourceShape to read the source cluster's shape from the export's snapshot, for the target's create command, its defined below
+	ri.Shape = sourceShape(root, info)
 	if err := translate.Write(root, r, res, version.Version, ri); err != nil {
 		return err
 	}
@@ -313,6 +317,43 @@ func rootResources(root string) ([]string, error) {
 		return nil, err
 	}
 	return k.Resources, nil
+}
+
+// sourceShape reads the source cluster's shape from the snapshot the export took, its ranges and nodes, an empty shape when theres none
+func sourceShape(root string, info *kustomize.ExportInfo) translate.Shape {
+	var sh translate.Shape
+	// invoking exportSnapshot to find the snapshot taken with the export, its defined in difftranslation.go
+	path, err := exportSnapshot(root, info)
+	if err != nil {
+		return sh
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return sh
+	}
+	// invoking snapshot.Parse to decode it, its defined in pkg/snapshot/snapshot.go
+	s, err := snapshot.Parse(raw)
+	if err != nil {
+		return sh
+	}
+	net := s.GetInventory().GetProfile().GetNetwork()
+	sh.PodCIDRs, sh.ServiceCIDRs = net.GetPodCidrs(), net.GetServiceCidrs()
+	n := s.GetInventory().GetNodes()
+	sh.Nodes, sh.Zones = int(n.GetCount()), len(n.GetZones())
+	// checking if the allocatable totals read as quantities, if so theyre kept as millicores and bytes
+	if q, err := apiresource.ParseQuantity(n.GetCpu()); err == nil {
+		sh.MilliCPU = q.MilliValue()
+	}
+	if q, err := apiresource.ParseQuantity(n.GetMemory()); err == nil {
+		sh.MemoryBytes = q.Value()
+	}
+	// going through the nodes' platforms for arm64
+	for p := range n.GetPlatforms() {
+		if strings.HasSuffix(p, "/arm64") {
+			sh.Arm = true
+		}
+	}
+	return sh
 }
 
 // Copyright The SetDrift Authors
