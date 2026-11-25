@@ -30,7 +30,7 @@ cloud_run() {
   make -C "$e2e_root" build >/dev/null
 
   say "populating $context"
-  E2E_CONTEXT=$context E2E_NO_TOUCH=1 "$e2e_root/test/e2e/populate.sh" >&2
+  E2E_CONTEXT=$context E2E_NO_TOUCH=1 E2E_PLATFORM=$distribution "$e2e_root/test/e2e/populate.sh" >&2
 
   say "exporting"
   "$setdrift" export --context "$context" -o "$work/export" >&2

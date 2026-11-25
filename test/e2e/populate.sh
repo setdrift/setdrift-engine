@@ -9,6 +9,8 @@ set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 context=${E2E_CONTEXT:-$("$here/cluster.sh" context)}
 region=${E2E_REGION:-${AWS_REGION:-us-east-2}}
+# eks, aks or gke: which cloud's own fixtures apply (cloud-run.sh sets it)
+platform=${E2E_PLATFORM:-eks}
 k() { kubectl --context "$context" "$@"; }
 # touch records use of the EKS cluster for its reaper; the AKS and GKE runs
 # (aks.sh, gke.sh) delete their cluster themselves and set E2E_NO_TOUCH
@@ -42,6 +44,7 @@ k wait --for condition=established --timeout=120s \
   crd/kustomizations.kustomize.toolkit.fluxcd.io crd/clustersecretstores.external-secrets.io
 
 # Fixtures.
+[[ $platform == eks ]] && k apply -f "$here/fixtures/05-storage-eks.yaml"
 k apply -f "$here/fixtures/10-cluster.yaml"
 k wait --for condition=established --timeout=60s crd/widgets.example.com
 k apply -f "$here/fixtures/20-apps.yaml"
