@@ -31,8 +31,10 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"setdrift.io/setdrift-engine/internal/kube"
+	"setdrift.io/setdrift-engine/pkg/capability"
 	sdiff "setdrift.io/setdrift-engine/pkg/diff"
 	"setdrift.io/setdrift-engine/pkg/emit/kustomize"
+	"setdrift.io/setdrift-engine/pkg/platform"
 	"setdrift.io/setdrift-engine/pkg/redact"
 )
 
@@ -176,6 +178,12 @@ type DryRunVerifier struct {
 	Threshold int
 	// Namespaces limits the check to resources in these namespaces and their Namespace objects, as export -n reads them, empty checks everything
 	Namespaces []string
+	// Target is this cluster's platform, as classified with confidence, for the capability check, Unknown skips it
+	Target platform.Distribution
+	// Capability is the capability map the check reads, nil skips it
+	Capability *capability.Map
+	// Explain gives back why an object that wont work here is that way on purpose, like a decision in a translation's translate-decisions.yaml, empty when it isnt
+	Explain func(*unstructured.Unstructured) string
 }
 
 // Verify checks the export at repoDir, a cluster's directory like clusters/<cluster> with a kustomization.yaml, or an export holding one cluster, and gives back the report
@@ -267,10 +275,57 @@ func (v DryRunVerifier) Verify(ctx context.Context, repoDir string) (*Report, er
 			report.Diffs = append(report.Diffs, *d)
 		}
 	}
+	// invoking misfits to add the resources that would apply but name what this platform doesnt have, its defined below
+	v.misfits(objs, diffs, report)
 	// sorting the diffs and the resources not checked by ref, so the report reads the same every run
 	sort.Slice(report.Diffs, func(i, j int) bool { return report.Diffs[i].Ref < report.Diffs[j].Ref })
 	sort.Slice(report.NotChecked, func(i, j int) bool { return report.NotChecked[i].Ref < report.NotChecked[j].Ref })
 	return report, nil
+}
+
+// misfits checks the objects against the capability map for the target platform
+// a resource that was clean becomes a KindWontWork diff, one that already differs gets the reasons added, since both mean it wont work here as exported
+func (v DryRunVerifier) misfits(objs []*unstructured.Unstructured, diffs []*Diff, report *Report) {
+	// checking if theres a map and a known target, if not theres nothing to check against
+	if v.Capability == nil || v.Target == platform.Unknown {
+		return
+	}
+	in := make([]capability.Object, len(objs))
+	index := map[string]int{}
+	for i, o := range objs {
+		gvk := o.GroupVersionKind()
+		// invoking Ref to name the object as the report does, its defined below
+		in[i] = capability.Object{Ref: Ref(o), Group: gvk.Group, Kind: gvk.Kind, Content: o.Object}
+		index[in[i].Ref] = i
+	}
+	// invoking Misfits to find the objects naming another platform's markers, its defined in pkg/capability/capability.go
+	for _, mf := range v.Capability.Misfits(in, v.Target) {
+		i := index[mf.Ref]
+		// checking how the dry-run left the object, clean, not checked, or already a diff
+		switch d := diffs[i]; {
+		case d == nil:
+			report.Clean--
+			nd := Diff{Ref: mf.Ref, Kind: KindWontWork, Paths: mf.Reasons}
+			// checking if theres a reason its this way on purpose, if so it counts as explained
+			if v.Explain != nil {
+				nd.Explanation = v.Explain(objs[i])
+			}
+			report.Diffs = append(report.Diffs, nd)
+		case d.Kind == KindNotChecked:
+			// it wasnt counted, so the reasons go with it where its listed
+			for j := range report.NotChecked {
+				if report.NotChecked[j].Ref == mf.Ref {
+					report.NotChecked[j].Paths = append(report.NotChecked[j].Paths, mf.Reasons...)
+				}
+			}
+		default:
+			for j := range report.Diffs {
+				if report.Diffs[j].Ref == mf.Ref {
+					report.Diffs[j].Paths = append(report.Diffs[j].Paths, mf.Reasons...)
+				}
+			}
+		}
+	}
 }
 
 // ClusterRoot takes a directory and gives back the one to verify, dir itself if it has a kustomization.yaml, else the one cluster under dir/clusters/
@@ -377,6 +432,16 @@ const sealedRoot = "/export"
 
 // build takes the cluster's directory and the directory inside it to build, and gives back the objects that kustomization builds, as kubectl kustomize does
 // kustomize runs on an in-memory copy of the export's regular files, so it cant read anything outside the export even if localOnly missed something
+// Build gives back what the kustomization in dir builds, dir being root, a cluster's directory, or a set under it, after refusing anything remote, as verify does
+// translate builds the generic set with it
+func Build(root, dir string) ([]*unstructured.Unstructured, error) {
+	// invoking localOnly to refuse an export that pulls in anything remote, its defined below
+	if err := localOnly(root); err != nil {
+		return nil, err
+	}
+	return build(root, dir)
+}
+
 func build(root, dir string) ([]*unstructured.Unstructured, error) {
 	// invoking sealedCopy to copy the export into memory, its defined below
 	fSys, err := sealedCopy(root)

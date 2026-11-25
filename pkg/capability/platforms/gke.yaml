@@ -1,0 +1,107 @@
+# What belongs to GKE: names and markers that only GKE, or Google Cloud's
+# own controllers on it, act on.
+distribution: gke
+name: GKE
+cloud: Google Cloud
+markers:
+  finalizerPrefixes:
+    - networking.gke.io/
+    - gke.networking.io/
+    - cloud.google.com/
+  loadBalancerClasses:
+    - networking.gke.io/l4-regional-internal
+    - networking.gke.io/l4-regional-external
+    - networking.gke.io/l4-regional-external-legacy
+  serviceAnnotationPrefixes:
+    - networking.gke.io/
+    - cloud.google.com/l4-rbs
+    - cloud.google.com/backend-config
+  ingressAnnotationPrefixes:
+    - networking.gke.io/
+    - ingress.gcp.kubernetes.io/
+    - kubernetes.io/ingress.global-static-ip-name
+  ingressClassAnnotations:
+    - gce
+    - gce-internal
+  gatewayControllerPrefixes:
+    - networking.gke.io/
+  storageProvisioners:
+    - pd.csi.storage.gke.io
+    - filestore.csi.storage.gke.io
+    - gcsfuse.csi.storage.gke.io
+    - kubernetes.io/gce-pd
+  serviceAccountAnnotations:
+    - iam.gke.io/gcp-service-account
+  podAnnotations:
+    - gke-gcsfuse/volumes
+  nodeLabelPrefixes:
+    - cloud.google.com/
+  secretStoreProviders:
+    - gcpsm
+  secretProviderClassProviders:
+    - gcp
+    - gke
+  apiGroupSuffixes:
+    - cloud.google.com
+    - networking.gke.io
+    - cnrm.cloud.google.com
+    - monitoring.googleapis.com
+cloudResources:
+  - name: Config Connector
+    groupSuffixes: [cnrm.cloud.google.com]
+    retain: {annotation: cnrm.cloud.google.com/deletion-policy, value: abandon}
+    adoptNote: "Config Connector takes over an existing resource of the same name by itself"
+  - name: Crossplane's Google Cloud provider
+    groupSuffixes: [gcp.upbound.io, gcp.m.upbound.io, gcp.crossplane.io]
+    retain: {field: spec.deletionPolicy, value: Orphan}
+    adoptNote: "the exported object keeps its crossplane.io/external-name annotation, so Crossplane takes over the existing resource instead of creating one"
+translate:
+  dir: platform/gcp/gke
+  storage:
+    - tier: hdd
+      provisioners: [pd.csi.storage.gke.io, kubernetes.io/gce-pd]
+      parameter: type
+      values: [pd-standard, hyperdisk-throughput]
+      default: true
+      class: {provisioner: pd.csi.storage.gke.io, parameters: {type: pd-standard}}
+    - tier: general-ssd
+      provisioners: [pd.csi.storage.gke.io]
+      parameter: type
+      values: [pd-balanced, hyperdisk-balanced, dynamic]
+      # dynamic: Hyperdisk Balanced where the node's machine supports it, pd-balanced where not (E2 machines can't attach Hyperdisk), found in M1
+      class: {provisioner: pd.csi.storage.gke.io, parameters: {type: dynamic, hyperdisk-type: hyperdisk-balanced, pd-type: pd-balanced, use-allowed-disk-topology: "true"}}
+    - tier: premium-ssd
+      provisioners: [pd.csi.storage.gke.io]
+      parameter: type
+      values: [pd-ssd]
+      class: {provisioner: pd.csi.storage.gke.io, parameters: {type: pd-ssd}}
+    - tier: extreme
+      provisioners: [pd.csi.storage.gke.io]
+      parameter: type
+      values: [pd-extreme, hyperdisk-extreme]
+      class: {provisioner: pd.csi.storage.gke.io, parameters: {type: hyperdisk-extreme}}
+    - tier: shared-file
+      provisioners: [filestore.csi.storage.gke.io]
+      default: true
+      class: {provisioner: filestore.csi.storage.gke.io, parameters: {tier: standard}}
+  loadBalancer:
+    annotation: networking.gke.io/load-balancer-type
+    internalValues: [Internal]
+    externalValues: [External]
+    classDefaults: {networking.gke.io/l4-regional-internal: internal, networking.gke.io/l4-regional-external: external}
+    default: external
+    internal: {networking.gke.io/load-balancer-type: Internal}
+    external: {}
+  ingress:
+    # GKE reads its class from the annotation, not ingressClassName
+    classAnnotation: true
+    internalClass: gce-internal
+    externalClass: gce
+    default: external
+  snapshotDriver: pd.csi.storage.gke.io
+  nodes:
+    pools: [cloud.google.com/gke-nodepool]
+    spot: [{key: cloud.google.com/gke-spot, value: "true", taint: true}]
+
+# Copyright The SetDrift Authors
+# SPDX-License-Identifier: Apache-2.0

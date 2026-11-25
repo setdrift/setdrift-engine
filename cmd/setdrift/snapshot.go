@@ -18,7 +18,7 @@ func newSnapshotCmd() *cobra.Command {
 		Short: "Work with snapshot files",
 	}
 	cmd.AddCommand(&cobra.Command{
-		Use:   "json FILE",
+		Use:   "json <snapshot-file>",
 		Short: "Print a protobuf snapshot as readable JSON",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {

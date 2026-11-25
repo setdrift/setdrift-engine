@@ -338,6 +338,27 @@ func TestServiceIPFamilies(t *testing.T) {
 	}
 }
 
+// check that GKE's automatic NEG annotation and the load balancer controllers' finalizers go, and a NEG annotation set on purpose and other finalizers stay
+func TestServicePlatformWrites(t *testing.T) {
+	o := parse(t, `{"apiVersion": "v1", "kind": "Service", "metadata": {"name": "web",
+	  "annotations": {"cloud.google.com/neg": "{\"ingress\":true}", "team": "shop"},
+	  "finalizers": ["service.kubernetes.io/load-balancer-cleanup", "service.eks.amazonaws.com/resources", "acme.com/keep"]},
+	  "spec": {"type": "LoadBalancer", "ports": [{"port": 80}]}}`)
+	md := run(t, o)["metadata"].(map[string]any)
+	ann, _ := md["annotations"].(map[string]any)
+	if _, ok := ann["cloud.google.com/neg"]; ok || ann["team"] != "shop" {
+		t.Errorf("annotations %v", ann)
+	}
+	if fins, _ := md["finalizers"].([]any); len(fins) != 1 || fins[0] != "acme.com/keep" {
+		t.Errorf("finalizers %v", md["finalizers"])
+	}
+	o = parse(t, `{"apiVersion": "v1", "kind": "Service", "metadata": {"name": "web",
+	  "annotations": {"cloud.google.com/neg": "{\"exposed_ports\":{\"80\":{}}}"}}, "spec": {"ports": [{"port": 80}]}}`)
+	if ann, _ := run(t, o)["metadata"].(map[string]any)["annotations"].(map[string]any); ann["cloud.google.com/neg"] == nil {
+		t.Error("a NEG annotation set on purpose should stay")
+	}
+}
+
 // check that the field managers are kept for the snapshot, oldest first, with their names, operations, subresources and times only, and managedFields leaves the manifest
 func TestFieldManagersKept(t *testing.T) {
 	u := &unstructured.Unstructured{}

@@ -16,10 +16,11 @@ clusters/<cluster>/
   namespaces/<ns>/<kind>[.<group>]/<name>.yaml
   redacted/namespaces/<ns>/<kind>[.<group>]/<name>.yaml.redacted
   external-secrets/namespaces/<ns>/externalsecret.external-secrets.io/<name>.yaml
+  cloud-resources/namespaces/<ns>/<kind>.<group>/<name>.yaml   objects that manage real cloud resources (not applied)
   restore/volumes/<ns>/<claim>.yaml
   restore/storageclasses/<name>.yaml
   platform/<cloud>/<distribution>/   e.g. platform/aws/eks, platform/local/kind
-  .setdrift-export          where and when the export was taken
+  .setdrift-export          where and when the export was taken, and what enforced NetworkPolicies there
 ```
 
 ## Platform identification
@@ -77,6 +78,19 @@ Flux apply them before the resources that use them; with kubectl, apply
 rejects a custom resource whose definition does not exist yet. Custom
 resources whose definition the export lacks are listed in RESTORE.md, to
 install first.
+
+## Cloud resources
+
+Some objects create and manage real cloud resources, like an S3 bucket for an ACK `Bucket`. These are the objects of AWS Controllers for Kubernetes (ACK), Azure Service Operator, Config Connector, and Crossplane's AWS, Azure and Google Cloud providers. Export writes them to `cloud-resources/`, which no kustomization lists, so `kubectl apply -k`, Argo CD and Flux never apply them, and `setdrift verify` doesn't check them.
+
+They're held back because applied to a second cluster, its operator would manage the same resource as the source cluster's, and deleting the object from either cluster could delete the resource itself.
+
+- **On the same cloud,** RESTORE.md's "Cloud resources" step moves each one to the new cluster one controller at a time. You set the operator's retain setting on the source cluster's object, delete that object (the resource stays), then apply the object on the new cluster, which takes the resource over.
+- **On another cloud,** [`setdrift translate`](commands/translate.md) asks what to do with each one, keep it with the source cluster, leave it out, or for a bucket, write the target's equivalent.
+
+## NetworkPolicy enforcement
+
+A NetworkPolicy applies on any cluster, but only does anything where a network policy engine enforces it, and whether one runs is a cluster setting. `.setdrift-export` records the engine that enforced them on the source, like Calico, Cilium or GKE Dataplane V2, or that none did. [`setdrift verify`](commands/verify.md) checks the cluster it runs against enforces them too.
 
 ## Helm
 

@@ -1,0 +1,113 @@
+# What belongs to Amazon EKS: names and markers that only EKS, or AWS's own
+# controllers on it, act on. An object naming one of them works on EKS and
+# nowhere else (see docs/capability-map-draft.md, M0 of v0.3.0).
+distribution: eks
+name: EKS
+cloud: AWS
+markers:
+  finalizerPrefixes:
+    - service.eks.amazonaws.com/
+    - service.k8s.aws/
+    - elbv2.k8s.aws/
+    - ingress.k8s.aws/
+    - eks.amazonaws.com/
+  loadBalancerClasses:
+    - service.k8s.aws/nlb
+    - eks.amazonaws.com/nlb
+  serviceAnnotationPrefixes:
+    - service.beta.kubernetes.io/aws-load-balancer-
+  ingressControllers:
+    - ingress.k8s.aws/alb
+    - eks.amazonaws.com/alb
+  ingressAnnotationPrefixes:
+    - alb.ingress.kubernetes.io/
+  ingressClassAnnotations:
+    - alb
+  gatewayControllerPrefixes:
+    - gateway.k8s.aws/
+    - application-networking.k8s.aws/
+  storageProvisioners:
+    - ebs.csi.aws.com
+    - ebs.csi.eks.amazonaws.com
+    - efs.csi.aws.com
+    - s3.csi.aws.com
+    - fsx.csi.aws.com
+    - kubernetes.io/aws-ebs
+  serviceAccountAnnotations:
+    - eks.amazonaws.com/role-arn
+  nodeLabelPrefixes:
+    - eks.amazonaws.com/
+    - karpenter.k8s.aws/
+    - karpenter.sh/
+  secretStoreProviders:
+    - aws
+  secretProviderClassProviders:
+    - aws
+  apiGroupSuffixes:
+    - karpenter.sh
+    - karpenter.k8s.aws
+    - eks.amazonaws.com
+    - elbv2.k8s.aws
+    - services.k8s.aws
+cloudResources:
+  - name: AWS Controllers for Kubernetes (ACK)
+    groupSuffixes: [services.k8s.aws]
+    retain: {annotation: services.k8s.aws/deletion-policy, value: retain}
+    adopt: {annotation: services.k8s.aws/adoption-policy, value: adopt}
+    adoptNote: "with the annotation, ACK takes over the existing resource of the same name instead of creating one (some kinds also need services.k8s.aws/adoption-fields naming it)"
+  - name: Crossplane's AWS provider
+    groupSuffixes: [aws.upbound.io, aws.m.upbound.io, aws.crossplane.io]
+    retain: {field: spec.deletionPolicy, value: Orphan}
+    adoptNote: "the exported object keeps its crossplane.io/external-name annotation, so Crossplane takes over the existing resource instead of creating one"
+translate:
+  # where a translation for EKS goes in an export
+  dir: platform/aws/eks
+  storage:
+    # tiers, matched on the source by provisioner and a parameter, written on the target as its class
+    # Auto Mode clusters use ebs.csi.eks.amazonaws.com: the README of a translation says so
+    - tier: hdd
+      provisioners: [ebs.csi.aws.com, ebs.csi.eks.amazonaws.com, kubernetes.io/aws-ebs]
+      parameter: type
+      values: [st1, sc1, standard]
+      class: {provisioner: ebs.csi.aws.com, parameters: {type: st1}}
+    - tier: general-ssd
+      provisioners: [ebs.csi.aws.com, ebs.csi.eks.amazonaws.com, kubernetes.io/aws-ebs]
+      parameter: type
+      values: [gp3, gp2]
+      default: true
+      class: {provisioner: ebs.csi.aws.com, parameters: {type: gp3}}
+    - tier: premium-ssd
+      provisioners: [ebs.csi.aws.com, ebs.csi.eks.amazonaws.com]
+      parameter: type
+      values: [io1, io2]
+      class: {provisioner: ebs.csi.aws.com, parameters: {type: io2}}
+    - tier: shared-file
+      provisioners: [efs.csi.aws.com]
+      default: true
+      class: {provisioner: efs.csi.aws.com, parameters: {provisioningMode: efs-ap, fileSystemId: "<EFS file system ID>", directoryPerms: "700"}}
+  loadBalancer:
+    # how a Service's exposure reads on this platform, and how its written
+    annotation: service.beta.kubernetes.io/aws-load-balancer-scheme
+    internalValues: [internal]
+    externalValues: [internet-facing]
+    # with no annotation: the Load Balancer Controller and Auto Mode classes default to internal, the legacy cloud provider to internet-facing
+    classDefaults: {service.k8s.aws/nlb: internal, eks.amazonaws.com/nlb: internal}
+    default: external
+    internal: {service.beta.kubernetes.io/aws-load-balancer-scheme: internal}
+    external: {service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing}
+  ingress:
+    # the AWS Load Balancer Controller's class; Auto Mode clusters name theirs in an IngressClass with controller eks.amazonaws.com/alb
+    className: alb
+    exposureAnnotation: alb.ingress.kubernetes.io/scheme
+    internalValues: [internal]
+    externalValues: [internet-facing]
+    default: internal
+    internal: {alb.ingress.kubernetes.io/scheme: internal}
+    external: {alb.ingress.kubernetes.io/scheme: internet-facing}
+  snapshotDriver: ebs.csi.aws.com
+  nodes:
+    pools: [eks.amazonaws.com/nodegroup, karpenter.sh/nodepool]
+    spot: [{key: eks.amazonaws.com/capacityType, value: SPOT}, {key: karpenter.sh/capacity-type, value: spot}]
+
+# Copyright The SetDrift Authors
+# SPDX-License-Identifier: Apache-2.0

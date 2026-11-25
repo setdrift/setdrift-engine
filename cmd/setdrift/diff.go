@@ -19,6 +19,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 
 	"setdrift.io/setdrift-engine/internal/text"
+	"setdrift.io/setdrift-engine/pkg/capability"
 	"setdrift.io/setdrift-engine/pkg/collect"
 	"setdrift.io/setdrift-engine/pkg/diff"
 	"setdrift.io/setdrift-engine/pkg/platform"
@@ -224,7 +225,12 @@ func (o *diffOptions) run(cmd *cobra.Command, a, b string) error {
 		}
 	}
 	// invoking diff.Compare to compare the two snapshots, its defined in pkg/diff/diff.go
-	res, err := diff.Compare(sa, sb, diff.Options{NamespaceMap: nsMap, ValueMap: valueMap, LabelA: la, LabelB: lb})
+	// invoking capability.Load to read the capability map built into the binary, so each side is checked against its own platform, its defined in pkg/capability/capability.go
+	capMap, err := capability.Load()
+	if err != nil {
+		return err
+	}
+	res, err := diff.Compare(sa, sb, diff.Options{NamespaceMap: nsMap, ValueMap: valueMap, LabelA: la, LabelB: lb, Capability: capMap})
 	if err != nil {
 		return err
 	}
@@ -540,6 +546,11 @@ func printDiff(w io.Writer, r diff.Result, maxFields int, nodes bool) {
 		fmt.Fprintln(w, "\nNo differences.")
 		return
 	}
+	// checking if resources name another platform's features than their side's, if so theyre listed first, a migration can look identical and not work
+	if len(r.WontWork) > 0 {
+		// invoking printWontWork to list them, its defined below
+		printWontWork(w, r)
+	}
 	// invoking Counts to tell how many differ and how many differ only in each cluster's own values, its defined in pkg/diff/diff.go
 	differ, envOnly := r.Counts()
 	// checking if some resources really differ, if so printChanged lists them, its defined below
@@ -564,6 +575,21 @@ func printDiff(w io.Writer, r diff.Result, maxFields int, nodes bool) {
 	// checking if some resources differ only in each cluster's own values, if so printEnvOnly names them, its defined below
 	if envOnly > 0 {
 		printEnvOnly(w, r, envOnly)
+	}
+}
+
+// printWontWork lists the resources that wont work on their side's platform, with what each names
+func printWontWork(w io.Writer, r diff.Result) {
+	fmt.Fprintf(w, "\nWon't work on their cluster's platform (%d), they name another platform's features:\n", len(r.WontWork))
+	for _, ww := range r.WontWork {
+		name := ww.Object.Key.Kind + " " + ww.Object.Key.Name
+		if ww.Object.Namespace != "" {
+			name = ww.Object.Namespace + "/" + ww.Object.Key.Name + " " + ww.Object.Key.Kind
+		}
+		fmt.Fprintf(w, "  %s, in %s\n", name, ww.Side)
+		for _, reason := range ww.Reasons {
+			fmt.Fprintf(w, "      %s\n", reason)
+		}
 	}
 }
 

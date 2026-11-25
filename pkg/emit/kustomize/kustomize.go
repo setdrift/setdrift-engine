@@ -18,9 +18,12 @@
 //	clusters/<cluster>/external-secrets/README.md
 //	clusters/<cluster>/external-secrets/kustomization.yaml
 //	clusters/<cluster>/external-secrets/namespaces/<ns>/externalsecret.external-secrets.io/<name>.yaml
+//	clusters/<cluster>/cloud-resources/README.md
+//	clusters/<cluster>/cloud-resources/namespaces/<ns>/<kind>.<group>/<name>.yaml
 //
 // resources whose values were redacted (see ReferenceOnly) go under redacted/, no kustomization lists them and they must not be applied
 // RESTORE.md says how to supply their values
+// objects of operators that create cloud resources, like an ACK Bucket, go under cloud-resources/, no kustomization lists them either, RESTORE.md says how to move each one
 package kustomize
 
 import (
@@ -36,6 +39,7 @@ import (
 
 	"sigs.k8s.io/yaml"
 
+	"setdrift.io/setdrift-engine/pkg/capability"
 	"setdrift.io/setdrift-engine/pkg/helmsource"
 	"setdrift.io/setdrift-engine/pkg/lifecycle"
 	"setdrift.io/setdrift-engine/pkg/platform"
@@ -300,8 +304,13 @@ func replaceDir(tmp, root string) error {
 func (e Emitter) write(s *snapshotv1alpha1.Snapshot, out *outDir, name string) error {
 	// invoking exportPlatform to find the source's platform and its platform set directory, its defined in platformset.go
 	cls, platDir := exportPlatform(s)
-	// invoking partition to pick the resources to write, with the platform set's own ones at the end, its defined below
-	resources, bound := e.partition(s, platDir)
+	// invoking capability.Load for the cloud-resource operators, whose objects are held back, its defined in pkg/capability/capability.go
+	m, err := capability.Load()
+	if err != nil {
+		return err
+	}
+	// invoking partition to pick the resources to write, with the platform set's own ones at the end, and the ones held back, its defined below
+	resources, bound, held := e.partition(s, platDir, m)
 	// invoking filePaths to give each generic resource its file, its defined below
 	paths, err := filePaths(resources[:len(resources)-bound], "")
 	if err != nil {
@@ -345,8 +354,13 @@ func (e Emitter) write(s *snapshotv1alpha1.Snapshot, out *outDir, name string) e
 			}
 		}
 	}
+	// invoking writeHeld to write cloud-resources/, its defined below
+	heldFiles, err := writeHeld(out, held, m)
+	if err != nil {
+		return err
+	}
 	// invoking writeRestore to write RESTORE.md and restore/volumes/, its defined in restore.go
-	if err := e.writeRestore(out, s, written, remotes, bound); err != nil {
+	if err := e.writeRestore(out, s, written, remotes, bound, heldFiles); err != nil {
 		return err
 	}
 	// invoking writeExportInfo to record the source cluster for setdrift verify, its defined in exportinfo.go
@@ -360,7 +374,7 @@ func (e Emitter) write(s *snapshotv1alpha1.Snapshot, out *outDir, name string) e
 	// checking if any crds were written, if so the README says to apply them first
 	_, hasCRDs := buckets[crdsDir]
 	// invoking readme to build README.md and out.write to write it, both defined below
-	if err := out.write("README.md", []byte(e.readme(s, name, hasCRDs, cls, platDir))); err != nil {
+	if err := out.write("README.md", []byte(e.readme(s, name, hasCRDs, cls, platDir, len(held) > 0))); err != nil {
 		return err
 	}
 	// invoking writeBuckets to write the kustomizations and the platform set, its defined below
@@ -369,10 +383,11 @@ func (e Emitter) write(s *snapshotv1alpha1.Snapshot, out *outDir, name string) e
 
 // partition gives back the resources to write, the generic ones first, and how many at the end are the platform set's own objects
 // those are custom resources of apis the platform provides (their crd is the platform's and left out), which no other cluster serves
-func (e Emitter) partition(s *snapshotv1alpha1.Snapshot, platDir string) ([]*snapshotv1alpha1.Resource, int) {
+// held are the objects of operators that create cloud resources, written to cloud-resources/ and never applied with the rest
+func (e Emitter) partition(s *snapshotv1alpha1.Snapshot, platDir string, m *capability.Map) ([]*snapshotv1alpha1.Resource, int, []*snapshotv1alpha1.Resource) {
 	// invoking platformCRDKinds to find the kinds only the platform serves, its defined in platformset.go
 	platformKinds := platformCRDKinds(s)
-	var generic, bound []*snapshotv1alpha1.Resource
+	var generic, bound, held []*snapshotv1alpha1.Resource
 	// going through every resource to sort it into the generic or the platform set
 	for _, r := range s.Resources {
 		// invoking NotWritten (defined below) and Unmanaged (defined above) to skip what the export leaves out, and with UnmanagedOnly what something manages
@@ -381,13 +396,42 @@ func (e Emitter) partition(s *snapshotv1alpha1.Snapshot, platDir string) ([]*sna
 		}
 		// checking if theres a platform set and r is a kind only the platform serves, if so it goes to the platform set
 		// invoking resourceGroupKind for r's group and kind, its defined in platformset.go, and ReferenceOnly, its defined above, so reference-only ones stay generic
-		if platDir != "" && platformKinds[resourceGroupKind(r)] && !ReferenceOnly(r) {
+		// invoking resourceGroupKind and CloudResourceOperator to check if a cloud-resource operator serves r, if so its held back, reference-only ones stay in redacted/
+		switch op, _ := m.CloudResourceOperator(resourceGroupKind(r).Group); {
+		case op != nil && !ReferenceOnly(r):
+			held = append(held, r)
+		case platDir != "" && platformKinds[resourceGroupKind(r)] && !ReferenceOnly(r):
 			bound = append(bound, r)
-		} else {
+		default:
 			generic = append(generic, r)
 		}
 	}
-	return append(generic, bound...), len(bound)
+	return append(generic, bound...), len(bound), held
+}
+
+// writeHeld writes the held-back cloud-resource objects under cloud-resources/ with its README, in no kustomization, and gives back what it wrote with each one's operator
+func writeHeld(out *outDir, held []*snapshotv1alpha1.Resource, m *capability.Map) ([]heldResource, error) {
+	if len(held) == 0 {
+		return nil, nil
+	}
+	// invoking filePaths to give each one its file under cloud-resources/, its defined below
+	paths, err := filePaths(held, cloudResourcesDir)
+	if err != nil {
+		return nil, err
+	}
+	var files []heldResource
+	for i, r := range held {
+		rel := filepath.Join(paths[i].bucket, paths[i].rel)
+		// invoking writeManifest to write r as yaml, its defined below
+		b, err := out.writeManifest(rel, r)
+		if err != nil {
+			return nil, err
+		}
+		op, _ := m.CloudResourceOperator(resourceGroupKind(r).Group)
+		files = append(files, heldResource{file: writtenFile{resource: r, path: filepath.ToSlash(rel), yaml: b}, op: op})
+	}
+	// invoking out.write to write the README that says why theyre held back
+	return files, out.write(filepath.Join(cloudResourcesDir, "README.md"), []byte(cloudResourcesReadme))
 }
 
 // writeManifests writes each resource at its path, and gives back what it wrote and, by bucket directory, the files each kustomization lists
@@ -413,13 +457,17 @@ func writeManifests(out *outDir, resources []*snapshotv1alpha1.Resource, paths [
 }
 
 // readme builds README.md at the cluster root, what the export holds, what it found, how to apply it, and the platform set
-func (e Emitter) readme(s *snapshotv1alpha1.Snapshot, name string, hasCRDs bool, cls *platform.Classification, platDir string) string {
+func (e Emitter) readme(s *snapshotv1alpha1.Snapshot, name string, hasCRDs bool, cls *platform.Classification, platDir string, held bool) string {
 	apply := applyWithoutCRDs
 	// checking if the export has crds, if so the apply steps put them first
 	if hasCRDs {
 		apply = applyWithCRDs
 	}
 	readme := fmt.Sprintf(rootReadme, name)
+	// checking if cloud-resource objects were held back, if so the README says theyre not applied either
+	if held {
+		readme += cloudResourcesDir + "/ is not included either: its objects manage real cloud resources, and\nRESTORE.md says how to move each one.\n"
+	}
 	// invoking NewOverview and markdown for what the export found, both defined in overview.go, it goes before how to apply it
 	// checking if the overview has anything to say, if not only a blank line goes in
 	if ov := NewOverview(s, e.UnmanagedOnly).markdown(); ov != "" {

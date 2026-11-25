@@ -5,12 +5,12 @@ Prints a protobuf snapshot as readable JSON, the same JSON `export` writes besid
 ## Synopsis
 
 ```sh
-setdrift snapshot json FILE [flags]
+setdrift snapshot json <snapshot-file> [flags]
 ```
 
 ## Inputs
 
-`FILE` is a protobuf snapshot, a `.pb` file. The `.json` beside it is already this JSON.
+`<snapshot-file>` is a protobuf snapshot, a `.pb` file. The `.json` beside it is already this JSON.
 
 | Argument | Example |
 |---|---|

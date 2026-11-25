@@ -27,6 +27,9 @@ const (
 	KindLost Kind = "lost-fields"
 	// KindRejected means the cluster rejected the dry-run apply
 	KindRejected Kind = "rejected"
+	// KindWontWork means the resource would apply but names something this cluster's platform doesnt have, like another cloud's load balancer class or identity annotation, so it wouldnt work here
+	// Paths say what it names and what happens, from the capability map
+	KindWontWork Kind = "wont-work-here"
 	// KindNotChecked means the credentials may not get the resource, or may not patch it for the dry-run, so it couldnt be checked, Diff.Refused says which
 	// its not counted in Total, it says nothing about the export
 	KindNotChecked Kind = "not-checked"

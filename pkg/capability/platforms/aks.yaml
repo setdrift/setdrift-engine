@@ -1,0 +1,108 @@
+# What belongs to AKS: names and markers that only AKS, or Azure's own
+# controllers on it, act on. Karpenter's own names are shared with EKS: AKS
+# Node Auto Provisioning runs Karpenter.
+distribution: aks
+name: AKS
+cloud: Azure
+markers:
+  finalizerPrefixes:
+    - kubernetes.azure.com/
+  serviceAnnotationPrefixes:
+    - service.beta.kubernetes.io/azure-
+  ingressControllers:
+    - azure/application-gateway
+    - webapprouting.kubernetes.azure.com/nginx
+  ingressAnnotationPrefixes:
+    - appgw.ingress.kubernetes.io/
+  ingressClassAnnotations:
+    - azure/application-gateway
+    - webapprouting.kubernetes.azure.com
+  gatewayControllerPrefixes:
+    - alb.networking.azure.io/
+  storageProvisioners:
+    - disk.csi.azure.com
+    - file.csi.azure.com
+    - blob.csi.azure.com
+    - kubernetes.io/azure-disk
+    - kubernetes.io/azure-file
+  serviceAccountAnnotations:
+    - azure.workload.identity/client-id
+  podLabels:
+    - azure.workload.identity/use
+  nodeLabelPrefixes:
+    - kubernetes.azure.com/
+    - karpenter.azure.com/
+    - karpenter.sh/
+  secretStoreProviders:
+    - azurekv
+  secretProviderClassProviders:
+    - azure
+  apiGroupSuffixes:
+    - karpenter.sh
+    - karpenter.azure.com
+    - approuting.kubernetes.azure.com
+    - alb.networking.azure.io
+    - azure.com
+cloudResources:
+  - name: Azure Service Operator
+    groupSuffixes: [azure.com]
+    # AKS's own groups under azure.com, which aren't cloud resources
+    exceptSuffixes: [karpenter.azure.com, kubernetes.azure.com]
+    retain: {annotation: serviceoperator.azure.com/reconcile-policy, value: detach-on-delete}
+    adoptNote: "Azure Service Operator takes over an existing resource of the same name and resource group by itself"
+  - name: Crossplane's Azure provider
+    groupSuffixes: [azure.upbound.io, azure.m.upbound.io, azure.crossplane.io]
+    retain: {field: spec.deletionPolicy, value: Orphan}
+    adoptNote: "the exported object keeps its crossplane.io/external-name annotation, so Crossplane takes over the existing resource instead of creating one"
+translate:
+  dir: platform/azure/aks
+  storage:
+    - tier: hdd
+      provisioners: [disk.csi.azure.com, kubernetes.io/azure-disk]
+      parameter: skuName
+      values: [Standard_LRS]
+      class: {provisioner: disk.csi.azure.com, parameters: {skuName: Standard_LRS}}
+    - tier: general-ssd
+      provisioners: [disk.csi.azure.com, kubernetes.io/azure-disk]
+      parameter: skuName
+      values: [StandardSSD_LRS, StandardSSD_ZRS, PremiumV2_LRS]
+      default: true
+      # matched by capability: Premium SSD v2 has gp3's adjustable IOPS and throughput, 3000 and 125 included
+      class: {provisioner: disk.csi.azure.com, parameters: {skuName: PremiumV2_LRS, cachingMode: None, DiskIOPSReadWrite: "3000", DiskMBpsReadWrite: "125"}}
+    - tier: premium-ssd
+      provisioners: [disk.csi.azure.com, kubernetes.io/azure-disk]
+      parameter: skuName
+      values: [Premium_LRS, Premium_ZRS]
+      class: {provisioner: disk.csi.azure.com, parameters: {skuName: Premium_LRS}}
+    - tier: extreme
+      provisioners: [disk.csi.azure.com]
+      parameter: skuName
+      values: [UltraSSD_LRS]
+      class: {provisioner: disk.csi.azure.com, parameters: {skuName: UltraSSD_LRS, cachingMode: None}}
+    - tier: shared-file
+      provisioners: [file.csi.azure.com, kubernetes.io/azure-file]
+      default: true
+      class: {provisioner: file.csi.azure.com, parameters: {skuName: Premium_LRS, protocol: nfs}}
+  loadBalancer:
+    annotation: service.beta.kubernetes.io/azure-load-balancer-internal
+    internalValues: ["true"]
+    externalValues: ["false"]
+    default: external
+    internal: {service.beta.kubernetes.io/azure-load-balancer-internal: "true"}
+    external: {}
+  ingress:
+    # Application Gateway for Containers; App Routing's managed NGINX is out of Azure support from November 2026
+    className: azure-alb-external
+    exposureAnnotation: appgw.ingress.kubernetes.io/use-private-ip
+    internalValues: ["true"]
+    externalValues: ["false"]
+    default: external
+    internalUnsupported: true
+    external: {}
+  snapshotDriver: disk.csi.azure.com
+  nodes:
+    pools: [kubernetes.azure.com/agentpool, agentpool, karpenter.sh/nodepool]
+    spot: [{key: kubernetes.azure.com/scalesetpriority, value: spot, taint: true}, {key: karpenter.sh/capacity-type, value: spot}]
+
+# Copyright The SetDrift Authors
+# SPDX-License-Identifier: Apache-2.0

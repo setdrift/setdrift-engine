@@ -1,0 +1,440 @@
+package translate
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"setdrift.io/setdrift-engine/pkg/capability"
+	"setdrift.io/setdrift-engine/pkg/platform"
+	"sigs.k8s.io/yaml"
+)
+
+// u builds an object from YAML, for the tests
+func u(t *testing.T, doc string) *unstructured.Unstructured {
+	t.Helper()
+	o := &unstructured.Unstructured{}
+	if err := yaml.Unmarshal([]byte(doc), &o.Object); err != nil {
+		t.Fatal(err)
+	}
+	return o
+}
+
+// load reads the capability map
+func load(t *testing.T) *capability.Map {
+	t.Helper()
+	m, err := capability.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return m
+}
+
+// patchFor finds the patch for a kind and name
+func patchFor(r *Result, kind, name string) *Patch {
+	for i := range r.Patches {
+		if r.Patches[i].Kind == kind && r.Patches[i].Name == name {
+			return &r.Patches[i]
+		}
+	}
+	return nil
+}
+
+// opAt finds an op by path
+func opAt(p *Patch, path string) *Op {
+	for i := range p.Ops {
+		if p.Ops[i].Path == path {
+			return &p.Ops[i]
+		}
+	}
+	return nil
+}
+
+func TestStorageClassToGKEIsDynamicAndNotDefault(t *testing.T) {
+	r, err := Translate([]*unstructured.Unstructured{u(t, `
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: gp3
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
+provisioner: ebs.csi.eks.amazonaws.com
+parameters:
+  type: gp3`)}, platform.EKS, platform.GKE, load(t), nil, Source{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := patchFor(r, "StorageClass", "gp3")
+	if p == nil {
+		t.Fatal("no patch for gp3")
+	}
+	if op := opAt(p, "/provisioner"); op == nil || op.Value != "pd.csi.storage.gke.io" {
+		t.Errorf("provisioner op %+v", op)
+	}
+	if op := opAt(p, "/parameters"); op == nil || op.Value.(map[string]any)["type"] != "dynamic" {
+		t.Errorf("parameters op %+v", op)
+	}
+	if opAt(p, "/metadata/annotations/storageclass.kubernetes.io~1is-default-class") == nil {
+		t.Errorf("the default-class annotation should go: %+v", p.Ops)
+	}
+}
+
+// an AKS standard SSD class, written skuname as AKS does, is general-ssd and becomes EKS gp3
+func TestStorageClassFromAKSLowercaseParameter(t *testing.T) {
+	r, err := Translate([]*unstructured.Unstructured{u(t, `
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata: {name: managed-csi}
+provisioner: disk.csi.azure.com
+parameters: {skuname: StandardSSD_LRS}`)}, platform.AKS, platform.EKS, load(t), nil, Source{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := patchFor(r, "StorageClass", "managed-csi")
+	if p == nil || opAt(p, "/parameters").Value.(map[string]any)["type"] != "gp3" {
+		t.Fatalf("got %+v", p)
+	}
+}
+
+// an internal EKS load balancer stays internal on AKS, written explicitly, and loses its class, annotation and finalizer
+func TestLoadBalancerStaysInternal(t *testing.T) {
+	r, err := Translate([]*unstructured.Unstructured{u(t, `
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-lb
+  namespace: shop
+  finalizers: [service.eks.amazonaws.com/resources]
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-scheme: internal
+spec:
+  type: LoadBalancer
+  loadBalancerClass: eks.amazonaws.com/nlb`)}, platform.EKS, platform.AKS, load(t), nil, Source{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := patchFor(r, "Service", "web-lb")
+	if p == nil {
+		t.Fatal("no patch")
+	}
+	for _, path := range []string{"/spec/loadBalancerClass", "/metadata/annotations/service.beta.kubernetes.io~1aws-load-balancer-scheme", "/metadata/finalizers"} {
+		if op := opAt(p, path); op == nil || op.Op != "remove" {
+			t.Errorf("%s not removed: %+v", path, p.Ops)
+		}
+	}
+	if op := opAt(p, "/metadata/annotations/service.beta.kubernetes.io~1azure-load-balancer-internal"); op == nil || op.Value != "true" {
+		t.Errorf("not written internal for AKS: %+v", p.Ops)
+	}
+}
+
+// with no annotation, an EKS Auto Mode class means internal, and must not become public on GKE
+func TestLoadBalancerClassDefaultInternal(t *testing.T) {
+	r, _ := Translate([]*unstructured.Unstructured{u(t, `
+apiVersion: v1
+kind: Service
+metadata: {name: api, namespace: shop}
+spec: {type: LoadBalancer, loadBalancerClass: eks.amazonaws.com/nlb}`)}, platform.EKS, platform.GKE, load(t), nil, Source{})
+	p := patchFor(r, "Service", "api")
+	if p == nil || opAt(p, "/metadata/annotations/networking.gke.io~1load-balancer-type") == nil {
+		t.Fatalf("internal not kept: %+v", p)
+	}
+}
+
+// a spot node selector becomes the target's, with the toleration its spot taint needs, and a pool label keeps its name
+func TestSpotAndPoolPlacement(t *testing.T) {
+	r, _ := Translate([]*unstructured.Unstructured{u(t, `
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: worker, namespace: shop}
+spec:
+  template:
+    spec:
+      nodeSelector:
+        eks.amazonaws.com/capacityType: SPOT
+        eks.amazonaws.com/nodegroup: batch
+        kubernetes.io/arch: arm64
+      containers: [{name: w, image: w}]`)}, platform.EKS, platform.GKE, load(t), nil, Source{})
+	p := patchFor(r, "Deployment", "worker")
+	if p == nil {
+		t.Fatal("no patch")
+	}
+	sel := opAt(p, "/spec/template/spec/nodeSelector").Value.(map[string]any)
+	if sel["cloud.google.com/gke-spot"] != "true" || sel["cloud.google.com/gke-nodepool"] != "batch" || sel["kubernetes.io/arch"] != "arm64" || len(sel) != 3 {
+		t.Errorf("selector %v", sel)
+	}
+	tols := opAt(p, "/spec/template/spec/tolerations")
+	if tols == nil || !strings.Contains(strings.Join(func() []string {
+		var s []string
+		for _, x := range tols.Value.([]any) {
+			s = append(s, x.(map[string]any)["key"].(string))
+		}
+		return s
+	}(), ","), "cloud.google.com/gke-spot") {
+		t.Errorf("no spot toleration: %+v", tols)
+	}
+}
+
+// an object that creates cloud resources stops the translation until the user chooses, and a choice carries over
+func TestCloudResourceObjectNeedsDecision(t *testing.T) {
+	bucket := u(t, `
+apiVersion: s3.services.k8s.aws/v1alpha1
+kind: Bucket
+metadata: {name: acme-orders, namespace: shop}
+spec: {name: acme-orders}`)
+	r, _ := Translate([]*unstructured.Unstructured{bucket}, platform.EKS, platform.GKE, load(t), nil, Source{})
+	if len(r.Undecided()) != 1 {
+		t.Fatalf("undecided %+v", r.Decisions)
+	}
+	r, _ = Translate([]*unstructured.Unstructured{bucket}, platform.EKS, platform.GKE, load(t), []Decision{{Feature: "cloud-resource/Bucket/shop/acme-orders", Choose: KeepSource}}, Source{})
+	if len(r.Undecided()) != 0 || patchFor(r, "Bucket", "acme-orders") == nil || !patchFor(r, "Bucket", "acme-orders").Delete {
+		t.Errorf("keep-source should leave it to the source cluster: %+v", r)
+	}
+}
+
+// verify counts a kept identity as explained, by the decision
+func TestExplainerCitesDecision(t *testing.T) {
+	sa := u(t, `
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: orders
+  namespace: shop
+  annotations: {eks.amazonaws.com/role-arn: "arn:aws:iam::111111111111:role/orders"}`)
+	r, _ := Translate([]*unstructured.Unstructured{sa}, platform.EKS, platform.GKE, load(t), nil, Source{})
+	got := Explainer(r.Decisions)(sa)
+	if !strings.Contains(got, "identity/shop/orders is keep-source (the default)") {
+		t.Errorf("got %q", got)
+	}
+}
+
+func TestSamePlatformRefused(t *testing.T) {
+	if _, err := Translate(nil, platform.GKE, platform.GKE, load(t), nil, Source{}); err == nil {
+		t.Error("translating GKE for GKE should be refused")
+	}
+}
+
+// a choice its feature doesnt offer is refused, a decision for what the export no longer has is dropped and reported
+func TestEarlierDecisionsChecked(t *testing.T) {
+	sa := u(t, `
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: orders
+  namespace: shop
+  annotations: {eks.amazonaws.com/role-arn: "arn:aws:iam::111111111111:role/orders"}`)
+	_, err := Translate([]*unstructured.Unstructured{sa}, platform.EKS, platform.GKE, load(t), []Decision{{Feature: "identity/shop/orders", Choose: Equivalent}}, Source{})
+	if err == nil || !strings.Contains(err.Error(), "isn't an option here") {
+		t.Errorf("got %v", err)
+	}
+	r, err := Translate([]*unstructured.Unstructured{sa}, platform.EKS, platform.GKE, load(t), []Decision{{Feature: "identity/shop/gone", Choose: LeaveOut}}, Source{})
+	if err != nil || len(r.Stale) != 1 || r.Stale[0] != "identity/shop/gone" {
+		t.Errorf("stale %v, %v", r, err)
+	}
+}
+
+func TestReadDecisionsPlainErrors(t *testing.T) {
+	for doc, want := range map[string]string{
+		"this: [is: not valid":                 "isn't readable YAML",
+		"- feature: a\n  chose: keep-source\n": `unknown key "chose"`,
+		"- feature: a\n  choose: kep-source\n": "choose must be keep-source",
+		"- choose: keep-source\n":              "has no feature",
+	} {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, DecisionsFile), []byte(strings.ReplaceAll(doc, `\n`, "\n")), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ReadDecisions(dir); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%q: got %v, want %q", doc, err, want)
+		}
+	}
+	if ds, err := ReadDecisions(t.TempDir()); err != nil || ds != nil {
+		t.Errorf("no file: %v, %v", ds, err)
+	}
+}
+
+// a Pod template using a kept AWS identity gets what EKS's webhook gives, appended to what it has, without overriding its own variables
+func TestKeptIdentityInjected(t *testing.T) {
+	sa := u(t, `
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: orders
+  namespace: shop
+  annotations: {eks.amazonaws.com/role-arn: "arn:aws:iam::111111111111:role/orders"}`)
+	dep := u(t, `
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: orders, namespace: shop}
+spec:
+  template:
+    spec:
+      serviceAccountName: orders
+      volumes: [{name: cache, emptyDir: {}}]
+      containers:
+      - name: app
+        image: app
+        env: [{name: AWS_REGION, value: us-west-2}]
+        volumeMounts: [{name: cache, mountPath: /cache}]
+      - name: sidecar
+        image: sidecar`)
+	other := u(t, `
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: web, namespace: shop}
+spec: {template: {spec: {containers: [{name: web, image: web}]}}}`)
+	r, err := Translate([]*unstructured.Unstructured{dep, other, sa}, platform.EKS, platform.GKE, load(t), nil, Source{Region: "us-east-2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Identities) != 1 || r.Identities[0].Cloud != "aws" {
+		t.Fatalf("identities %+v", r.Identities)
+	}
+	if patchFor(r, "Deployment", "web") != nil {
+		t.Error("a Deployment using another ServiceAccount was changed")
+	}
+	p := patchFor(r, "Deployment", "orders")
+	if p == nil {
+		t.Fatal("no patch for the Deployment using the identity")
+	}
+	paths := map[string]int{}
+	var roleSet, regionOverridden bool
+	for _, op := range p.Ops {
+		paths[op.Path]++
+		if m, ok := op.Value.(map[string]any); ok {
+			if m["name"] == "AWS_ROLE_ARN" {
+				roleSet = true
+			}
+			if m["name"] == "AWS_REGION" && strings.HasSuffix(op.Path, "/0/env/-") {
+				regionOverridden = true
+			}
+		}
+	}
+	for _, want := range []string{"/spec/template/spec/volumes/-", "/spec/template/spec/containers/0/volumeMounts/-", "/spec/template/spec/containers/1/volumeMounts", "/spec/template/spec/containers/1/env"} {
+		if paths[want] == 0 {
+			t.Errorf("no op at %s: %v", want, paths)
+		}
+	}
+	if !roleSet || regionOverridden {
+		t.Errorf("role set %v, app's own AWS_REGION overridden %v", roleSet, regionOverridden)
+	}
+}
+
+// the translation's RESTORE.md says what doesnt come over and why, the source version, and the trust steps for a kept identity
+func TestRestoreSaysWhatStaysBehind(t *testing.T) {
+	sa := u(t, `
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: orders
+  namespace: shop
+  annotations: {eks.amazonaws.com/role-arn: "arn:aws:iam::111111111111:role/orders"}`)
+	r, err := Translate([]*unstructured.Unstructured{sa}, platform.EKS, platform.GKE, load(t), nil, Source{Region: "us-east-2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := restore(r, RestoreInfo{Cluster: "prod", SourceVersion: "v1.37.1", Volumes: []string{"shop/data-db-0"}})
+	for _, want := range []string{
+		"# Restoring prod on GKE",
+		"The data in claim shop/data-db-0 | Its disk is an AWS EBS volume, and a GKE node can't attach it",
+		"The source ran Kubernetes v1.37.1",
+		"gcloud container clusters describe <new cluster>",
+		"aws iam create-open-id-connect-provider",
+		"system:serviceaccount:shop:orders",
+		"apply --server-side -k platform/gcp/gke",
+		"Bring the data over",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("RESTORE.md lacks %q", want)
+		}
+	}
+}
+
+// an internal ALB Ingress stays internal on GKE, through GKE's class annotation, and its ALB settings are listed as dropped
+func TestIngressStaysInternal(t *testing.T) {
+	ing := u(t, `
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: shop
+  namespace: shop
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internal
+    alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:us-east-2:111111111111:certificate/abc
+spec:
+  ingressClassName: alb
+  rules: [{host: shop.acme.com}]`)
+	r, err := Translate([]*unstructured.Unstructured{ing}, platform.EKS, platform.GKE, load(t), nil, Source{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := patchFor(r, "Ingress", "shop")
+	if p == nil {
+		t.Fatal("no patch")
+	}
+	if op := opAt(p, "/metadata/annotations/kubernetes.io~1ingress.class"); op == nil || op.Value != "gce-internal" {
+		t.Errorf("not gce-internal: %+v", p.Ops)
+	}
+	if op := opAt(p, "/spec/ingressClassName"); op == nil || op.Op != "remove" {
+		t.Errorf("ingressClassName not removed: %+v", p.Ops)
+	}
+	if !strings.Contains(strings.Join(r.Notes, " "), "certificate-arn") {
+		t.Errorf("the dropped certificate isn't listed: %v", r.Notes)
+	}
+	// on AKS, whose Ingress controller is public only, an internal Ingress waits for a decision
+	r, _ = Translate([]*unstructured.Unstructured{ing}, platform.EKS, platform.AKS, load(t), nil, Source{})
+	if len(r.Undecided()) != 1 || !strings.HasPrefix(r.Undecided()[0].Feature, "ingress/") {
+		t.Errorf("decisions %+v", r.Decisions)
+	}
+}
+
+// another platform's IngressClass goes, and a VolumeSnapshotClass moves to the target's driver
+func TestClassesMove(t *testing.T) {
+	r, err := Translate([]*unstructured.Unstructured{
+		u(t, `{apiVersion: networking.k8s.io/v1, kind: IngressClass, metadata: {name: alb}, spec: {controller: ingress.k8s.aws/alb}}`),
+		u(t, `{apiVersion: snapshot.storage.k8s.io/v1, kind: VolumeSnapshotClass, metadata: {name: ebs}, driver: ebs.csi.aws.com, deletionPolicy: Delete, parameters: {tagSpecification_1: "a=b"}}`),
+	}, platform.EKS, platform.GKE, load(t), nil, Source{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p := patchFor(r, "IngressClass", "alb"); p == nil || !p.Delete {
+		t.Errorf("IngressClass: %+v", p)
+	}
+	p := patchFor(r, "VolumeSnapshotClass", "ebs")
+	if p == nil || opAt(p, "/driver").Value != "pd.csi.storage.gke.io" || opAt(p, "/parameters") == nil {
+		t.Errorf("VolumeSnapshotClass: %+v", p)
+	}
+}
+
+// a SecretProviderClass moves to the target's provider keeping its secret names
+func TestSecretProviderClassConverted(t *testing.T) {
+	spc := u(t, `
+apiVersion: secrets-store.csi.x-k8s.io/v1
+kind: SecretProviderClass
+metadata: {name: orders, namespace: shop}
+spec:
+  provider: aws
+  parameters:
+    objects: |
+      - objectName: "prod/orders/db"
+        objectType: secretsmanager`)
+	r, err := Translate([]*unstructured.Unstructured{spc}, platform.EKS, platform.GKE, load(t), nil, Source{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := patchFor(r, "SecretProviderClass", "orders")
+	if p == nil || opAt(p, "/spec/provider").Value != "gcp" {
+		t.Fatalf("got %+v", p)
+	}
+	secrets := opAt(p, "/spec/parameters").Value.(map[string]any)["secrets"].(string)
+	if !strings.Contains(secrets, "projects/<project>/secrets/prod-orders-db/versions/latest") {
+		t.Errorf("secrets %q", secrets)
+	}
+	if !strings.Contains(strings.Join(r.Notes, " "), "prod/orders/db as prod-orders-db") {
+		t.Errorf("the rename isn't said: %v", r.Notes)
+	}
+}
+
+// Copyright The SetDrift Authors
+// SPDX-License-Identifier: Apache-2.0

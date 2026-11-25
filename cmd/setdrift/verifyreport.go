@@ -51,6 +51,8 @@ type verifyDocument struct {
 	Report verify.Report `json:"report"`
 	// the summary of the differences that likelyCause reads
 	Analysis verify.Analysis `json:"analysis"`
+	// NetworkPolicy is the network policy check, absent when it had nothing to say
+	NetworkPolicy *networkPolicyCheck `json:"networkPolicy,omitempty"`
 }
 
 // causes are the groups the differences print in, by Diff.Kind, in this order, with the heading each group gets
@@ -58,6 +60,7 @@ var causes = []struct {
 	kind  verify.Kind
 	title string
 }{
+	{verify.KindWontWork, "Won't work on this platform (they name another platform's features)"},
 	{verify.KindChanged, "Fields differ"},
 	{verify.KindNotInCluster, "Not in the cluster (applying would create them)"},
 	{verify.KindNotServed, "Type not served by the cluster (its CRD is missing)"},
@@ -71,6 +74,16 @@ var causes = []struct {
 func likelyCause(d verifyDocument) string {
 	a, r := d.Analysis, d.Report
 	n := len(r.Diffs)
+	// checking if resources name another platform's features, if so thats the cause to fix first, since the rest may follow from it
+	wont := 0
+	for _, df := range r.Diffs {
+		if df.Kind == verify.KindWontWork {
+			wont++
+		}
+	}
+	if wont > 0 {
+		return fmt.Sprintf("%s would apply here but not work: %s another platform's features, like its load balancer class, storage provisioner or identity annotation. Each one below says what it names.", text.Plural(wont, "resource", "resources"), text.Word(wont, "it names", "they name"))
+	}
 	// checking if at least as many resources couldnt be checked as differ, if so missing permissions are the likely cause
 	if nc := len(r.NotChecked); nc > 0 && nc >= n {
 		who := "These credentials"
@@ -434,6 +447,17 @@ func verifyMarkdown(d verifyDocument) []byte {
 	// checking if the export has CRDs the cluster lacks, if so the table lists them
 	if len(r.MissingCRDs) > 0 {
 		fmt.Fprintf(&b, "| CRDs missing from the cluster | %s |\n", strings.Join(r.MissingCRDs, ", "))
+	}
+	// checking if the network policy check had something to say, if so the table has it
+	if c := d.NetworkPolicy; c != nil {
+		label := "Network policies"
+		switch {
+		case c.Failed:
+			label = "**Network policies not enforced**"
+		case c.Warning:
+			label = "**Network policies (warning)**"
+		}
+		fmt.Fprintf(&b, "| %s | %s |\n", label, c.Message)
 	}
 	// checking if a likely cause was found, if so it goes right under the table
 	if d.LikelyCause != "" {
