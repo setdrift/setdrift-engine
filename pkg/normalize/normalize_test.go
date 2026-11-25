@@ -415,5 +415,29 @@ func TestArgoOperation(t *testing.T) {
 	}
 }
 
+// check that a webhook's empty selectors go as defaults, AKS's admissions enforcer's two expressions go when its field manager wrote them, and a user's expression stays
+func TestWebhookSelectors(t *testing.T) {
+	const enforcer = `{"key":"control-plane","operator":"NotIn","values":["true"]},{"key":"kubernetes.azure.com/managedby","operator":"NotIn","values":["aks"]}`
+	const users = `{"key":"team","operator":"In","values":["shop"]}`
+	for _, tc := range []struct {
+		name, managers, selector, want string
+	}{
+		{"empty selectors, the defaults", `[{"manager":"helm","operation":"Apply"}]`, `"namespaceSelector":{},"objectSelector":{}`, `[{"name":"a"}]`},
+		{"AKS's expressions, written by the enforcer", `[{"manager":"helm","operation":"Apply"},{"manager":"admissionsenforcer","operation":"Update"}]`,
+			`"namespaceSelector":{"matchExpressions":[` + enforcer + `]}`, `[{"name":"a"}]`},
+		{"AKS's expressions beside a user's", `[{"manager":"admissionsenforcer","operation":"Update"}]`,
+			`"namespaceSelector":{"matchExpressions":[` + users + `,` + enforcer + `]}`, `[{"name":"a","namespaceSelector":{"matchExpressions":[` + users + `]}}]`},
+		{"the same expressions, without the enforcer, are the user's", `[{"manager":"helm","operation":"Apply"}]`,
+			`"namespaceSelector":{"matchExpressions":[` + enforcer + `]}`, `[{"name":"a","namespaceSelector":{"matchExpressions":[` + enforcer + `]}}]`},
+	} {
+		o := parse(t, `{"apiVersion":"admissionregistration.k8s.io/v1","kind":"ValidatingWebhookConfiguration",
+		  "metadata":{"name":"externalsecret-validate","managedFields":`+tc.managers+`},
+		  "webhooks":[{"name":"a",`+tc.selector+`}]}`)
+		if got := jsonOf(run(t, o)["webhooks"]); got != tc.want {
+			t.Errorf("%s: webhooks %s, want %s", tc.name, got, tc.want)
+		}
+	}
+}
+
 // Copyright The SetDrift Authors
 // SPDX-License-Identifier: Apache-2.0

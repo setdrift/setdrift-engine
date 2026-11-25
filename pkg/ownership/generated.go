@@ -120,6 +120,9 @@ func generatedBy(o *resource.Object, idx index) string {
 		if ann["apf.kubernetes.io/autoupdate-spec"] == "true" {
 			return "the API server (default API priority and fairness)"
 		}
+	case "cilium.io/CiliumEndpoint", "cilium.io/CiliumEndpointSlice", "cilium.io/CiliumIdentity", "cilium.io/CiliumNode":
+		// Cilium's agent and operator record each pod's endpoint, each security identity and each node, nobody writes these by hand
+		return "Cilium (the endpoints, identities and nodes it records)"
 	case "/PersistentVolume":
 		// checking if it was dynamically provisioned, if so the PersistentVolumeClaim, which is exported, provisions a new one
 		if ann["pv.kubernetes.io/provisioned-by"] != "" {
