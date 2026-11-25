@@ -219,7 +219,8 @@ func (f FileSource) kustomization(path string) (reason string, err error) {
 }
 
 // exportOwnDirs are the directories setdrift export writes in a cluster's directory for people and tools, not manifests, kustomize.ProfileDir in pkg/emit/kustomize/profile.go
-var exportOwnDirs = map[string]bool{"cluster_profile": true}
+// translations holds translate's overlays for other platforms, patches of the export's own manifests, not more of them
+var exportOwnDirs = map[string]bool{"cluster_profile": true, "translations": true}
 
 // exportOwnDir tells if a directory is one an export writes in a cluster's directory for people and tools, found by its name and the export marker beside it
 func exportOwnDir(path string) bool {

@@ -30,6 +30,7 @@ import (
 	"setdrift.io/setdrift-engine/internal/text"
 	"setdrift.io/setdrift-engine/internal/version"
 	"setdrift.io/setdrift-engine/pkg/awsinventory"
+	"setdrift.io/setdrift-engine/pkg/capability"
 	"setdrift.io/setdrift-engine/pkg/collect"
 	"setdrift.io/setdrift-engine/pkg/emit/kustomize"
 	"setdrift.io/setdrift-engine/pkg/helmsource"
@@ -170,6 +171,10 @@ var now = time.Now
 // run checks the flags, reads the source, and writes the export and its snapshots
 // everything that can be checked up front is checked before the read, so a typo doesnt fail after minutes of cluster reading
 func (o *exportOptions) run(cmd *cobra.Command) error {
+	// invoking checkFolders to refuse a translation, a platform set or a place inside an export as -o or --from-dir, its defined in folders.go
+	if err := checkExportFolders(o.output, o.fromDir); err != nil {
+		return err
+	}
 	// invoking emitter to check the output flags and set up the kustomize writer, its defined below
 	emitter, err := o.emitter(cmd)
 	if err != nil {
@@ -214,6 +219,10 @@ func (o *exportOptions) run(cmd *cobra.Command) error {
 	// invoking Emit to write the snapshot as the kustomize repository, its defined in pkg/emit/kustomize/kustomize.go
 	if err := emitter.Emit(snap, o.output); err != nil {
 		return err
+	}
+	// invoking keptTranslations to say which translations the export kept, older than it now, its defined in folders.go
+	for _, line := range keptTranslations(kustomize.ClusterDir(o.output, snap.GetCluster().GetName()), o.output) {
+		fmt.Fprintln(cmd.ErrOrStderr(), line)
 	}
 	// invoking HelmRepos.Unmatched and checking if any release entries matched no release, if so they get a warning, its defined in pkg/helmsource/repos.go
 	// those are likely typos, or releases removed since
@@ -710,7 +719,12 @@ func confirmReplace(dir, cluster, other string, force, yes, interactive bool, in
 	}
 	files := 0
 	// counting the files that will be deleted, for the message only, so an unreadable entry is skipped and not counted
-	_ = filepath.WalkDir(root, func(_ string, d fs.DirEntry, err error) error {
+	kept := filepath.Join(root, capability.TranslationsDir)
+	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		// checking if its the translations, if so theyre kept, not counted
+		if err == nil && d.IsDir() && path == kept {
+			return fs.SkipDir
+		}
 		// checking if this entry is a readable file
 		if err == nil && !d.IsDir() {
 			files++
@@ -722,6 +736,10 @@ func confirmReplace(dir, cluster, other string, force, yes, interactive bool, in
 	if files > 0 {
 		msg = fmt.Sprintf("Output directory %s is not empty. %s (%s) will be deleted and written again; everything else in %s is kept.",
 			dir, root, text.Plural(files, "file", "files"), dir)
+		// checking if the export has translations, if so the message says theyre kept with their decisions
+		if fi, err := os.Stat(kept); err == nil && fi.IsDir() {
+			msg += " Its translations (" + capability.TranslationsDir + "/) and their decisions are kept."
+		}
 	} else {
 		msg = fmt.Sprintf("Output directory %s is not empty. The export will be written to %s; nothing is deleted.", dir, root)
 	}

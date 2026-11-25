@@ -342,7 +342,7 @@ metadata:
 		"gcloud container clusters describe <new cluster>",
 		"aws iam create-open-id-connect-provider",
 		"system:serviceaccount:shop:orders",
-		"apply --server-side -k platform/gcp/gke",
+		"apply --server-side -k translations/te2g",
 		"Bring the data over",
 	} {
 		if !strings.Contains(got, want) {

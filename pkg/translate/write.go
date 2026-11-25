@@ -11,6 +11,8 @@ import (
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/yaml"
+
+	"setdrift.io/setdrift-engine/pkg/capability"
 )
 
 // the files a translation writes in its platform directory
@@ -25,6 +27,8 @@ const (
 
 // Stamp is what StampFile holds
 type Stamp struct {
+	// Code names the translation, like te2g for EKS to GKE, the same as its directory's name
+	Code         string `json:"code,omitempty"`
 	From         string `json:"from"`
 	To           string `json:"to"`
 	TranslatedAt string `json:"translatedAt"`
@@ -148,7 +152,7 @@ func Write(root string, r *Result, resources []string, version string, ri Restor
 	if entries, err := os.ReadDir(dir); err == nil {
 		onlyDecisions := len(entries) == 1 && entries[0].Name() == DecisionsFile
 		if _, err := os.Stat(filepath.Join(dir, StampFile)); err != nil && !onlyDecisions {
-			return fmt.Errorf("%s exists and wasn't written by setdrift translate (it has no %s). If it's this export's own platform set, the export is already for %s; otherwise move it aside and run translate again", dir, StampFile, r.To.Name())
+			return fmt.Errorf("%s exists and wasn't written by setdrift translate (it has no %s): move it aside and run translate again", dir, StampFile)
 		}
 	}
 	if err := os.MkdirAll(dir, 0o750); err != nil {
@@ -183,6 +187,8 @@ func Write(root string, r *Result, resources []string, version string, ri Restor
 		res = append(res, equivalentsDir+"/"+name)
 	}
 	k["resources"] = res
+	// every object the overlay applies, and its Pod template, carries the translation's code, so the target cluster's objects say where they came from
+	k["commonAnnotations"] = map[string]string{capability.TranslationAnnotation: r.Code}
 	var patches []map[string]any
 	for _, p := range r.Patches {
 		// invoking patchEntry to write one patch as kustomize reads it, its defined below
@@ -203,7 +209,7 @@ func Write(root string, r *Result, resources []string, version string, ri Restor
 	if err := os.WriteFile(filepath.Join(dir, "kustomization.yaml"), append([]byte(kHead), kb...), 0o600); err != nil {
 		return err
 	}
-	sb, err := yaml.Marshal(Stamp{From: string(r.From), To: string(r.To), TranslatedAt: time.Now().UTC().Format(time.RFC3339), SetDrift: version})
+	sb, err := yaml.Marshal(Stamp{Code: r.Code, From: string(r.From), To: string(r.To), TranslatedAt: time.Now().UTC().Format(time.RFC3339), SetDrift: version})
 	if err != nil {
 		return err
 	}

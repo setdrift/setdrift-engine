@@ -103,8 +103,9 @@ type Op struct {
 // Result is a translation, its patches, its decisions and what the README should say
 type Result struct {
 	From, To platform.Distribution
-	// Dir is the target's platform directory under the cluster's, like platform/gcp/gke
+	// Dir is where the translation goes under the cluster's directory, translations/<code>, and Code its name, like te2g for EKS to GKE
 	Dir       string
+	Code      string
 	Patches   []Patch
 	Decisions []Decision
 	// Notes are what the user should know, like a placement that was relaxed
@@ -155,7 +156,7 @@ func Translate(objs []*unstructured.Unstructured, from, to platform.Distribution
 	if from == to {
 		return nil, fmt.Errorf("this export is already for %s", tgt.Name)
 	}
-	r := &Result{From: from, To: to, Dir: tgt.Translate.Dir}
+	r := &Result{From: from, To: to, Dir: m.TranslationDir(from, to), Code: m.TranslationCode(from, to)}
 	chosen := map[string]string{}
 	for _, d := range earlier {
 		chosen[d.Feature] = d.Choose
@@ -173,9 +174,10 @@ func Translate(objs []*unstructured.Unstructured, from, to platform.Distribution
 	// invoking networkPolicies for the decision on the export's NetworkPolicies, its defined below
 	t.networkPolicies(objs, src.NetworkPolicy)
 	// a second pass, now that every kept identity is known, gives the Pods using one what its cloud's webhook would have
+	// and takes out what an earlier translation injected where its no longer needed, like back on the identity's own cloud
 	for _, o := range objs {
 		base, ok := podSpecPath(o.GetKind())
-		if !ok || len(t.kept) == 0 {
+		if !ok {
 			continue
 		}
 		sa, _, _ := unstructured.NestedString(o.Object, append(append([]string{}, base...), "serviceAccountName")...)
@@ -183,13 +185,18 @@ func Translate(objs []*unstructured.Unstructured, from, to platform.Distribution
 			sa = "default"
 		}
 		id, kept := t.kept[o.GetNamespace()+"/"+sa]
-		if !kept {
-			continue
+		// invoking injected to read what an earlier translation added, its defined in identity.go
+		names, already := injected(o)
+		switch {
+		case already && kept:
+			// it carries the token already, from translating to an earlier cloud, and still needs it
+		case already:
+			// invoking removeFederation to take it out, its defined in identity.go
+			t.removeFederation(&r.Patches[t.patchOf(o)], o, names)
+		case kept:
+			// invoking injectFederation to add the token and environment, its defined in identity.go
+			t.injectFederation(&r.Patches[t.patchOf(o)], o, id)
 		}
-		// invoking patchOf to add to the object's patch, or start one, its defined below
-		i := t.patchOf(o)
-		// invoking injectFederation to add the token and environment, its defined in identity.go
-		t.injectFederation(&r.Patches[i], o, id)
 	}
 	r.Patches = slices.DeleteFunc(r.Patches, func(p Patch) bool { return len(p.Ops) == 0 && !p.Delete })
 	for _, id := range t.kept {
@@ -501,7 +508,16 @@ func (t *translator) service(p *Patch, ref string, o *unstructured.Unstructured)
 	ann := o.GetAnnotations()
 	// invoking exposure to read whether the source load balancer is internal or external, its defined below
 	exp, source := t.exposure(cls, ann)
-	if cls != "" && t.foreign(t.m.LoadBalancerClassOwners(cls)) {
+	want := t.tgt.Translate.LoadBalancer.Class
+	switch {
+	// the target names its own class, like EKS Auto Mode's eks.amazonaws.com/nlb, so a Service without one or with another platform's gets it
+	case want != "" && cls == "":
+		p.Ops = append(p.Ops, Op{Op: "add", Path: "/spec/loadBalancerClass", Value: want})
+		p.Why = append(p.Why, fmt.Sprintf("load balancer class %s added: %s's load balancer controller serves it", want, t.tgt.Name))
+	case want != "" && t.foreign(t.m.LoadBalancerClassOwners(cls)):
+		p.Ops = append(p.Ops, Op{Op: "replace", Path: "/spec/loadBalancerClass", Value: want})
+		p.Why = append(p.Why, fmt.Sprintf("load balancer class %s becomes %s, %s's", cls, want, t.tgt.Name))
+	case cls != "" && t.foreign(t.m.LoadBalancerClassOwners(cls)):
 		p.Ops = append(p.Ops, Op{Op: "remove", Path: "/spec/loadBalancerClass"})
 		p.Why = append(p.Why, fmt.Sprintf("load balancer class %s removed: %s gives a Service its load balancer without one", cls, t.tgt.Name))
 	}
@@ -511,15 +527,15 @@ func (t *translator) service(p *Patch, ref string, o *unstructured.Unstructured)
 			p.Ops = append(p.Ops, Op{Op: "remove", Path: "/metadata/annotations/" + escape(k)})
 		}
 	}
-	want := t.tgt.Translate.LoadBalancer.External
+	wantAnn := t.tgt.Translate.LoadBalancer.External
 	if exp == "internal" {
-		want = t.tgt.Translate.LoadBalancer.Internal
+		wantAnn = t.tgt.Translate.LoadBalancer.Internal
 	}
-	for _, k := range slices.Sorted(maps.Keys(want)) {
+	for _, k := range slices.Sorted(maps.Keys(wantAnn)) {
 		if len(ann) == 0 && !hasAddedAnnotations(p) {
 			p.Ops = append(p.Ops, Op{Op: "add", Path: "/metadata/annotations", Value: map[string]any{}})
 		}
-		p.Ops = append(p.Ops, Op{Op: "add", Path: "/metadata/annotations/" + escape(k), Value: want[k]})
+		p.Ops = append(p.Ops, Op{Op: "add", Path: "/metadata/annotations/" + escape(k), Value: wantAnn[k]})
 	}
 	if len(p.Ops) > 0 {
 		p.Why = append(p.Why, fmt.Sprintf("%s load balancer (%s), written explicitly for %s", exp, source, t.tgt.Name))

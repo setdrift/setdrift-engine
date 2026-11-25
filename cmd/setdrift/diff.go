@@ -323,8 +323,15 @@ func (o *diffOptions) resolve(arg string) (side, error) {
 	if !exists {
 		return side{}, fmt.Errorf("%s: no such file or directory (a snapshot file, a directory of manifests, or %sNAME for a kubeconfig context)", arg, contextPrefix)
 	}
-	// checking if its a directory, if so its a directory of manifests
+	// checking if its a directory, if so its a directory of manifests, unless its a translation or an export's platform set
 	if fi.IsDir() {
+		// invoking folderKind to tell them apart, its defined in folders.go
+		switch f := folderKind(arg); f.kind {
+		case folderTranslation:
+			return side{}, fmt.Errorf("%s is %s, the changes for another platform, not a cluster's manifests: compare the export (%s), or the cluster it was applied to", arg, f.describe(), f.root)
+		case folderPlatformSet:
+			return side{}, fmt.Errorf("%s is the export's own platform set (%s), not a cluster's manifests: compare the export, %s", arg, f.rel, f.root)
+		}
 		return side{arg: arg, path: arg, dir: true}, nil
 	}
 	f, err := os.Open(arg) //#nosec G304 -- a snapshot file the user named

@@ -3,6 +3,7 @@ package translate
 import (
 	"fmt"
 	"slices"
+	"strings"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
@@ -26,6 +27,8 @@ const (
 	azureTokenFile  = "azure-identity-token"
 	azureAudience   = "api://AzureADTokenExchange"
 	federationToken = "setdrift-federation-token"
+	// federationMarker on a Pod template records what a translation injected, the env var names, so a translation back to the identity's own cloud removes exactly those
+	federationMarker = "setdrift.io/federation"
 )
 
 // keptIdentity reads the identity of a ServiceAccount from its annotations, the cloud it belongs to and its id, ok false when it has none the translation injects
@@ -87,6 +90,7 @@ func (t *translator) injectFederation(p *Patch, o *unstructured.Unstructured, id
 	} else {
 		p.Ops = append(p.Ops, Op{Op: "add", Path: path + "/volumes", Value: []any{vol}})
 	}
+	var added []string
 	// each container gets the mount and the environment, init containers too
 	for _, field := range []string{"initContainers", "containers"} {
 		cs, _ := spec[field].([]any)
@@ -107,16 +111,95 @@ func (t *translator) injectFederation(p *Patch, o *unstructured.Unstructured, id
 						continue
 					}
 					p.Ops = append(p.Ops, Op{Op: "add", Path: cpath + "/env/-", Value: e})
+					added = append(added, name.(string))
 				}
 			} else {
 				p.Ops = append(p.Ops, Op{Op: "add", Path: cpath + "/env", Value: env})
+				for _, e := range env {
+					added = append(added, e.(map[string]any)["name"].(string))
+				}
 			}
 		}
+	}
+	// the marker, on the Pod template, records the env vars added, so a translation back to the identity's own cloud removes only those
+	slices.Sort(added)
+	meta := metaPath(base)
+	if anns, ok, _ := unstructured.NestedMap(o.Object, meta...); ok && anns != nil {
+		p.Ops = append(p.Ops, Op{Op: "add", Path: "/" + joinPointer(append(meta, federationMarker)), Value: strings.Join(slices.Compact(added), ",")})
+	} else {
+		p.Ops = append(p.Ops, Op{Op: "add", Path: "/" + joinPointer(meta), Value: map[string]any{federationMarker: strings.Join(slices.Compact(added), ",")}})
 	}
 	cloud := map[string]string{"aws": "AWS", "azure": "Azure"}[id.Cloud]
 	home := map[string]string{"aws": "EKS", "azure": "AKS"}[id.Cloud]
 	p.Why = append(p.Why, fmt.Sprintf("uses %s/%s, which keeps its %s identity: given the projected token and environment %s's webhook gives on its own platform, so the %s SDK works unchanged", id.Namespace, id.ServiceAccount, cloud, home, cloud))
 	return true
+}
+
+// metaPath is the path to a Pod template's annotations, from its spec's path
+func metaPath(base []string) []string {
+	return append(append([]string{}, base[:len(base)-1]...), "metadata", "annotations")
+}
+
+// injected gives back the env var names an earlier translation injected into o's Pod template, ok false when it injected nothing
+func injected(o *unstructured.Unstructured) (names []string, ok bool) {
+	base, isPod := podSpecPath(o.GetKind())
+	if !isPod {
+		return nil, false
+	}
+	v, found, _ := unstructured.NestedString(o.Object, append(metaPath(base), federationMarker)...)
+	if !found {
+		return nil, false
+	}
+	return strings.Split(v, ","), true
+}
+
+// removeFederation takes out what an earlier translation injected, its token volume, the mounts, the env vars its marker names and the marker
+// for a translation back to the identity's own cloud, whose webhook gives the Pods the same again, and would clash with a second mount at the same path
+// a list left empty is removed whole, so the template is as it was before the first translation
+func (t *translator) removeFederation(p *Patch, o *unstructured.Unstructured, names []string) {
+	base, _ := podSpecPath(p.Kind)
+	spec, _, _ := unstructured.NestedMap(o.Object, base...)
+	path := "/" + joinPointer(base)
+	// removeFrom adds the ops that remove the matching items of a list, from the last, or the whole list when nothing else is in it
+	removeFrom := func(at string, list []any, match func(map[string]any) bool) {
+		var hits []int
+		for i, x := range list {
+			if m, _ := x.(map[string]any); m != nil && match(m) {
+				hits = append(hits, i)
+			}
+		}
+		if len(hits) == 0 {
+			return
+		}
+		if len(hits) == len(list) {
+			p.Ops = append(p.Ops, Op{Op: "remove", Path: at})
+			return
+		}
+		for i := len(hits) - 1; i >= 0; i-- {
+			p.Ops = append(p.Ops, Op{Op: "remove", Path: fmt.Sprintf("%s/%d", at, hits[i])})
+		}
+	}
+	for _, field := range []string{"initContainers", "containers"} {
+		cs, _ := spec[field].([]any)
+		for i, c := range cs {
+			cm, _ := c.(map[string]any)
+			cpath := fmt.Sprintf("%s/%s/%d", path, field, i)
+			env, _ := cm["env"].([]any)
+			removeFrom(cpath+"/env", env, func(m map[string]any) bool { n, _ := m["name"].(string); return slices.Contains(names, n) })
+			mounts, _ := cm["volumeMounts"].([]any)
+			removeFrom(cpath+"/volumeMounts", mounts, func(m map[string]any) bool { return m["name"] == federationToken })
+		}
+	}
+	vols, _ := spec["volumes"].([]any)
+	removeFrom(path+"/volumes", vols, func(m map[string]any) bool { return m["name"] == federationToken })
+	meta := metaPath(base)
+	anns, _, _ := unstructured.NestedMap(o.Object, meta...)
+	if len(anns) == 1 {
+		p.Ops = append(p.Ops, Op{Op: "remove", Path: "/" + joinPointer(meta)})
+	} else {
+		p.Ops = append(p.Ops, Op{Op: "remove", Path: "/" + joinPointer(append(meta, federationMarker))})
+	}
+	p.Why = append(p.Why, fmt.Sprintf("the cloud identity token and settings an earlier translation added are taken out: on %s, its own webhook gives them again", t.tgt.Name))
 }
 
 // Copyright The SetDrift Authors

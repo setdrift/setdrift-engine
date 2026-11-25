@@ -1,12 +1,29 @@
 # setdrift translate
 
-Writes an export for another platform, like an EKS export for GKE. The export's generic set stays as it is, and the translation is an overlay beside it, at the target's platform directory (`platform/gcp/gke` for GKE), with what that platform reads differently rewritten.
+Writes an export for another platform, like an EKS export for GKE. The export's generic set stays as it is, and the translation is an overlay beside it, in `translations/<code>` (`translations/te2g` for EKS to GKE), with what that platform reads differently rewritten.
 
 ## Synopsis
 
 ```sh
 setdrift translate <path-to-export> --to <platform> [flags]
 ```
+
+## Where translations go
+
+Each translation is in the export's `translations/<code>/`, named by its direction, `t`, the source platform's letter, `2`, the target's.
+
+| Code | Translation |
+|---|---|
+| `te2g` | EKS to GKE |
+| `te2a` | EKS to AKS |
+| `tg2e` | GKE to EKS |
+| `tg2a` | GKE to AKS |
+| `ta2e` | AKS to EKS |
+| `ta2g` | AKS to GKE |
+
+A source on no known platform is `x`, like `tx2g`. The directory holds the overlay, its `translation.yaml` (from, to and when), README.md, RESTORE.md and `translate-decisions.yaml`. Every object the overlay applies carries the annotation `setdrift.io/translation` with the code, so the target cluster's objects say they arrived through a translation. `diff` leaves it out of a comparison.
+
+A translation isn't an export, and the two aren't interchangeable. Given a translation or the export's own platform set, `translate` says so and names the export to give instead. Exporting again keeps the translations and their decisions, and says to run `translate` again so each is in step with the new export.
 
 ## What it rewrites
 
@@ -56,7 +73,7 @@ setdrift translate ./setdrift-export --to gke
 Then apply it on the GKE cluster, and check it.
 
 ```sh
-kubectl --context gke-prod apply --server-side -k ./setdrift-export/clusters/prod/platform/gcp/gke
+kubectl --context gke-prod apply --server-side -k ./setdrift-export/clusters/prod/translations/te2g
 setdrift verify --context gke-prod ./setdrift-export
 ```
 

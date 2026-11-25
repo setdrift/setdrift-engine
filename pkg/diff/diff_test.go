@@ -372,5 +372,25 @@ func TestWontWorkOnItsSide(t *testing.T) {
 	}
 }
 
+// a translation's stamp, on the object or its Pod template, is no difference, and the manifest it was read from is left as it was
+func TestTranslationMarkIsNoDifference(t *testing.T) {
+	a := map[string]any{"metadata": map[string]any{"name": "web"}, "spec": map[string]any{"template": map[string]any{"metadata": map[string]any{"labels": map[string]any{"app": "web"}}}}}
+	b := map[string]any{
+		"metadata": map[string]any{"name": "web", "annotations": map[string]any{"setdrift.io/translation": "te2g"}},
+		"spec":     map[string]any{"template": map[string]any{"metadata": map[string]any{"labels": map[string]any{"app": "web"}, "annotations": map[string]any{"setdrift.io/translation": "te2g"}}}},
+	}
+	if f := Fields(WithoutTranslationMark(a), WithoutTranslationMark(b)); len(f) != 0 {
+		t.Errorf("%+v", f)
+	}
+	if b["metadata"].(map[string]any)["annotations"] == nil {
+		t.Error("the manifest itself was changed")
+	}
+	// another annotation beside it still counts
+	b["metadata"].(map[string]any)["annotations"].(map[string]any)["team"] = "orders"
+	if f := Fields(WithoutTranslationMark(a), WithoutTranslationMark(b)); len(f) != 1 || f[0].Path != "metadata.annotations" {
+		t.Errorf("%+v", f)
+	}
+}
+
 // Copyright The SetDrift Authors
 // SPDX-License-Identifier: Apache-2.0

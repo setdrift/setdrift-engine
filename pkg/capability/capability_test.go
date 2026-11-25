@@ -144,5 +144,32 @@ func TestMisfitsOnKind(t *testing.T) {
 	}
 }
 
+// every platform has its own code, and the translations between them are named as the user chose: t, the source, 2, the target
+func TestTranslationCodes(t *testing.T) {
+	m, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, p := range m.Platforms {
+		if p.Code == "" || p.Code == UnknownCode || seen[p.Code] {
+			t.Errorf("%s: code %q is empty, taken or the unknown one", p.Distribution, p.Code)
+		}
+		seen[p.Code] = true
+	}
+	for want, pair := range map[string][2]platform.Distribution{
+		"ta2e": {platform.AKS, platform.EKS}, "ta2g": {platform.AKS, platform.GKE}, "te2a": {platform.EKS, platform.AKS},
+		"te2g": {platform.EKS, platform.GKE}, "tg2a": {platform.GKE, platform.AKS}, "tg2e": {platform.GKE, platform.EKS},
+		"tx2g": {platform.Unknown, platform.GKE},
+	} {
+		if got := m.TranslationCode(pair[0], pair[1]); got != want {
+			t.Errorf("%v: %s, want %s", pair, got, want)
+		}
+	}
+	if d := m.TranslationDir(platform.EKS, platform.GKE); d != "translations/te2g" {
+		t.Errorf("dir %s", d)
+	}
+}
+
 // Copyright The SetDrift Authors
 // SPDX-License-Identifier: Apache-2.0
