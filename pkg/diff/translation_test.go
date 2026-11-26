@@ -110,5 +110,40 @@ func TestSourceWontWork(t *testing.T) {
 	}
 }
 
+// a kept identity named only by its annotation is decided, and says the step outside the cluster, not that nothing gives its Pods credentials
+// one with another reason, like a foreign finalizer, keeps every reason
+func TestKeptIdentityDecided(t *testing.T) {
+	sa := key("ServiceAccount", "shop", "reports")
+	other := key("ServiceAccount", "shop", "orders")
+	idReason := "identity annotation eks.amazonaws.com/role-arn belongs to EKS, and on AKS nothing gives its Pods those cloud credentials"
+	tr := Translation{
+		Code:       "te2a",
+		Exported:   map[Key]any{sa: map[string]any{}, other: map[string]any{}},
+		Translated: map[Key]any{sa: map[string]any{}, other: map[string]any{}},
+		Explain:    func(any) string { return "decided: keep-source" },
+		Kept:       func(any) string { return "keeps its cloud identity, RESTORE.md's step" },
+	}
+	r := Result{A: Side{Label: "eks"}, B: Side{Label: "aks"}, WontWork: []WontWork{
+		{Side: "aks", Object: Object{Key: sa}, Reasons: []string{idReason}},
+		{Side: "aks", Object: Object{Key: other}, Reasons: []string{idReason, "finalizer x belongs to EKS"}},
+	}}
+	r.ApplyTranslation(tr)
+	if len(r.Decided) != 2 || len(r.WontWork) != 0 || !r.Same() {
+		t.Fatalf("%+v", r)
+	}
+	for _, d := range r.Decided {
+		switch d.Object.Key {
+		case sa:
+			if len(d.Why) != 1 || !strings.Contains(d.Why[0], "RESTORE.md") {
+				t.Errorf("kept identity says %q", d.Why)
+			}
+		case other:
+			if len(d.Why) != 3 {
+				t.Errorf("an identity with another reason keeps them all, got %q", d.Why)
+			}
+		}
+	}
+}
+
 // Copyright The SetDrift Authors
 // SPDX-License-Identifier: Apache-2.0

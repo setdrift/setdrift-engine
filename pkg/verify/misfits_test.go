@@ -71,5 +71,43 @@ func TestMisfitsSkippedWithoutTarget(t *testing.T) {
 	}
 }
 
+// a ServiceAccount keeping its cloud identity by decision stays clean and is listed with the step outside the cluster, a 10 object run with one passes
+// with a foreign finalizer too its still wont work, the finalizer would hang its deletion
+func TestMisfitsKeptIdentity(t *testing.T) {
+	m, err := capability.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sa := func(name string, fin []any) *unstructured.Unstructured {
+		md := map[string]any{"name": name, "namespace": "shop", "annotations": map[string]any{"eks.amazonaws.com/role-arn": "arn:aws:iam::111122223333:role/" + name}}
+		if fin != nil {
+			md["finalizers"] = fin
+		}
+		return &unstructured.Unstructured{Object: map[string]any{"apiVersion": "v1", "kind": "ServiceAccount", "metadata": md}}
+	}
+	kept := func(o *unstructured.Unstructured) string {
+		if o.GetName() == "reports" {
+			return "keeps its cloud identity, RESTORE.md's step"
+		}
+		return ""
+	}
+	objs := []*unstructured.Unstructured{sa("reports", nil), sa("orders", nil)}
+	report := &Report{Total: 10, Clean: 10}
+	DryRunVerifier{Target: platform.AKS, Capability: m, Kept: kept}.misfits(objs, []*Diff{nil, nil}, report)
+	if report.Clean != 9 || len(report.Diffs) != 1 || report.Diffs[0].Ref != Ref(objs[1]) || report.Diffs[0].Kind != KindWontWork {
+		t.Fatalf("only the identity not kept wont work: %+v", report)
+	}
+	if len(report.OutsideCluster) != 1 || report.OutsideCluster[0].Ref != Ref(objs[0]) || report.OutsideCluster[0].Kind != KindOutsideCluster || !strings.Contains(report.OutsideCluster[0].Explanation, "RESTORE.md") {
+		t.Fatalf("outside the cluster: %+v", report.OutsideCluster)
+	}
+
+	// only the kept one, so the run passes at 100%
+	report = &Report{Total: 10, Clean: 10}
+	DryRunVerifier{Target: platform.AKS, Capability: m, Kept: kept}.misfits(objs[:1], []*Diff{nil}, report)
+	if !report.Passed() || report.Clean != 10 {
+		t.Errorf("a kept identity fails the run: %+v", report)
+	}
+}
+
 // Copyright The SetDrift Authors
 // SPDX-License-Identifier: Apache-2.0

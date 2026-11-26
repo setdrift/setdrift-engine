@@ -184,6 +184,8 @@ type DryRunVerifier struct {
 	Capability *capability.Map
 	// Explain gives back why an object that wont work here is that way on purpose, like a decision in a translation's translate-decisions.yaml, empty when it isnt
 	Explain func(*unstructured.Unstructured) string
+	// Kept gives back the step outside the cluster a ServiceAccount keeping its cloud identity needs, empty when it isnt one
+	Kept func(*unstructured.Unstructured) string
 	// Served is what this cluster runs that objects name, its CSI drivers and IngressClasses, nil skips the check that each named one is there
 	Served *Served
 }
@@ -375,6 +377,9 @@ func (v DryRunVerifier) misfits(objs []*unstructured.Unstructured, diffs []*Diff
 		i := index[mf.Ref]
 		// checking how the dry-run left the object, clean, not checked, or already a diff
 		switch d := diffs[i]; {
+		case d == nil && v.Kept != nil && v.Kept(objs[i]) != "" && capability.OnlyIdentity(mf.Reasons):
+			// a kept identity, its Pods carry the token and settings, so it stays clean and is listed with the cloud's step
+			report.OutsideCluster = append(report.OutsideCluster, Diff{Ref: mf.Ref, Kind: KindOutsideCluster, Explanation: v.Kept(objs[i])})
 		case d == nil:
 			report.Clean--
 			nd := Diff{Ref: mf.Ref, Kind: KindWontWork, Paths: mf.Reasons}

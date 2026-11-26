@@ -351,6 +351,20 @@ func (m *Map) ownersOfGroup(group string) []platform.Distribution {
 	return out
 }
 
+// identityReason starts the reason a ServiceAccount's cloud identity annotation gives, OnlyIdentity looks for it
+const identityReason = "identity annotation "
+
+// OnlyIdentity tells if every reason is a ServiceAccount's cloud identity annotation, a kept identity works once the cloud trusts the new cluster, so these say nothing more
+func OnlyIdentity(reasons []string) bool {
+	// checking each reason starts as the identity annotation's does, no reasons at all isnt an identity
+	for _, r := range reasons {
+		if !strings.HasPrefix(r, identityReason) {
+			return false
+		}
+	}
+	return len(reasons) > 0
+}
+
 // Misfit is an object that names something the target platform doesnt have, so it would apply there and not work
 type Misfit struct {
 	// Ref names the object as verify does, like apps/v1 Deployment sd-apps/web
@@ -438,7 +452,7 @@ func (m *Map) reasons(o Object, target platform.Distribution) []string {
 		foreign("snapshot driver", d, m.owners(d, func(k Markers) []string { return k.StorageProvisioners }, false), "no snapshot can be taken")
 	case o.Group == "" && o.Kind == "ServiceAccount":
 		for _, a := range keys(c, "metadata", "annotations") {
-			foreign("identity annotation", a, m.owners(a, func(k Markers) []string { return k.ServiceAccountAnnotations }, false), "nothing gives its Pods those cloud credentials")
+			foreign(strings.TrimSpace(identityReason), a, m.owners(a, func(k Markers) []string { return k.ServiceAccountAnnotations }, false), "nothing gives its Pods those cloud credentials")
 		}
 	case o.Group == "external-secrets.io" && (o.Kind == "SecretStore" || o.Kind == "ClusterSecretStore"):
 		for _, p := range keys(c, "spec", "provider") {
