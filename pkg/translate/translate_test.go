@@ -436,5 +436,31 @@ spec:
 	}
 }
 
+// IdentityKept names a ServiceAccount decided keep-source, by choice or default, and nothing else: another choice, a decision waiting again, another kind
+func TestKeptIdentity(t *testing.T) {
+	sa := func(ns, name string) *unstructured.Unstructured {
+		return &unstructured.Unstructured{Object: map[string]any{"apiVersion": "v1", "kind": "ServiceAccount", "metadata": map[string]any{"name": name, "namespace": ns}}}
+	}
+	ds := []Decision{
+		{Feature: "identity/shop/reports", Default: KeepSource},
+		{Feature: "identity/shop/orders", Default: KeepSource, Choose: "leave-out"},
+		{Feature: "identity/shop/web", Choose: KeepSource},
+	}
+	kept := IdentityKept(ds)
+	if got := kept(sa("shop", "reports")); !strings.Contains(got, TrustStep) || !strings.Contains(got, "identity/shop/reports") {
+		t.Errorf("default keep-source: %q", got)
+	}
+	if kept(sa("shop", "web")) == "" {
+		t.Error("chosen keep-source")
+	}
+	if kept(sa("shop", "orders")) != "" || kept(sa("shop", "none")) != "" {
+		t.Error("leave-out or undecided must not be kept")
+	}
+	cm := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "v1", "kind": "ConfigMap", "metadata": map[string]any{"name": "reports", "namespace": "shop"}}}
+	if kept(cm) != "" {
+		t.Error("only a ServiceAccount keeps an identity")
+	}
+}
+
 // Copyright The SetDrift Authors
 // SPDX-License-Identifier: Apache-2.0

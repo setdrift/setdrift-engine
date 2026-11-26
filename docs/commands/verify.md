@@ -39,6 +39,8 @@ On a cluster other than the export's own, like a restore or migration target, `v
 
 Each shows under "Won't work on this platform". A list `verify` can't read is skipped rather than reported. A translation can be given directly, `setdrift verify --context gke-prod ./setdrift-export/clusters/prod/translations/te2g`, and is checked with its decisions, whatever the cluster is.
 
+A ServiceAccount that keeps its cloud identity (`keep-source` in `translate-decisions.yaml`) shows under "Needs a step outside the cluster" and counts as would not change. Its Pods already carry the token and settings the translation wrote, and it works once the cloud trusts the new cluster, the RESTORE.md step "Trust the new cluster for the identities kept". `verify` can't see that step, since it happens in the cloud, so it lists the ServiceAccount every run as a reminder. The JSON report has it in `outsideCluster`.
+
 ### Network policies
 
 A NetworkPolicy applies on any cluster, but only does anything where a network policy engine enforces it. When the export has NetworkPolicies and its source enforced them, `verify` reads this cluster's system DaemonSets in `kube-system` and `calico-system`, and EKS's `amazon-vpc-cni` ConfigMap, to find its engine.

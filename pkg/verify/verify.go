@@ -30,6 +30,9 @@ const (
 	// KindWontWork means the resource would apply but names something this cluster's platform doesnt have, like another cloud's load balancer class or identity annotation, so it wouldnt work here
 	// Paths say what it names and what happens, from the capability map
 	KindWontWork Kind = "wont-work-here"
+	// KindOutsideCluster means the resource is right here and needs a step outside the cluster to work, like a kept cloud identity the cloud must trust this cluster for
+	// its clean, so it counts as would not change, Explanation says the step
+	KindOutsideCluster Kind = "needs-step-outside-cluster"
 	// KindNotChecked means the credentials may not get the resource, or may not patch it for the dry-run, so it couldnt be checked, Diff.Refused says which
 	// its not counted in Total, it says nothing about the export
 	KindNotChecked Kind = "not-checked"
@@ -116,6 +119,9 @@ type Report struct {
 	// NotChecked are the resources the credentials may not get, or patch for the dry-run, of Kind KindNotChecked
 	// theyre not in Total, and any of them fails the run
 	NotChecked []Diff `json:"notChecked,omitempty"`
+	// OutsideCluster are the clean resources that need a step outside the cluster to work, of Kind KindOutsideCluster
+	// theyre counted as clean, and listed so the step isnt forgotten
+	OutsideCluster []Diff `json:"outsideCluster,omitempty"`
 	// Namespaces limits the check to these namespaces, from -n, empty is every resource
 	Namespaces []string `json:"namespaces,omitempty"`
 }

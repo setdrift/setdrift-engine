@@ -221,7 +221,7 @@ func (o *verifyOptions) run(cmd *cobra.Command, dir string) error {
 		if derr != nil {
 			return derr
 		}
-		v.Explain, decisions = translate.Explainer(ds), ds
+		v.Explain, v.Kept, decisions = translate.Explainer(ds), translate.IdentityKept(ds), ds
 	}
 	// checking if auto picked no platform set, if so a translation for this cluster's platform is the one to check
 	if err == nil && o.set == "auto" && set == "" && given.kind != folderTranslation {
@@ -235,7 +235,7 @@ func (o *verifyOptions) run(cmd *cobra.Command, dir string) error {
 			if derr != nil {
 				return derr
 			}
-			v.Explain = translate.Explainer(ds)
+			v.Explain, v.Kept = translate.Explainer(ds), translate.IdentityKept(ds)
 			decisions = ds
 		case len(others) > 0:
 			why += fmt.Sprintf(". This export also has a translation for %s, and this cluster is %s: run setdrift translate --to %s, or verify against a %s cluster", strings.Join(others, " and "), cls.Summary(), cls.Distribution, strings.Join(others, " or "))
