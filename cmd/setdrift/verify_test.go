@@ -164,5 +164,22 @@ func TestVerifyReportFiles(t *testing.T) {
 	}
 }
 
+// a resource needing a step outside the cluster is printed with the step, in the terminal and the report, and the run still passes
+func TestVerifyPrintsOutsideCluster(t *testing.T) {
+	d := verifyDocument{Passed: true, Cluster: "aks-prod", Report: verify.Report{Total: 10, Clean: 10, OutsideCluster: []verify.Diff{
+		{Ref: "v1 ServiceAccount shop/reports", Kind: verify.KindOutsideCluster, Explanation: "keeps its cloud identity, RESTORE.md's step"},
+	}}}
+	var b bytes.Buffer
+	printVerify(&b, d, "shop-export", "aks-prod")
+	out := b.String()
+	if !strings.Contains(out, "PASSED: 10 of 10") || !strings.Contains(out, "Needs a step outside the cluster (1, counted as would not change)") || !strings.Contains(out, "keeps its cloud identity") {
+		t.Errorf("terminal:\n%s", out)
+	}
+	md := string(verifyMarkdown(d))
+	if !strings.Contains(md, "| Needs a step outside the cluster | 1") || !strings.Contains(md, "## Needs a step outside the cluster (1)") || !strings.Contains(md, "### v1 ServiceAccount shop/reports") {
+		t.Errorf("report:\n%s", md)
+	}
+}
+
 // Copyright The SetDrift Authors
 // SPDX-License-Identifier: Apache-2.0

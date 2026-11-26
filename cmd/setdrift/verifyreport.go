@@ -191,6 +191,13 @@ func printVerify(w io.Writer, d verifyDocument, root, contextName string) {
 	for _, k := range slices.Sorted(maps.Keys(r.Skipped)) {
 		fmt.Fprintf(w, "Skipped %d: %s\n", r.Skipped[k], k)
 	}
+	// checking if some resources need a step outside the cluster, if so each is listed with it, theyre clean so they dont count against the run
+	if n := len(r.OutsideCluster); n > 0 {
+		fmt.Fprintf(w, "Needs a step outside the cluster (%d, counted as would not change):\n", n)
+		for _, d := range r.OutsideCluster {
+			fmt.Fprintf(w, "  %s\n      %s\n", d.Ref, d.Explanation)
+		}
+	}
 	// checking if the export has CRDs the cluster lacks, if so we print the commands that create them from the export's crds directory
 	if n := len(r.MissingCRDs); n > 0 {
 		crds := filepath.Join(root, "crds")
@@ -455,6 +462,10 @@ func verifyMarkdown(d verifyDocument) []byte {
 	if len(r.MissingCRDs) > 0 {
 		fmt.Fprintf(&b, "| CRDs missing from the cluster | %s |\n", strings.Join(r.MissingCRDs, ", "))
 	}
+	// checking if some resources need a step outside the cluster, if so the table counts them, their section is below
+	if n := len(r.OutsideCluster); n > 0 {
+		fmt.Fprintf(&b, "| Needs a step outside the cluster | %d (counted as would not change) |\n", n)
+	}
 	// checking if the network policy check had something to say, if so the table has it
 	if c := d.NetworkPolicy; c != nil {
 		label := "Network policies"
@@ -469,6 +480,13 @@ func verifyMarkdown(d verifyDocument) []byte {
 	// checking if a likely cause was found, if so it goes right under the table
 	if d.LikelyCause != "" {
 		fmt.Fprintf(&b, "\n**Likely cause:** %s\n", d.LikelyCause)
+	}
+	// checking if some resources need a step outside the cluster, if so they get a section first, its what's left to do
+	if n := len(r.OutsideCluster); n > 0 {
+		fmt.Fprintf(&b, "\n## Needs a step outside the cluster (%d)\n", n)
+		for _, d := range r.OutsideCluster {
+			fmt.Fprintf(&b, "\n### %s\n\n%s\n", d.Ref, d.Explanation)
+		}
 	}
 	// invoking byCause to group the differences and the unchecked resources by cause, its defined above
 	groups := byCause(r)

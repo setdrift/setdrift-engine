@@ -95,7 +95,7 @@ func restore(r *Result, ri RestoreInfo) string {
 	b.WriteString("The \"CustomResourceDefinitions\" and \"Controllers to install first\" sections of RESTORE.md are the same on any cluster. Follow them now.\n\n")
 
 	if len(r.Identities) > 0 {
-		next("Trust the new cluster for the identities kept")
+		next(TrustStep)
 		fmt.Fprintf(&b, "These ServiceAccounts keep their cloud identity, as decided in %s, and their Pods already carry the token and settings to use it (README.md). What's left is the cloud's side, trusting this %s cluster's OIDC issuer for each. First get the issuer.\n\n```sh\n%s\n```\n\n", DecisionsFile, to, issuerCommand(r.To))
 		for _, id := range r.Identities {
 			// invoking trustSteps to write the commands for the identity's cloud, its defined below

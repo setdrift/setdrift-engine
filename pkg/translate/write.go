@@ -93,6 +93,31 @@ func Explainer(ds []Decision) func(*unstructured.Unstructured) string {
 	}
 }
 
+// TrustStep is RESTORE.md's step that trusts the new cluster for the identities kept, verify and diff point at it
+const TrustStep = "Trust the new cluster for the identities kept"
+
+// IdentityKept gives back a function telling verify and diff that a ServiceAccount keeps its cloud identity by the translation's decision, empty when it doesnt
+// its Pods already carry the token and settings, what's left is the cloud trusting the new cluster, a step outside the cluster
+func IdentityKept(ds []Decision) func(*unstructured.Unstructured) string {
+	byFeature := map[string]Decision{}
+	for _, d := range ds {
+		byFeature[d.Feature] = d
+	}
+	return func(o *unstructured.Unstructured) string {
+		// checking if its a ServiceAccount, only one carries an identity
+		if o.GetAPIVersion() != "v1" || o.GetKind() != "ServiceAccount" {
+			return ""
+		}
+		f := "identity/" + qualified(o)
+		d, ok := byFeature[f]
+		// checking if its decided keep-source, a decision waiting for the user to choose again explains nothing
+		if !ok || d.choice() != KeepSource || d.Waiting() {
+			return ""
+		}
+		return fmt.Sprintf("keeps its cloud identity (%s is %s in %s), and its Pods carry the token and settings to use it: it works once the cloud trusts this cluster, RESTORE.md's step %q", f, KeepSource, DecisionsFile, TrustStep)
+	}
+}
+
 // plainYAMLError rewords the yaml library's errors, which speak of JSON since it converts YAML to JSON first
 func plainYAMLError(err error) string {
 	msg := err.Error()

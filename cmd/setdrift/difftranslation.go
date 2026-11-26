@@ -34,6 +34,7 @@ type translationInput struct {
 	exported *snapshotv1alpha1.Snapshot
 	built    []*unstructured.Unstructured
 	explain  func(*unstructured.Unstructured) string
+	kept     func(*unstructured.Unstructured) string
 	// note says something the user should know, like a translation older than its export
 	note string
 }
@@ -79,7 +80,7 @@ func loadTranslation(dir string) (*translationInput, error) {
 	if err != nil {
 		return nil, err
 	}
-	in.explain = translate.Explainer(ds)
+	in.explain, in.kept = translate.Explainer(ds), translate.IdentityKept(ds)
 	// checking if the export was taken again after the translation, if so the translation may be behind it
 	if info != nil && f.stamp != nil {
 		ex, e1 := time.Parse(time.RFC3339, info.ExportedAt)
@@ -256,6 +257,13 @@ func (in *translationInput) forDiff() (diff.Translation, error) {
 			return ""
 		}
 		return in.explain(&unstructured.Unstructured{Object: obj})
+	}
+	t.Kept = func(m any) string {
+		obj, ok := m.(map[string]any)
+		if !ok {
+			return ""
+		}
+		return in.kept(&unstructured.Unstructured{Object: obj})
 	}
 	return t, nil
 }

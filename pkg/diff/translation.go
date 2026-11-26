@@ -10,6 +10,8 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+
+	"setdrift.io/setdrift-engine/pkg/capability"
 )
 
 // Translation is a translation to compare through, what ApplyTranslation sorts the differences by
@@ -23,6 +25,8 @@ type Translation struct {
 	NotMoved func(Key) string
 	// Explain says why an object of the target differs on purpose, from the translation's decisions, empty when nothing does
 	Explain func(manifest any) string
+	// Kept says a ServiceAccount of the target keeps its cloud identity by the translation's decision, and the step outside the cluster that makes it work, empty when it doesnt
+	Kept func(manifest any) string
 }
 
 // Sorted is a difference sorted out of the real ones, with why
@@ -94,6 +98,12 @@ func (r *Result) ApplyTranslation(t Translation) {
 	}
 	r.OnlyB = onlyB
 
+	// invoking sortWontWork to sort what wont work on either side, its defined below
+	r.sortWontWork(t)
+}
+
+// sortWontWork sorts what wont work into what the source already had, what the translation's decisions explain, and what stays a difference
+func (r *Result) sortWontWork(t Translation) {
 	var wont []WontWork
 	for _, ww := range r.WontWork {
 		// checking if its on the source, if so it was already so before the translation, its no difference between the two
@@ -104,6 +114,13 @@ func (r *Result) ApplyTranslation(t Translation) {
 		// checking if the translation's decisions explain it, and the target still has it as translated, a decision holds only while thats so
 		if ww.Side == r.B.Label && t.Explain != nil && !changedOnTarget(r.Changed, ww.Object.Key) {
 			if m, ok := t.Translated[ww.Object.Key]; ok {
+				// checking if its a kept identity named only by its annotation, if so the step is all there is to say, the annotation's own reason says nothing gives its Pods credentials, and the translation did
+				if t.Kept != nil && capability.OnlyIdentity(ww.Reasons) {
+					if why := t.Kept(m); why != "" {
+						r.Decided = append(r.Decided, Sorted{Object: ww.Object, Why: []string{why}})
+						continue
+					}
+				}
 				if why := t.Explain(m); why != "" {
 					r.Decided = append(r.Decided, Sorted{Object: ww.Object, Why: append([]string{why}, ww.Reasons...)})
 					continue

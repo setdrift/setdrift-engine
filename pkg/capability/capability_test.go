@@ -171,5 +171,21 @@ func TestTranslationCodes(t *testing.T) {
 	}
 }
 
+// OnlyIdentity is true only when every reason is an identity annotation's, as reasons writes them
+func TestOnlyIdentity(t *testing.T) {
+	m, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sa := Object{Ref: "v1 ServiceAccount shop/reports", Kind: "ServiceAccount", Content: map[string]any{"metadata": map[string]any{"annotations": map[string]any{"eks.amazonaws.com/role-arn": "arn:aws:iam::111122223333:role/reports"}}}}
+	got := m.Misfits([]Object{sa}, platform.AKS)
+	if len(got) != 1 || !OnlyIdentity(got[0].Reasons) {
+		t.Fatalf("an identity annotation alone: %+v", got)
+	}
+	if OnlyIdentity(nil) || OnlyIdentity(append(got[0].Reasons, "finalizer x belongs to EKS")) {
+		t.Error("no reasons, or another reason, isn't only an identity")
+	}
+}
+
 // Copyright The SetDrift Authors
 // SPDX-License-Identifier: Apache-2.0
