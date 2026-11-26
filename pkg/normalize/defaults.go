@@ -753,8 +753,12 @@ func cronJobDefaults(o *resource.Object) {
 	}
 }
 
-// networkPolicyDefaults takes a NetworkPolicy and removes its default policy types and the default protocol on its rules' ports
+// networkPolicyDefaults takes a NetworkPolicy and removes EKS's finalizer, its default policy types and the default protocol on its rules' ports
 func networkPolicyDefaults(o *resource.Object) {
+	// dropping the finalizer EKS's network policy agent adds, the target's agent adds its own
+	// an exported one only hurts, on another platform nothing removes it and the policy, and its namespace, can never be deleted
+	// invoking dropFinalizer to remove it, its defined above
+	dropFinalizer(o, "networking.k8s.aws/resources")
 	spec, ok := o.Object["spec"].(map[string]any)
 	// checking if the policy has no spec
 	if !ok {

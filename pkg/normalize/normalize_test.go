@@ -439,5 +439,14 @@ func TestWebhookSelectors(t *testing.T) {
 	}
 }
 
+// EKS's network policy agent finalizer goes, on another platform nothing removes it and the policy and its namespace never delete, another finalizer stays
+func TestNetworkPolicyFinalizer(t *testing.T) {
+	np := parse(t, `{"apiVersion":"networking.k8s.io/v1","kind":"NetworkPolicy","metadata":{"name":"default-deny","namespace":"shop","finalizers":["networking.k8s.aws/resources","example.com/keep"]},"spec":{"podSelector":{}}}`)
+	run(t, np)
+	if f := np.GetFinalizers(); len(f) != 1 || f[0] != "example.com/keep" {
+		t.Errorf("finalizers %v", f)
+	}
+}
+
 // Copyright The SetDrift Authors
 // SPDX-License-Identifier: Apache-2.0
