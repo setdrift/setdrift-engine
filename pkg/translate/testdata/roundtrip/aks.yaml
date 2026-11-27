@@ -103,5 +103,15 @@ kind: ConfigMap
 metadata:
   name: settings
   namespace: shop
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: web
+  namespace: shop
+spec:
+  ingressClassName: azure-alb-external
+  rules:
+  - host: shop.example.com
 # Copyright The SetDrift Authors
 # SPDX-License-Identifier: Apache-2.0

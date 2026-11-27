@@ -21,6 +21,7 @@ markers:
     - azure/application-gateway
     - webapprouting.kubernetes.azure.com
     # Application Gateway for Containers' class, the one a translation to AKS writes
+    - azure-alb-external
   gatewayControllerPrefixes:
     - alb.networking.azure.io/
   storageProvisioners:

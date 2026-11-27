@@ -1,6 +1,7 @@
 package capability
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -46,6 +47,51 @@ func TestCheckTakesNone(t *testing.T) {
 	m.Clouds[0].Buckets, m.Clouds[0].SecretManager.Format = None, None
 	if err := m.check(); err != nil {
 		t.Error(err)
+	}
+}
+
+// what a platform writes is its own, every class, provisioner, driver and label key a translation to it writes, the platform's markers own
+// otherwise an object translated to it would read as no platform's, and a translation away from it would leave it as it was, on a cluster where nothing serves it
+func TestEachPlatformOwnsWhatItWrites(t *testing.T) {
+	m, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range m.Platforms {
+		owns := func(what, v string, owners []platform.Distribution) {
+			if v != "" && !slices.Contains(owners, p.Distribution) {
+				t.Errorf("%s writes %s %s, and its markers don't own it", p.Distribution, what, v)
+			}
+		}
+		tr := p.Translate
+		for _, st := range tr.Storage {
+			owns("provisioner", st.Class.Provisioner, m.ProvisionerOwners(st.Class.Provisioner))
+		}
+		owns("snapshot driver", tr.SnapshotDriver, m.ProvisionerOwners(tr.SnapshotDriver))
+		owns("load balancer class", tr.LoadBalancer.Class, m.LoadBalancerClassOwners(tr.LoadBalancer.Class))
+		for _, ann := range []map[string]string{tr.LoadBalancer.Internal, tr.LoadBalancer.External} {
+			for k := range ann {
+				owns("Service annotation", k, m.ServiceAnnotationOwners(k))
+			}
+		}
+		for _, cls := range []string{tr.Ingress.ClassName, tr.Ingress.InternalClass, tr.Ingress.ExternalClass} {
+			owns("ingress class", cls, m.IngressClassOwners(cls))
+		}
+		for _, ann := range []map[string]string{tr.Ingress.Internal, tr.Ingress.External} {
+			for k := range ann {
+				owns("Ingress annotation", k, m.IngressAnnotationOwners(k))
+			}
+		}
+		if len(tr.Nodes.Pools) > 0 {
+			owns("node pool label", tr.Nodes.Pools[0], m.NodeLabelOwners(tr.Nodes.Pools[0]))
+		}
+		if len(tr.Nodes.Spot) > 0 {
+			owns("spot label", tr.Nodes.Spot[0].Key, m.NodeLabelOwners(tr.Nodes.Spot[0].Key))
+		}
+		if c := m.CloudOf(p.Distribution); c != nil {
+			owns("ServiceAccount annotation", c.Identity.Annotation, m.ServiceAccountAnnotationOwners(c.Identity.Annotation))
+			owns("secret provider", c.SecretManager.Provider, m.SecretProviderClassOwners(c.SecretManager.Provider))
+		}
 	}
 }
 
