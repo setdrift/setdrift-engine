@@ -10,8 +10,6 @@ import (
 	"net/netip"
 	"regexp"
 	"strings"
-
-	"setdrift.io/setdrift-engine/pkg/platform"
 )
 
 // Shape is what the source cluster was built as, read from its profile and nodes, what the target's create command starts from
@@ -84,12 +82,18 @@ func dnsServiceIP(cidr string) string {
 	return a.String()
 }
 
-// createStep writes RESTORE.md's step that creates the target cluster, for AKS, gives back false for a target it doesnt write one for yet
+// createStep writes RESTORE.md's step that creates the target cluster, by the target's create command strategy, gives back false for a target with none, which creates its cluster as its docs say
 func createStep(b *strings.Builder, r *Result, ri RestoreInfo) bool {
-	// checking if the target is AKS, the only one written so far, the others create their cluster as their docs say
-	if r.To != platform.AKS {
+	write := createCommands[r.capMap().For(r.To).Translate.CreateCommand]
+	if write == nil {
 		return false
 	}
+	write(b, r, ri)
+	return true
+}
+
+// azAKSCreate writes the az aks create command, from the source cluster's shape
+func azAKSCreate(b *strings.Builder, r *Result, ri RestoreInfo) {
 	s := ri.Shape
 	lines := []string{"az aks create --resource-group <resource group> --name <new cluster> --location <location> --tier standard"}
 	// checking if the source's version is known, and only digits, if so the same minor version is asked for
@@ -144,7 +148,6 @@ func createStep(b *strings.Builder, r *Result, ri RestoreInfo) bool {
 	}
 	b.WriteString("If AKS doesn't offer the version yet, take the newest it does (`az aks get-versions --location <location>`). Then get its context, the `DST` the steps below use.\n\n")
 	b.WriteString("```sh\naz aks get-credentials --resource-group <resource group> --name <new cluster> --context <new cluster>\nDST=<new cluster>\n```\n\n")
-	return true
 }
 
 // Copyright The SetDrift Authors

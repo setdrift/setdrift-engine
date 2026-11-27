@@ -1,0 +1,37 @@
+# What belongs to AWS as a cloud, whichever Kubernetes platform on it runs the
+# workloads: its workload identity, image registry, secret manager and object
+# storage. A platform names its cloud with cloud: aws.
+id: aws
+name: AWS
+identity:
+  # the ServiceAccount annotation that names the identity, an IAM role ARN
+  annotation: eks.amazonaws.com/role-arn
+  # projected-token: off its own platform, a translation gives the Pods what the platform's webhook would, a token and the environment
+  federation: projected-token
+  # the platform whose webhook that stands in for
+  webhook: eks
+  audience: sts.amazonaws.com
+  tokenDir: /var/run/secrets/eks.amazonaws.com/serviceaccount
+  tokenFile: token
+  # {id} is the identity, {tokenPath} the token file, {region} the source's region; an entry whose value is empty is left out
+  env:
+    - {name: AWS_ROLE_ARN, value: "{id}"}
+    - {name: AWS_WEB_IDENTITY_TOKEN_FILE, value: "{tokenPath}"}
+    - {name: AWS_STS_REGIONAL_ENDPOINTS, value: regional}
+    - {name: AWS_REGION, value: "{region}"}
+    - {name: AWS_DEFAULT_REGION, value: "{region}"}
+  # how RESTORE.md has the cloud trust the new cluster's OIDC issuer
+  trust: aws-iam-role
+registry:
+  # the private registry's hosts, a pattern each; a first group is the registry's region
+  hosts: ['^\d{12}\.dkr\.ecr\.([a-z0-9-]+)\.amazonaws\.com(?:\.cn)?$']
+  # signing in to pull from it, {region} is the registry's
+  login: {user: AWS, password: "aws ecr get-login-password --region {region}"}
+secretManager:
+  # how a SecretProviderClass names its secrets for this cloud's provider
+  format: aws-objects
+  provider: aws
+buckets: ack-s3
+
+# Copyright The SetDrift Authors
+# SPDX-License-Identifier: Apache-2.0

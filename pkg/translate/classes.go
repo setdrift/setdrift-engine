@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"setdrift.io/setdrift-engine/pkg/capability"
 	"setdrift.io/setdrift-engine/pkg/platform"
 	"sigs.k8s.io/yaml"
 )
@@ -147,14 +148,20 @@ func (t *translator) secretProviderClass(p *Patch, ref string, o *unstructured.U
 	if !t.foreign(owners) {
 		return
 	}
+	// checking if the target's cloud has a secret manager, if not theres nothing to point the class at
+	c := t.m.CloudOf(t.to)
+	if c == nil || secretFormats[c.SecretManager.Format] == nil {
+		return
+	}
+	sm := &c.SecretManager
 	params, _, _ := unstructured.NestedStringMap(o.Object, "spec", "parameters")
 	// invoking secretNames to read the secret names the class names, whichever provider wrote them, its defined below
 	names := secretNames(params)
 	// renaming them for the target's rules, Azure Key Vault allows letters, digits and dashes, Google Secret Manager underscores too, neither a slash
 	var renamed []string
 	for i, n := range names {
-		// invoking secretNameFor to apply the target's rules, its defined below
-		if nn := secretNameFor(t.to.Name(), n); nn != n {
+		// invoking SecretName to apply the target's rules, from its cloud's YAML
+		if nn := secretName(sm, n); nn != n {
 			renamed = append(renamed, n+" as "+nn)
 			names[i] = nn
 		}
@@ -162,33 +169,13 @@ func (t *translator) secretProviderClass(p *Patch, ref string, o *unstructured.U
 	if len(renamed) > 0 {
 		t.r.Notes = append(t.r.Notes, fmt.Sprintf("%s: %s's secret manager doesn't allow these names, so they're renamed: %s", ref, clouds(t.m, []platform.Distribution{t.to}), strings.Join(renamed, ", ")))
 	}
-	var newProv string
+	newProv := sm.Provider
 	newParams := map[string]any{}
-	switch t.to.Name() {
-	case "EKS":
-		newProv = "aws"
-		newParams["objects"] = listYAML(names, func(n string) map[string]any { return map[string]any{"objectName": n, "objectType": "secretsmanager"} })
-	case "AKS":
-		newProv = "azure"
-		newParams["keyvaultName"] = "<Key Vault name>"
-		newParams["tenantId"] = "<Azure tenant ID>"
-		var arr []string
-		for _, n := range names {
-			// the error is dropped: marshalling plain maps, strings and slices can't fail
-			b, _ := yaml.Marshal(map[string]any{"objectName": n, "objectType": "secret"})
-			arr = append(arr, string(b))
-		}
-		// the error is dropped: marshalling plain maps, strings and slices can't fail
-		b, _ := yaml.Marshal(map[string]any{"array": arr})
-		newParams["objects"] = string(b)
-	case "GKE":
-		newProv = "gcp"
-		newParams["secrets"] = listYAML(names, func(n string) map[string]any {
-			return map[string]any{"resourceName": "projects/<project>/secrets/" + n + "/versions/latest", "path": n}
-		})
-	default:
-		return
+	for k, v := range sm.Parameters {
+		newParams[k] = v
 	}
+	// invoking the cloud's format to name the secrets as its provider reads them, theyre in strategies.go
+	secretFormats[sm.Format](names, newParams)
 	p.Ops = append(p.Ops, Op{Op: "replace", Path: "/spec/provider", Value: newProv}, Op{Op: "replace", Path: "/spec/parameters", Value: newParams})
 	p.Why = append(p.Why, fmt.Sprintf("provider %s becomes %s, keeping its secret names (%s)", prov, newProv, strings.Join(names, ", ")))
 	t.r.Notes = append(t.r.Notes, fmt.Sprintf("%s: put the secrets %s in %s's secret manager yourself (SetDrift never copies secret values), and fill in the values in angle brackets in the overlay's kustomization.yaml", ref, strings.Join(names, ", "), clouds(t.m, []platform.Distribution{t.to})))
@@ -238,24 +225,12 @@ func secretNames(params map[string]string) []string {
 	return names
 }
 
-// secretNameFor renames a secret for the target's secret manager, every character it doesnt allow becomes a dash
-func secretNameFor(target, n string) string {
+// secretName renames a secret for a secret manager, every character it doesnt allow becomes a dash, a placeholder stays as it is
+func secretName(sm *capability.SecretManager, n string) string {
 	if n == "<secret name>" {
 		return n
 	}
-	allowed := func(r rune) bool {
-		ok := r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-'
-		if target == "GKE" {
-			ok = ok || r == '_'
-		}
-		return ok || target == "EKS"
-	}
-	return strings.Map(func(r rune) rune {
-		if allowed(r) {
-			return r
-		}
-		return '-'
-	}, n)
+	return sm.SecretName(n)
 }
 
 // listYAML writes a list of items as the YAML string a SecretProviderClass parameter holds

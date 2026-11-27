@@ -15,7 +15,7 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-//go:embed platforms/*.yaml
+//go:embed platforms/*.yaml clouds/*.yaml
 var files embed.FS
 
 // Platform is one platform's markers, read from its YAML file
@@ -24,8 +24,10 @@ type Platform struct {
 	Distribution platform.Distribution `json:"distribution"`
 	// Name is how its written for people, like EKS
 	Name string `json:"name"`
-	// Cloud is the cloud the platform runs on, like AWS, for wording about its services, identities and secret manager
-	Cloud string `json:"cloud,omitempty"`
+	// Cloud is the id of the cloud the platform runs on, like aws, a file under clouds/, or none
+	Cloud string `json:"cloud"`
+	// Aliases are what --to accepts for it besides its distribution, like aws for eks
+	Aliases []string `json:"aliases,omitempty"`
 	// Code is the platform's short code in a translation's name, like e for EKS in te2g (EKS to GKE)
 	Code      string    `json:"code"`
 	Markers   Markers   `json:"markers"`
@@ -95,6 +97,18 @@ type Translate struct {
 	// SnapshotDriver is the VolumeSnapshotClass driver of the platform's block storage
 	SnapshotDriver string          `json:"snapshotDriver,omitempty"`
 	Nodes          NodeTranslation `json:"nodes"`
+	// DiskName is what its block storage's disks are called, like an AWS EBS volume, for the volumes that stay behind
+	DiskName string `json:"diskName"`
+	// OIDCIssuerCommand prints a new cluster's OIDC issuer, for the clouds that trust it
+	OIDCIssuerCommand string `json:"oidcIssuerCommand"`
+	// Images is how RESTORE.md copies images to the platform's registry
+	Images ImageCopy `json:"images"`
+	// CreateCommand is the strategy that writes RESTORE.md's command creating the target cluster, none where it points to the cloud's docs
+	CreateCommand string `json:"createCommand"`
+	// NetworkPolicy is how the platform enforces NetworkPolicies
+	NetworkPolicy NetworkPolicy `json:"networkPolicy"`
+	// LeaveOut are the platform's own objects, which nothing reads on another, left out of a translation to another
+	LeaveOut []OwnObject `json:"leaveOut,omitempty"`
 }
 
 // StorageTier is one kind of storage on a platform, how a StorageClass for it is recognized and how one is written
@@ -270,34 +284,55 @@ type Markers struct {
 	APIGroupSuffixes             []string `json:"apiGroupSuffixes,omitempty"`
 }
 
-// Map is every platform's markers
+// Map is every platform's markers and every cloud's settings
 type Map struct {
 	Platforms []Platform
+	Clouds    []Cloud
 }
 
-// Load reads the platforms embedded in the binary
-// its an error only when a file doesnt parse, which a test catches before a release
+// Load reads the platforms and clouds embedded in the binary, and checks them
+// its an error when a file doesnt parse or a platform or cloud misses a setting, which a test catches before a release
 func Load() (*Map, error) {
-	// invoking files.ReadDir to list the embedded platform files
-	entries, err := files.ReadDir("platforms")
-	if err != nil {
+	m := &Map{}
+	// invoking read to read each file of a directory into a value of its own, its defined below
+	if err := read("clouds", func(b []byte) error {
+		var c Cloud
+		err := yaml.UnmarshalStrict(b, &c)
+		m.Clouds = append(m.Clouds, c)
+		return err
+	}); err != nil {
 		return nil, err
 	}
-	m := &Map{}
-	for _, e := range entries {
-		// invoking files.ReadFile to read one platform's file
-		b, err := files.ReadFile(path.Join("platforms", e.Name()))
-		if err != nil {
-			return nil, err
-		}
+	if err := read("platforms", func(b []byte) error {
 		var p Platform
-		// invoking yaml.UnmarshalStrict so a misspelled key fails instead of being ignored
-		if err := yaml.UnmarshalStrict(b, &p); err != nil {
-			return nil, fmt.Errorf("capability map %s: %w", e.Name(), err)
-		}
+		err := yaml.UnmarshalStrict(b, &p)
 		m.Platforms = append(m.Platforms, p)
+		return err
+	}); err != nil {
+		return nil, err
 	}
-	return m, nil
+	// invoking check for every required setting and strategy, its defined in clouds.go
+	return m, m.check()
+}
+
+// read reads each embedded file in dir and hands it to take
+func read(dir string, take func([]byte) error) error {
+	// invoking files.ReadDir to list the embedded files
+	entries, err := files.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		b, err := files.ReadFile(path.Join(dir, e.Name()))
+		if err != nil {
+			return err
+		}
+		// UnmarshalStrict so a misspelled key fails instead of being ignored
+		if err := take(b); err != nil {
+			return fmt.Errorf("capability map %s/%s: %w", dir, e.Name(), err)
+		}
+	}
+	return nil
 }
 
 // name gives back how a distribution is written for people, its own Name when the map has it

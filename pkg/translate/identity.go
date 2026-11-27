@@ -6,12 +6,14 @@ import (
 	"strings"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+
+	"setdrift.io/setdrift-engine/pkg/capability"
 )
 
 // Identity is a ServiceAccount's cloud identity a translation keeps, keep-source, so its Pods call the same cloud's services from the target through federation
 type Identity struct {
 	Namespace, ServiceAccount string
-	// Cloud is aws, azure or gcp
+	// Cloud is the id of the identity's cloud, like aws
 	Cloud string
 	// ID is the AWS role ARN, the Azure client ID, or the Google service account
 	ID string
@@ -19,70 +21,57 @@ type Identity struct {
 	TenantID string
 }
 
-// what each cloud's own webhook injects on its platform, and a translation injects itself on another, since no webhook there does
+// federationToken names the projected token's volume a translation injects, federationMarker on a Pod template records what it injected, the env var names
+// so a translation back to the identity's own cloud removes exactly those
 const (
-	awsTokenDir     = "/var/run/secrets/eks.amazonaws.com/serviceaccount" //#nosec G101 -- where the token is mounted, not a credential
-	awsAudience     = "sts.amazonaws.com"
-	azureTokenDir   = "/var/run/secrets/azure/tokens" //#nosec G101 -- where the token is mounted, not a credential
-	azureTokenFile  = "azure-identity-token"
-	azureAudience   = "api://AzureADTokenExchange"
-	federationToken = "setdrift-federation-token"
-	// federationMarker on a Pod template records what a translation injected, the env var names, so a translation back to the identity's own cloud removes exactly those
+	federationToken  = "setdrift-federation-token"
 	federationMarker = "setdrift.io/federation"
 )
 
-// keptIdentity reads the identity of a ServiceAccount from its annotations, the cloud it belongs to and its id, ok false when it has none the translation injects
-func keptIdentity(o *unstructured.Unstructured) (Identity, bool) {
+// keptIdentity reads the identity of a ServiceAccount from its annotations, the first cloud whose identity annotation it has, ok false when it has none
+func keptIdentity(m *capability.Map, o *unstructured.Unstructured) (Identity, bool) {
 	ann := o.GetAnnotations()
 	id := Identity{Namespace: o.GetNamespace(), ServiceAccount: o.GetName()}
-	switch {
-	case ann["eks.amazonaws.com/role-arn"] != "":
-		id.Cloud, id.ID = "aws", ann["eks.amazonaws.com/role-arn"]
-	case ann["azure.workload.identity/client-id"] != "":
-		id.Cloud, id.ID, id.TenantID = "azure", ann["azure.workload.identity/client-id"], ann["azure.workload.identity/tenant-id"]
-	case ann["iam.gke.io/gcp-service-account"] != "":
-		id.Cloud, id.ID = "gcp", ann["iam.gke.io/gcp-service-account"]
-	default:
-		return id, false
+	for _, c := range m.Clouds {
+		if v := ann[c.Identity.Annotation]; c.Identity.Annotation != "" && v != "" {
+			id.Cloud, id.ID = c.ID, v
+			if c.Identity.TenantAnnotation != "" {
+				id.TenantID = ann[c.Identity.TenantAnnotation]
+			}
+			return id, true
+		}
 	}
-	return id, true
+	return id, false
 }
 
 // injectFederation adds to a Pod template using a kept identity what that cloud's webhook would have given it on its own platform
-// a projected ServiceAccount token for the cloud's audience, mounted where its SDKs look, and the environment naming the identity and the token
-// Google Cloud's federation needs a credential configuration file instead, so its steps are in the translation's RESTORE.md and nothing is injected
+// a projected ServiceAccount token for the cloud's audience, mounted where its SDKs look, and the environment naming the identity and the token, as the cloud's YAML says
+// a cloud that federates another way, like Google Cloud's credential file, gets nothing injected, its steps are in the translation's RESTORE.md
 func (t *translator) injectFederation(p *Patch, o *unstructured.Unstructured, id Identity) bool {
 	base, ok := podSpecPath(p.Kind)
-	if !ok || id.Cloud == "gcp" {
+	c := t.m.Cloud(id.Cloud)
+	if !ok || c == nil || c.Identity.Federation != capability.ProjectedToken {
 		return false
 	}
+	ci := c.Identity
 	spec, _, _ := unstructured.NestedMap(o.Object, base...)
 	path := "/" + joinPointer(base)
-	audience, dir, file := awsAudience, awsTokenDir, "token"
-	env := []any{
-		map[string]any{"name": "AWS_ROLE_ARN", "value": id.ID},
-		map[string]any{"name": "AWS_WEB_IDENTITY_TOKEN_FILE", "value": awsTokenDir + "/token"},
-		map[string]any{"name": "AWS_STS_REGIONAL_ENDPOINTS", "value": "regional"},
-	}
-	if t.region != "" {
-		env = append(env, map[string]any{"name": "AWS_REGION", "value": t.region}, map[string]any{"name": "AWS_DEFAULT_REGION", "value": t.region})
-	}
-	if id.Cloud == "azure" {
-		audience, dir, file = azureAudience, azureTokenDir, azureTokenFile
-		tenant := id.TenantID
-		if tenant == "" {
-			tenant = "<Azure tenant ID>"
-			t.r.Notes = append(t.r.Notes, fmt.Sprintf("%s/%s: fill in AZURE_TENANT_ID in the overlay's kustomization.yaml (the ServiceAccount doesn't name its tenant)", id.Namespace, id.ServiceAccount))
+	tokenPath := ci.TokenDir + "/" + ci.TokenFile
+	// the environment, each value with the identity's own filled in, an empty one left out or written as its placeholder
+	var env []any
+	for _, e := range ci.Env {
+		v := strings.NewReplacer("{id}", id.ID, "{tenant}", id.TenantID, "{tokenPath}", tokenPath, "{region}", t.region).Replace(e.Value)
+		if v == "" {
+			if e.Placeholder == "" {
+				continue
+			}
+			v = e.Placeholder
+			t.r.Notes = append(t.r.Notes, fmt.Sprintf("%s/%s: fill in %s in the overlay's kustomization.yaml (the ServiceAccount doesn't name its tenant)", id.Namespace, id.ServiceAccount, e.Name))
 		}
-		env = []any{
-			map[string]any{"name": "AZURE_CLIENT_ID", "value": id.ID},
-			map[string]any{"name": "AZURE_TENANT_ID", "value": tenant},
-			map[string]any{"name": "AZURE_FEDERATED_TOKEN_FILE", "value": azureTokenDir + "/" + azureTokenFile},
-			map[string]any{"name": "AZURE_AUTHORITY_HOST", "value": "https://login.microsoftonline.com/"},
-		}
+		env = append(env, map[string]any{"name": e.Name, "value": v})
 	}
 	vol := map[string]any{"name": federationToken, "projected": map[string]any{"sources": []any{
-		map[string]any{"serviceAccountToken": map[string]any{"audience": audience, "expirationSeconds": int64(86400), "path": file}},
+		map[string]any{"serviceAccountToken": map[string]any{"audience": ci.Audience, "expirationSeconds": int64(86400), "path": ci.TokenFile}},
 	}}}
 	// the volume, appended when the Pod has volumes already
 	if _, ok := spec["volumes"]; ok {
@@ -97,7 +86,7 @@ func (t *translator) injectFederation(p *Patch, o *unstructured.Unstructured, id
 		for i, c := range cs {
 			cm, _ := c.(map[string]any)
 			cpath := fmt.Sprintf("%s/%s/%d", path, field, i)
-			mount := map[string]any{"name": federationToken, "mountPath": dir, "readOnly": true}
+			mount := map[string]any{"name": federationToken, "mountPath": ci.TokenDir, "readOnly": true}
 			if _, ok := cm["volumeMounts"]; ok {
 				p.Ops = append(p.Ops, Op{Op: "add", Path: cpath + "/volumeMounts/-", Value: mount})
 			} else {
@@ -129,9 +118,7 @@ func (t *translator) injectFederation(p *Patch, o *unstructured.Unstructured, id
 	} else {
 		p.Ops = append(p.Ops, Op{Op: "add", Path: "/" + joinPointer(meta), Value: map[string]any{federationMarker: strings.Join(slices.Compact(added), ",")}})
 	}
-	cloud := map[string]string{"aws": "AWS", "azure": "Azure"}[id.Cloud]
-	home := map[string]string{"aws": "EKS", "azure": "AKS"}[id.Cloud]
-	p.Why = append(p.Why, fmt.Sprintf("uses %s/%s, which keeps its %s identity: given the projected token and environment %s's webhook gives on its own platform, so the %s SDK works unchanged", id.Namespace, id.ServiceAccount, cloud, home, cloud))
+	p.Why = append(p.Why, fmt.Sprintf("uses %s/%s, which keeps its %s identity: given the projected token and environment %s's webhook gives on its own platform, so the %s SDK works unchanged", id.Namespace, id.ServiceAccount, c.Name, t.m.For(ci.Webhook).Name, c.Name))
 	return true
 }
 

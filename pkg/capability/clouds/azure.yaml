@@ -1,0 +1,35 @@
+# What belongs to Azure as a cloud, whichever Kubernetes platform on it runs
+# the workloads. A platform names its cloud with cloud: azure.
+id: azure
+name: Azure
+identity:
+  annotation: azure.workload.identity/client-id
+  # the ServiceAccount annotation that names the identity's tenant, {tenant} in env
+  tenantAnnotation: azure.workload.identity/tenant-id
+  federation: projected-token
+  webhook: aks
+  audience: api://AzureADTokenExchange
+  tokenDir: /var/run/secrets/azure/tokens
+  tokenFile: azure-identity-token
+  # an entry with a placeholder is written with it when its value is empty, and a note says to fill it in
+  env:
+    - {name: AZURE_CLIENT_ID, value: "{id}"}
+    - {name: AZURE_TENANT_ID, value: "{tenant}", placeholder: "<Azure tenant ID>"}
+    - {name: AZURE_FEDERATED_TOKEN_FILE, value: "{tokenPath}"}
+    - {name: AZURE_AUTHORITY_HOST, value: "https://login.microsoftonline.com/"}
+  trust: azure-federated-credential
+registry:
+  hosts: ['^[a-z0-9]+\.azurecr\.io$']
+  # {name} is the registry's name, the host's first label
+  login: {user: 00000000-0000-0000-0000-000000000000, password: "az acr login --name {name} --expose-token --output tsv --query accessToken"}
+secretManager:
+  format: azure-objects
+  provider: azure
+  # the parameters every class names, for the user to fill in
+  parameters: {keyvaultName: "<Key Vault name>", tenantId: "<Azure tenant ID>"}
+  # the characters a secret name may have, anything else becomes a dash
+  nameCharacters: A-Za-z0-9-
+buckets: azure-service-operator
+
+# Copyright The SetDrift Authors
+# SPDX-License-Identifier: Apache-2.0

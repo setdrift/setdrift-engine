@@ -141,18 +141,5 @@ func args(o *unstructured.Unstructured) []string {
 // Enforced tells if a Detect result names an engine
 func Enforced(e string) bool { return e != None && e != Unknown }
 
-// HowToEnforce says how a platform switches enforcement on, for the messages and RESTORE.md, by distribution name (eks, aks, gke), empty for another
-func HowToEnforce(distribution string) string {
-	switch distribution {
-	case "eks":
-		return "turn on the VPC CNI's network policy agent: on the VPC CNI add-on, set enableNetworkPolicy to \"true\" in its configuration; on EKS Auto Mode, create the ConfigMap amazon-vpc-cni in kube-system with enable-network-policy-controller: \"true\""
-	case "aks":
-		return "choose a network policy engine for the cluster (az aks create --network-policy cilium, calico or azure; an existing cluster can switch to one with az aks update --network-policy)"
-	case "gke":
-		return "use GKE Dataplane V2 (gcloud container clusters create --enable-dataplane-v2), or on an existing cluster without it, turn on network policy enforcement (gcloud container clusters update --update-addons=NetworkPolicy=ENABLED, then --enable-network-policy, and if the nodes don't pick it up, recreate them, like gcloud container clusters upgrade --node-pool <pool>)"
-	}
-	return "run a network policy engine, like Calico or Cilium"
-}
-
 // Copyright The SetDrift Authors
 // SPDX-License-Identifier: Apache-2.0

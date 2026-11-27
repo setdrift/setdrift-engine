@@ -164,6 +164,8 @@ type Op struct {
 
 // Result is a translation, its patches, its decisions and what the README should say
 type Result struct {
+	// m is the capability map the translation was made with
+	m        *capability.Map
 	From, To platform.Distribution
 	// Dir is where the translation goes under the cluster's directory, translations/<code>, and Code its name, like te2g for EKS to GKE
 	Dir  string
@@ -224,12 +226,12 @@ func (r *Result) Undecided() []Decision {
 func Translate(objs []*unstructured.Unstructured, from, to platform.Distribution, m *capability.Map, earlier []Decision, src Source) (*Result, error) {
 	tgt := m.For(to)
 	if tgt == nil {
-		return nil, fmt.Errorf("no capability map for %s: translate knows eks, aks and gke", to)
+		return nil, fmt.Errorf("no capability map for %s: translate knows %s", to, m.Names("and"))
 	}
 	if from == to {
 		return nil, fmt.Errorf("this export is already for %s", tgt.Name)
 	}
-	r := &Result{From: from, To: to, Dir: m.TranslationDir(from, to), Code: m.TranslationCode(from, to)}
+	r := &Result{m: m, From: from, To: to, Dir: m.TranslationDir(from, to), Code: m.TranslationCode(from, to)}
 	chosen := map[string]Decision{}
 	for _, d := range earlier {
 		chosen[d.Feature] = d
@@ -247,7 +249,7 @@ func Translate(objs []*unstructured.Unstructured, from, to platform.Distribution
 	// invoking networkPolicies for the decision on the export's NetworkPolicies, its defined below
 	t.networkPolicies(objs, src.NetworkPolicy)
 	// invoking imagesToCopy for the images the target can't pull as they are, its defined in images.go
-	r.Images = imagesToCopy(objs, to)
+	r.Images = imagesToCopy(m, objs, to)
 	// a second pass, now that every kept identity is known, gives the Pods using one what its cloud's webhook would have
 	// and takes out what an earlier translation injected where its no longer needed, like back on the identity's own cloud
 	for _, o := range objs {
@@ -354,6 +356,19 @@ type translator struct {
 	claimMin map[string]int
 }
 
+// capMap gives back the capability map the translation was made with, the embedded one for a Result made another way, like a test's
+// the embedded map is checked by its tests before a release, so loading it doesnt fail in a built binary
+func (r *Result) capMap() *capability.Map {
+	if r.m == nil {
+		m, err := capability.Load()
+		if err != nil {
+			panic(err)
+		}
+		r.m = m
+	}
+	return r.m
+}
+
 // patchOf gives back the index of the object's patch, starting one when it has none yet
 func (t *translator) patchOf(o *unstructured.Unstructured) int {
 	gvk := o.GroupVersionKind()
@@ -401,7 +416,6 @@ func (t *translator) object(o *unstructured.Unstructured) {
 	gvk := o.GroupVersionKind()
 	p := Patch{Group: gvk.Group, Version: gvk.Version, Kind: gvk.Kind, Namespace: o.GetNamespace(), Name: o.GetName()}
 	ref := strings.TrimPrefix(gvk.Kind+" "+qualified(o), " ")
-	c := o.Object
 
 	// an object of an operator that creates cloud resources, in the generic set of an export from before they were held back
 	if op, _ := t.m.CloudResourceOperator(gvk.Group); op != nil {
@@ -421,10 +435,14 @@ func (t *translator) object(o *unstructured.Unstructured) {
 		return
 	}
 
-	// EKS's VPC CNI settings, which switch its network policy agent on, nothing reads them on another platform, whose own enforcement is a RESTORE.md step
-	if gvk.Group == "" && gvk.Kind == "ConfigMap" && o.GetNamespace() == "kube-system" && o.GetName() == netpolicy.VPCCNIConfigMap && t.to != platform.EKS {
+	// a platform's own objects, like EKS's VPC CNI settings, nothing reads them on another platform
+	if own := t.ownObject(o); own != nil {
 		p.Delete = true
-		p.Why = append(p.Why, fmt.Sprintf("left out: EKS's VPC CNI settings, which nothing reads on %s. Network policy enforcement there is a step of RESTORE.md", t.tgt.Name))
+		why := fmt.Sprintf("left out: %s, which nothing reads on %s", own.What, t.tgt.Name)
+		if own.Then != "" {
+			why += ". " + own.Then
+		}
+		p.Why = append(p.Why, why)
 		t.r.Patches = append(t.r.Patches, p)
 		return
 	}
@@ -449,33 +467,51 @@ func (t *translator) object(o *unstructured.Unstructured) {
 		}
 	}
 
-	switch {
-	case gvk.Group == "storage.k8s.io" && gvk.Kind == "StorageClass":
-		// invoking storageClass to rewrite its provisioner and parameters, its defined below
-		t.storageClass(&p, ref, c)
-	case gvk.Group == "" && gvk.Kind == "Service":
-		// invoking service to carry its exposure over, its defined below
-		t.service(&p, ref, o)
-	case gvk.Group == "" && gvk.Kind == "ServiceAccount":
-		// invoking identity to record the decision for a cloud identity, its defined below
-		t.identity(ref, o)
-	case gvk.Group == "external-secrets.io" && (gvk.Kind == "SecretStore" || gvk.Kind == "ClusterSecretStore"):
-		t.secretStore(ref, o)
-	// the classes and Ingresses, in classes.go
-	case gvk.Group == "networking.k8s.io" && gvk.Kind == "Ingress":
-		t.ingress(&p, ref, o)
-	case gvk.Group == "networking.k8s.io" && gvk.Kind == "IngressClass":
-		t.ingressClass(&p, ref, o)
-	case gvk.Group == "snapshot.storage.k8s.io" && gvk.Kind == "VolumeSnapshotClass":
-		t.snapshotClass(&p, ref, o)
-	case gvk.Group == "secrets-store.csi.x-k8s.io" && gvk.Kind == "SecretProviderClass":
-		t.secretProviderClass(&p, ref, o)
+	// invoking the kind's handler, if translate has one for it, theyre registered in handlers below
+	if h := handlers[gvk.Group+"/"+gvk.Kind]; h != nil {
+		h(t, &p, ref, o)
 	}
 	// invoking placement to rewrite the node pool and spot labels a Pod template asks for, its defined in placement.go
 	t.placement(&p, ref, o)
 	if len(p.Ops) > 0 || p.Delete {
 		t.r.Patches = append(t.r.Patches, p)
 	}
+}
+
+// handler translates one kind of object, writing its patch, notes and decisions
+type handler func(t *translator, p *Patch, ref string, o *unstructured.Unstructured)
+
+// handlers are the kinds translate rewrites, by group/kind, a new kind is a handler added here, with what it reads in the platform's YAML
+// placement, which rewrites any Pod template, and the rules for every object, like finalizers, run for each object besides
+var handlers = map[string]handler{
+	"storage.k8s.io/StorageClass": func(t *translator, p *Patch, ref string, o *unstructured.Unstructured) {
+		t.storageClass(p, ref, o.Object)
+	},
+	"/Service":                                       (*translator).service,
+	"/ServiceAccount":                                func(t *translator, _ *Patch, ref string, o *unstructured.Unstructured) { t.identity(ref, o) },
+	"external-secrets.io/SecretStore":                func(t *translator, _ *Patch, ref string, o *unstructured.Unstructured) { t.secretStore(ref, o) },
+	"external-secrets.io/ClusterSecretStore":         func(t *translator, _ *Patch, ref string, o *unstructured.Unstructured) { t.secretStore(ref, o) },
+	"networking.k8s.io/Ingress":                      (*translator).ingress,
+	"networking.k8s.io/IngressClass":                 (*translator).ingressClass,
+	"snapshot.storage.k8s.io/VolumeSnapshotClass":    (*translator).snapshotClass,
+	"secrets-store.csi.x-k8s.io/SecretProviderClass": (*translator).secretProviderClass,
+}
+
+// ownObject gives back the platform's own object o is, when its another platform's than the target's, nil when it isnt one
+func (t *translator) ownObject(o *unstructured.Unstructured) *capability.OwnObject {
+	for i := range t.m.Platforms {
+		pl := &t.m.Platforms[i]
+		if pl.Distribution == t.to {
+			continue
+		}
+		for j := range pl.Translate.LeaveOut {
+			own := &pl.Translate.LeaveOut[j]
+			if o.GroupVersionKind().Group == own.Group && o.GetKind() == own.Kind && o.GetNamespace() == own.Namespace && o.GetName() == own.Name {
+				return own
+			}
+		}
+	}
+	return nil
 }
 
 // cloudResource decides what happens to an object of an operator that creates cloud resources, like an ACK Bucket
@@ -486,13 +522,13 @@ func (t *translator) cloudResource(o *unstructured.Unstructured, inSet bool) {
 	gvk := o.GroupVersionKind()
 	op, owner := t.m.CloudResourceOperator(gvk.Group)
 	ref := gvk.Kind + " " + qualified(o)
-	cr := CloudResource{Ref: ref, Operator: op.Name, Cloud: owner.Cloud, Retain: op.Retain.String()}
+	cr := CloudResource{Ref: ref, Operator: op.Name, Cloud: t.m.CloudName(owner.Distribution), Retain: op.Retain.String()}
 	if owner.Distribution == t.to {
 		t.r.CloudResources = append(t.r.CloudResources, cr)
 		return
 	}
 	// invoking bucketEquivalent for the target's equivalent where SetDrift knows one, its defined in buckets.go
-	eq, eqNotes := bucketEquivalent(o, t.to)
+	eq, eqNotes := bucketEquivalent(t.m, o, t.to)
 	options := []string{KeepSource, LeaveOut}
 	offer := ""
 	if eq != nil {
@@ -500,7 +536,7 @@ func (t *translator) cloudResource(o *unstructured.Unstructured, inSet bool) {
 		offer = fmt.Sprintf("; equivalent writes %s's own, a new, empty %s with the same name, versioning and public access", t.tgt.Name, strings.ToLower(eq[len(eq)-1].GetKind()))
 	}
 	what := fmt.Sprintf("%s (%s) manages a real %s resource through %s, which doesn't run on %s. keep-source leaves it with the source cluster, whose operator keeps managing it; leave-out drops it%s",
-		ref, gvk.Group, owner.Cloud, op.Name, t.tgt.Name, offer)
+		ref, gvk.Group, cr.Cloud, op.Name, t.tgt.Name, offer)
 	c := t.decide(Decision{Feature: "cloud-resource/" + gvk.Kind + "/" + qualified(o), What: what, Options: options, Basis: Fingerprint(o.Object)})
 	cr.Choice = c
 	if inSet && c != "" {
@@ -536,7 +572,7 @@ func (t *translator) networkPolicies(objs []*unstructured.Unstructured, engine s
 	// checking if the export doesnt say whether the source enforced them, if so theres no decision, only a note
 	if engine == netpolicy.Unknown {
 		t.r.Notes = append(t.r.Notes, fmt.Sprintf("the export doesn't record whether the source enforced its %s (export again with this version to record it). Make sure %s enforces them: %s",
-			text.Plural(n, "NetworkPolicy", "NetworkPolicies"), t.tgt.Name, netpolicy.HowToEnforce(string(t.to))))
+			text.Plural(n, "NetworkPolicy", "NetworkPolicies"), t.tgt.Name, t.tgt.Translate.NetworkPolicy.HowToEnforce))
 		return
 	}
 	if !netpolicy.Enforced(engine) {
@@ -910,7 +946,7 @@ func (t *translator) identity(ref string, o *unstructured.Unstructured) {
 		what := fmt.Sprintf("%s uses the %s identity %s (%s), and its Pods call %s services with it. keep-source federates the %s cluster to that identity, so the same calls work unchanged. Moving to %s services and a %s identity is a change to the app, outside SetDrift", ref, src, o.GetAnnotations()[k], k, src, t.tgt.Name, dst, dst)
 		if t.decide(Decision{Feature: "identity/" + qualified(o), What: what, Options: []string{KeepSource, LeaveOut}, Default: KeepSource, Basis: Fingerprint(o.Object)}) == KeepSource {
 			// invoking keptIdentity to read the identity, its defined in identity.go
-			if id, ok := keptIdentity(o); ok {
+			if id, ok := keptIdentity(t.m, o); ok {
 				t.kept[o.GetNamespace()+"/"+o.GetName()] = id
 			}
 			t.r.Notes = append(t.r.Notes, fmt.Sprintf("%s keeps its %s identity: in %s, trust the %s cluster's OIDC issuer for it, as RESTORE.md shows", ref, src, src, t.tgt.Name))
@@ -936,11 +972,7 @@ func (t *translator) secretStore(ref string, o *unstructured.Unstructured) {
 func clouds(m *capability.Map, ds []platform.Distribution) string {
 	var out []string
 	for _, d := range ds {
-		c := d.Name()
-		if p := m.For(d); p != nil && p.Cloud != "" {
-			c = p.Cloud
-		}
-		if !slices.Contains(out, c) {
+		if c := m.CloudName(d); !slices.Contains(out, c) {
 			out = append(out, c)
 		}
 	}

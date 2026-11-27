@@ -5,7 +5,8 @@ distribution: aks
 name: AKS
 # its code in a translation's name, like te2g for EKS to GKE
 code: a
-cloud: Azure
+cloud: azure
+aliases: [azure]
 markers:
   finalizerPrefixes:
     - kubernetes.azure.com/
@@ -19,6 +20,8 @@ markers:
   ingressClassAnnotations:
     - azure/application-gateway
     - webapprouting.kubernetes.azure.com
+    # Application Gateway for Containers' class, the one a translation to AKS writes
+    - azure-alb-external
   gatewayControllerPrefixes:
     - alb.networking.azure.io/
   storageProvisioners:
@@ -115,6 +118,16 @@ translate:
   nodes:
     pools: [kubernetes.azure.com/agentpool, agentpool, karpenter.sh/nodepool]
     spot: [{key: kubernetes.azure.com/scalesetpriority, value: spot, taint: true}, {key: karpenter.sh/capacity-type, value: spot}]
+  diskName: an Azure managed disk
+  oidcIssuerCommand: "ISSUER=$(az aks show --name <new cluster> --resource-group <resource group> --query oidcIssuerProfile.issuerUrl -o tsv)   # needs --enable-oidc-issuer on the cluster"
+  # acr-import: az acr import pulls each image from the source with a password, after the setup lines
+  images:
+    strategy: acr-import
+    setup:
+      - 'ACR=<your registry name>   # az acr create, or one you have; the cluster pulls from it once attached: az aks update --attach-acr "$ACR"'
+  createCommand: az-aks-create
+  networkPolicy:
+    howToEnforce: "choose a network policy engine for the cluster (az aks create --network-policy cilium, calico or azure; an existing cluster can switch to one with az aks update --network-policy)"
 
 # Copyright The SetDrift Authors
 # SPDX-License-Identifier: Apache-2.0

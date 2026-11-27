@@ -1,0 +1,117 @@
+# A representative AKS cluster as its export holds it, for TestRoundTripAllDirections: a storage class of its general SSD and a tuned one,
+# an internal load balancer, a public Ingress, a workload pinned to a node pool and one on spot, a workload using the cloud's identity, a NetworkPolicy and a ConfigMap
+# every platform in the capability map needs one, named for its distribution
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: fast
+parameters:
+  skuName: PremiumV2_LRS
+provisioner: disk.csi.azure.com
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: tuned
+parameters:
+  DiskIOPSReadWrite: "6000"
+  DiskMBpsReadWrite: "250"
+  cachingMode: None
+  skuName: PremiumV2_LRS
+provisioner: disk.csi.azure.com
+---
+apiVersion: v1
+kind: Service
+metadata:
+  annotations:
+    service.beta.kubernetes.io/azure-load-balancer-internal: "true"
+  name: web-lb
+  namespace: shop
+spec:
+  ports:
+  - port: 80
+  type: LoadBalancer
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  annotations:
+    azure.workload.identity/client-id: 00000000-0000-0000-0000-000000000000
+  name: orders
+  namespace: shop
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orders
+  namespace: shop
+spec:
+  selector:
+    matchLabels:
+      app: orders
+  template:
+    metadata:
+      labels:
+        app: orders
+    spec:
+      containers:
+      - image: busybox
+        name: orders
+        ports:
+        - containerPort: 8080
+      nodeSelector:
+        kubernetes.azure.com/agentpool: batch
+      serviceAccountName: orders
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: batch
+  namespace: shop
+spec:
+  selector:
+    matchLabels:
+      app: batch
+  template:
+    metadata:
+      labels:
+        app: batch
+    spec:
+      containers:
+      - image: busybox
+        name: batch
+      nodeSelector:
+        kubernetes.azure.com/scalesetpriority: spot
+      tolerations:
+      - effect: NoSchedule
+        key: kubernetes.azure.com/scalesetpriority
+        operator: Equal
+        value: spot
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deny-all
+  namespace: shop
+spec:
+  podSelector: {}
+---
+apiVersion: v1
+data:
+  mode: prod
+kind: ConfigMap
+metadata:
+  name: settings
+  namespace: shop
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: web
+  namespace: shop
+spec:
+  ingressClassName: azure-alb-external
+  rules:
+  - host: shop.example.com
+# Copyright The SetDrift Authors
+# SPDX-License-Identifier: Apache-2.0

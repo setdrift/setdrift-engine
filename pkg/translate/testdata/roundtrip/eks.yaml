@@ -1,0 +1,114 @@
+# A representative EKS cluster as its export holds it, for TestRoundTripAllDirections: a storage class of its general SSD and a tuned one,
+# an internal load balancer, a public Ingress, a workload pinned to a node pool and one on spot, a workload using the cloud's identity, a NetworkPolicy and a ConfigMap
+# every platform in the capability map needs one, named for its distribution
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: fast
+parameters:
+  type: gp3
+provisioner: ebs.csi.eks.amazonaws.com
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: tuned
+parameters:
+  iops: "6000"
+  throughput: "250"
+  type: gp3
+provisioner: ebs.csi.eks.amazonaws.com
+---
+apiVersion: v1
+kind: Service
+metadata:
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-scheme: internal
+  name: web-lb
+  namespace: shop
+spec:
+  loadBalancerClass: eks.amazonaws.com/nlb
+  ports:
+  - port: 80
+  type: LoadBalancer
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::111122223333:role/orders
+  name: orders
+  namespace: shop
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orders
+  namespace: shop
+spec:
+  selector:
+    matchLabels:
+      app: orders
+  template:
+    metadata:
+      labels:
+        app: orders
+    spec:
+      containers:
+      - image: busybox
+        name: orders
+        ports:
+        - containerPort: 8080
+      nodeSelector:
+        eks.amazonaws.com/nodegroup: batch
+      serviceAccountName: orders
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: batch
+  namespace: shop
+spec:
+  selector:
+    matchLabels:
+      app: batch
+  template:
+    metadata:
+      labels:
+        app: batch
+    spec:
+      containers:
+      - image: busybox
+        name: batch
+      nodeSelector:
+        eks.amazonaws.com/capacityType: SPOT
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deny-all
+  namespace: shop
+spec:
+  podSelector: {}
+---
+apiVersion: v1
+data:
+  mode: prod
+kind: ConfigMap
+metadata:
+  name: settings
+  namespace: shop
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+  name: web
+  namespace: shop
+spec:
+  ingressClassName: alb
+  rules:
+  - host: shop.example.com
+# Copyright The SetDrift Authors
+# SPDX-License-Identifier: Apache-2.0
