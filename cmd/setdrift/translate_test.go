@@ -7,17 +7,22 @@ import (
 	"strings"
 	"testing"
 
+	"setdrift.io/setdrift-engine/pkg/capability"
 	"setdrift.io/setdrift-engine/pkg/platform"
 )
 
 func TestTargetPlatformTakesPlatformsAndClouds(t *testing.T) {
+	m, err := capability.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
 	for in, want := range map[string]platform.Distribution{"gke": platform.GKE, "GCP": platform.GKE, " aws ": platform.EKS, "azure": platform.AKS, "AKS": platform.AKS} {
-		if got, err := targetPlatform(in); err != nil || got != want {
+		if got, err := targetPlatform(m, in); err != nil || got != want {
 			t.Errorf("%q: got %q, %v", in, got, err)
 		}
 	}
-	for in, want := range map[string]string{"": "--to is required", "null": `not "null"`, "openshift": "eks, aks or gke"} {
-		if _, err := targetPlatform(in); err == nil || !strings.Contains(err.Error(), want) {
+	for in, want := range map[string]string{"": "--to is required", "null": `not "null"`, "openshift": "aks, eks or gke"} {
+		if _, err := targetPlatform(m, in); err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("%q: got %v, want an error containing %q", in, err, want)
 		}
 	}

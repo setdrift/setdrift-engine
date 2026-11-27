@@ -19,6 +19,7 @@ import (
 	"k8s.io/client-go/dynamic"
 
 	"setdrift.io/setdrift-engine/internal/text"
+	"setdrift.io/setdrift-engine/pkg/capability"
 	"setdrift.io/setdrift-engine/pkg/netpolicy"
 	"setdrift.io/setdrift-engine/pkg/translate"
 	"setdrift.io/setdrift-engine/pkg/verify"
@@ -93,7 +94,11 @@ func checkNetworkPolicies(policies int, source, target, unknownWhy, idle, accept
 	}
 	c := &networkPolicyCheck{Policies: policies, Source: source, Target: target, TargetUnknown: unknownWhy}
 	n := text.Plural(policies, "NetworkPolicy", "NetworkPolicies")
-	how := netpolicy.HowToEnforce(distribution)
+	how := "run a network policy engine, like Calico or Cilium"
+	// invoking capability.Load for how this cluster's platform switches enforcement on, its defined in pkg/capability/capability.go
+	if m, err := capability.Load(); err == nil {
+		how = m.HowToEnforce(distribution)
+	}
 	switch {
 	case netpolicy.Enforced(target):
 		c.Message = fmt.Sprintf("%s enforced here by %s.", n, target)

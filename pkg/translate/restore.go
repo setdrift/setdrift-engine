@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"setdrift.io/setdrift-engine/internal/text"
-	"setdrift.io/setdrift-engine/pkg/netpolicy"
+	"setdrift.io/setdrift-engine/pkg/capability"
 	"setdrift.io/setdrift-engine/pkg/platform"
 )
 
@@ -38,7 +38,7 @@ func restore(r *Result, ri RestoreInfo) string {
 	fmt.Fprintf(&b, "Everything in the export comes over, translated for %s (README.md says what changed), except these, and why.\n\n", to)
 	b.WriteString("| What | Why | What to do |\n|---|---|---|\n")
 	for _, v := range ri.Volumes {
-		fmt.Fprintf(&b, "| The data in claim %s | Its disk is %s, and a %s node can't attach it. The claim comes over and gets a new, empty disk | Copy the data with Velero (file system backup with Kopia) or the app's own tools, like a database's dump or replication |\n", v, diskOf(r.From), to)
+		fmt.Fprintf(&b, "| The data in claim %s | Its disk is %s, and a %s node can't attach it. The claim comes over and gets a new, empty disk | Copy the data with Velero (file system backup with Kopia) or the app's own tools, like a database's dump or replication |\n", v, diskOf(r.capMap(), r.From), to)
 	}
 	for _, p := range r.Patches {
 		// checking if its a deleted object other than a cloud resource, those have rows of their own below
@@ -83,7 +83,7 @@ func restore(r *Result, ri RestoreInfo) string {
 	if r.NetworkPolicyEngine != "" {
 		next("Turn on network policy enforcement")
 		fmt.Fprintf(&b, "The source enforced its %s with %s. On a %s cluster that doesn't enforce them, they apply and do nothing, so turn enforcement on before applying: %s.\n\n",
-			text.Plural(r.NetworkPolicies, "NetworkPolicy", "NetworkPolicies"), r.NetworkPolicyEngine, to, netpolicy.HowToEnforce(string(r.To)))
+			text.Plural(r.NetworkPolicies, "NetworkPolicy", "NetworkPolicies"), r.NetworkPolicyEngine, to, r.capMap().For(r.To).Translate.NetworkPolicy.HowToEnforce)
 		if NetworkPolicyChoice(r.Decisions) == AcceptUnenforced {
 			fmt.Fprintf(&b, "**%s accepts them unenforced** (%s is accept-unenforced), so `setdrift verify` passes on a cluster that doesn't enforce them, and says so every run. Set it back to require once enforcement is on.\n\n", DecisionsFile, NetworkPolicyFeature)
 		} else {
@@ -96,17 +96,17 @@ func restore(r *Result, ri RestoreInfo) string {
 
 	if len(r.Identities) > 0 {
 		next(TrustStep)
-		fmt.Fprintf(&b, "These ServiceAccounts keep their cloud identity, as decided in %s, and their Pods already carry the token and settings to use it (README.md). What's left is the cloud's side, trusting this %s cluster's OIDC issuer for each. First get the issuer.\n\n```sh\n%s\n```\n\n", DecisionsFile, to, issuerCommand(r.To))
+		fmt.Fprintf(&b, "These ServiceAccounts keep their cloud identity, as decided in %s, and their Pods already carry the token and settings to use it (README.md). What's left is the cloud's side, trusting this %s cluster's OIDC issuer for each. First get the issuer.\n\n```sh\n%s\n```\n\n", DecisionsFile, to, r.capMap().For(r.To).Translate.OIDCIssuerCommand)
 		for _, id := range r.Identities {
 			// invoking trustSteps to write the commands for the identity's cloud, its defined below
-			b.WriteString(trustSteps(id))
+			b.WriteString(trustSteps(r.capMap(), id))
 		}
 	}
 
 	if len(r.Images) > 0 {
 		next("Copy the images")
 		// invoking imagesStep for the commands, its defined in images.go
-		imagesStep(&b, r.Images, r.To, r.Dir)
+		imagesStep(r.capMap(), &b, r.Images, r.To, r.Dir)
 	}
 
 	next("Apply the translation")
@@ -144,58 +144,22 @@ func cloudResourceRow(c CloudResource, to string) (why, todo string) {
 	return "Left out, as decided in " + DecisionsFile, "Nothing on the new cluster manages it. Before you ever delete the source cluster or the object, set " + c.Retain + " on it if the resource must stay"
 }
 
-// diskOf names the disks of a platform's block storage, for the volumes that stay behind
-func diskOf(d platform.Distribution) string {
-	switch d {
-	case platform.EKS:
-		return "an AWS EBS volume"
-	case platform.AKS:
-		return "an Azure managed disk"
-	case platform.GKE:
-		return "a Google Cloud persistent disk"
+// diskOf names the disks of a platform's block storage, for the volumes that stay behind, generic for a source the map doesnt know, like a local cluster
+func diskOf(m *capability.Map, d platform.Distribution) string {
+	if p := m.For(d); p != nil {
+		return p.Translate.DiskName
 	}
 	return "on the source cluster's storage"
 }
 
-// issuerCommand gives back the command that prints the new cluster's OIDC issuer on the target platform
-func issuerCommand(d platform.Distribution) string {
-	switch d {
-	case platform.GKE:
-		return "ISSUER=$(gcloud container clusters describe <new cluster> --location <location> --format='value(selfLink)')"
-	case platform.AKS:
-		return "ISSUER=$(az aks show --name <new cluster> --resource-group <resource group> --query oidcIssuerProfile.issuerUrl -o tsv)   # needs --enable-oidc-issuer on the cluster"
-	case platform.EKS:
-		return "ISSUER=$(aws eks describe-cluster --name <new cluster> --query cluster.identity.oidc.issuer --output text)"
-	}
-	return "ISSUER=<the cluster's OIDC issuer URL>"
-}
-
-// trustSteps writes the commands that make an identity's cloud trust the new cluster for one ServiceAccount
-func trustSteps(id Identity) string {
-	subject := "system:serviceaccount:" + id.Namespace + ":" + id.ServiceAccount
+// trustSteps writes the commands that make an identity's cloud trust the new cluster for one ServiceAccount, by the cloud's trust strategy
+func trustSteps(m *capability.Map, id Identity) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "**%s/%s**", id.Namespace, id.ServiceAccount)
-	switch id.Cloud {
-	case "aws":
-		account := ""
-		if parts := strings.Split(id.ID, ":"); len(parts) >= 5 {
-			account = parts[4]
+	if c := m.Cloud(id.Cloud); c != nil {
+		if write := trusts[c.Identity.Trust]; write != nil {
+			write(&b, id, "system:serviceaccount:"+id.Namespace+":"+id.ServiceAccount)
 		}
-		role := id.ID[strings.LastIndex(id.ID, "/")+1:]
-		fmt.Fprintf(&b, " keeps AWS IAM role `%s`. Register the issuer with AWS IAM once, then add a statement to the role's trust policy (`aws iam get-role --role-name %s` shows it; keep its other statements).\n\n", id.ID, shq(role))
-		fmt.Fprintf(&b, "```sh\naws iam create-open-id-connect-provider --url \"$ISSUER\" --client-id-list sts.amazonaws.com\n```\n\n")
-		fmt.Fprintf(&b, "```json\n{\n  \"Effect\": \"Allow\",\n  \"Principal\": {\"Federated\": \"arn:aws:iam::%s:oidc-provider/<ISSUER without https://>\"},\n  \"Action\": \"sts:AssumeRoleWithWebIdentity\",\n  \"Condition\": {\"StringEquals\": {\n    \"<ISSUER without https://>:sub\": \"%s\",\n    \"<ISSUER without https://>:aud\": \"sts.amazonaws.com\"\n  }}\n}\n```\n\n", account, subject)
-	case "azure":
-		find := "`az identity list` finds the identity with this client ID, and its name and resource group"
-		// checking if the client ID is a GUID, as Azure's are, if so the lookup names it, anything else from the cluster stays out of a command
-		if azureGUID.MatchString(id.ID) {
-			find = fmt.Sprintf("`az identity list --query \"[?clientId=='%s']\"` finds the identity's name and resource group", id.ID)
-		}
-		fmt.Fprintf(&b, " keeps Azure managed identity `%s`. Add a federated credential for the new cluster (%s).\n\n", id.ID, find)
-		fmt.Fprintf(&b, "```sh\naz identity federated-credential create --name %s-%s --identity-name <identity name> --resource-group <resource group> \\\n  --issuer \"$ISSUER\" --subject %s --audiences api://AzureADTokenExchange\n```\n\n", id.Namespace, id.ServiceAccount, subject)
-	case "gcp":
-		fmt.Fprintf(&b, " keeps Google service account `%s`. Google Cloud federates another cluster through a workload identity pool and a credential configuration file, which isn't added to the Pods for you. Create the pool's provider for the issuer and let the ServiceAccount act as the Google service account, then follow Google's guide to mount the configuration (create-cred-config) and a projected token, with GOOGLE_APPLICATION_CREDENTIALS pointing at it.\n\n", id.ID)
-		fmt.Fprintf(&b, "```sh\ngcloud iam workload-identity-pools providers create-oidc <provider> --location global --workload-identity-pool <pool> \\\n  --issuer-uri \"$ISSUER\" --attribute-mapping google.subject=assertion.sub\ngcloud iam service-accounts add-iam-policy-binding %s --role roles/iam.workloadIdentityUser \\\n  --member \"principal://iam.googleapis.com/projects/<project number>/locations/global/workloadIdentityPools/<pool>/subject/%s\"\n```\n\n", shq(id.ID), subject)
 	}
 	return b.String()
 }

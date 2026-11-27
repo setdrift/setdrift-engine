@@ -5,7 +5,9 @@ distribution: eks
 name: EKS
 # its code in a translation's name, like te2g for EKS to GKE
 code: e
-cloud: AWS
+cloud: aws
+# what --to accepts for it, besides its distribution
+aliases: [aws]
 markers:
   finalizerPrefixes:
     - service.eks.amazonaws.com/
@@ -123,6 +125,25 @@ translate:
   nodes:
     pools: [eks.amazonaws.com/nodegroup, karpenter.sh/nodepool]
     spot: [{key: eks.amazonaws.com/capacityType, value: SPOT}, {key: karpenter.sh/capacity-type, value: spot}]
+  # what its block storage's disks are called, for the volumes that stay behind
+  diskName: an AWS EBS volume
+  # the command that prints a new cluster's OIDC issuer, for the clouds that trust it
+  oidcIssuerCommand: "ISSUER=$(aws eks describe-cluster --name <new cluster> --query cluster.identity.oidc.issuer --output text)"
+  # how RESTORE.md copies images to this platform's registry: crane copies them after the setup lines, creating each repository first where createRepository says how
+  images:
+    strategy: crane
+    setup:
+      - "REGISTRY=<account>.dkr.ecr.<region>.amazonaws.com   # the cluster's account and region; EKS nodes pull from it"
+      - 'aws ecr get-login-password --region <region> | crane auth login "$REGISTRY" -u AWS --password-stdin'
+    createRepository: "aws ecr create-repository --repository-name {repository} --region <region> >/dev/null"
+  # the command RESTORE.md writes to create the target cluster, none where it points to the cloud's docs
+  createCommand: none
+  networkPolicy:
+    # how to switch enforcement on, for the messages and RESTORE.md
+    howToEnforce: 'turn on the VPC CNI''s network policy agent: on the VPC CNI add-on, set enableNetworkPolicy to "true" in its configuration; on EKS Auto Mode, create the ConfigMap amazon-vpc-cni in kube-system with enable-network-policy-controller: "true"'
+  # this platform's own objects, which nothing reads on another, left out of a translation to it
+  leaveOut:
+    - {kind: ConfigMap, namespace: kube-system, name: amazon-vpc-cni, what: "EKS's VPC CNI settings", then: "Network policy enforcement there is a step of RESTORE.md"}
 
 # Copyright The SetDrift Authors
 # SPDX-License-Identifier: Apache-2.0

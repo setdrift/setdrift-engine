@@ -48,7 +48,12 @@ func newTranslateCmd() *cobra.Command {
 			return o.run(cmd, args[0])
 		},
 	}
-	cmd.Flags().StringVar(&o.to, "to", "", "the platform to translate for: eks, aks or gke")
+	// the platforms the help names are the capability map's, so a new platform is named without a change here
+	to := "the platform to translate for"
+	if m, err := capability.Load(); err == nil {
+		to += ": " + m.Names("or")
+	}
+	cmd.Flags().StringVar(&o.to, "to", "", to)
 	cmd.Flags().StringVar(&o.unmatched, "unmatched", "", "one choice for every undecided feature with no 1:1 equivalent: keep-source or leave-out")
 	cmd.Flags().BoolVar(&o.acceptUnenforced, "accept-unenforced-network-policies", false,
 		"choose accept-unenforced for the export's NetworkPolicies, so setdrift verify passes on a target that doesn't enforce them (for an emergency; recorded in translate-decisions.yaml)")
@@ -61,8 +66,13 @@ func newTranslateCmd() *cobra.Command {
 //
 //revive:disable-next-line:cognitive-complexity,function-length the command in order, from flags to report; split by step after v0.3.0 (BACKLOG)
 func (o *translateOptions) run(cmd *cobra.Command, dir string) error {
+	// invoking capability.Load to read the capability map built into the binary, its defined in pkg/capability/capability.go
+	m, err := capability.Load()
+	if err != nil {
+		return err
+	}
 	// invoking targetPlatform to read --to, a platform or its cloud's name, its defined below
-	to, err := targetPlatform(o.to)
+	to, err := targetPlatform(m, o.to)
 	if err != nil {
 		return err
 	}
@@ -87,11 +97,6 @@ func (o *translateOptions) run(cmd *cobra.Command, dir string) error {
 	}
 	// invoking kustomize.ReadExportInfo to learn which platform the export came from, its defined in pkg/emit/kustomize/exportinfo.go
 	info, err := kustomize.ReadExportInfo(root)
-	if err != nil {
-		return err
-	}
-	// invoking capability.Load to read the capability map built into the binary, its defined in pkg/capability/capability.go
-	m, err := capability.Load()
 	if err != nil {
 		return err
 	}
@@ -232,19 +237,15 @@ func (o *translateOptions) run(cmd *cobra.Command, dir string) error {
 	return nil
 }
 
-// targetPlatform reads --to, eks, aks or gke, or the cloud's name, aws, azure or gcp, without regard to case
-func targetPlatform(s string) (platform.Distribution, error) {
-	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "":
-		return platform.Unknown, errors.New("--to is required: the platform to translate for, eks, aks or gke")
-	case "eks", "aws":
-		return platform.EKS, nil
-	case "aks", "azure":
-		return platform.AKS, nil
-	case "gke", "gcp", "google", "google-cloud":
-		return platform.GKE, nil
+// targetPlatform reads --to, a platform's distribution or an alias the capability map gives it, like gke or gcp, without regard to case
+func targetPlatform(m *capability.Map, s string) (platform.Distribution, error) {
+	if strings.TrimSpace(s) == "" {
+		return platform.Unknown, errors.New("--to is required: the platform to translate for, " + m.Names("or"))
 	}
-	return platform.Unknown, fmt.Errorf("--to must be eks, aks or gke (or aws, azure, gcp), not %q", s)
+	if d, ok := m.Distribution(s); ok {
+		return d, nil
+	}
+	return platform.Unknown, fmt.Errorf("--to must be %s (or %s), not %q", m.Names("or"), m.AliasNames(), s)
 }
 
 // checkExportPath says plainly what dir is when its no export, missing, a snapshot file or another file

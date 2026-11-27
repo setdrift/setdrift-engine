@@ -4,7 +4,8 @@ distribution: gke
 name: GKE
 # its code in a translation's name, like te2g for EKS to GKE
 code: g
-cloud: Google Cloud
+cloud: gcp
+aliases: [gcp, google, google-cloud]
 markers:
   finalizerPrefixes:
     - networking.gke.io/
@@ -105,6 +106,16 @@ translate:
   nodes:
     pools: [cloud.google.com/gke-nodepool]
     spot: [{key: cloud.google.com/gke-spot, value: "true", taint: true}]
+  diskName: a Google Cloud persistent disk
+  oidcIssuerCommand: "ISSUER=$(gcloud container clusters describe <new cluster> --location <location> --format='value(selfLink)')"
+  images:
+    strategy: crane
+    setup:
+      - "REGISTRY=<location>-docker.pkg.dev/<project>/<repository>   # an Artifact Registry Docker repository; GKE's nodes pull from their own project's"
+      - 'gcloud auth print-access-token | crane auth login "${REGISTRY%%/*}" -u oauth2accesstoken --password-stdin'
+  createCommand: none
+  networkPolicy:
+    howToEnforce: "use GKE Dataplane V2 (gcloud container clusters create --enable-dataplane-v2), or on an existing cluster without it, turn on network policy enforcement (gcloud container clusters update --update-addons=NetworkPolicy=ENABLED, then --enable-network-policy, and if the nodes don't pick it up, recreate them, like gcloud container clusters upgrade --node-pool <pool>)"
 
 # Copyright The SetDrift Authors
 # SPDX-License-Identifier: Apache-2.0

@@ -1,0 +1,22 @@
+# What belongs to Google Cloud as a cloud, whichever Kubernetes platform on it
+# runs the workloads. A platform names its cloud with cloud: gcp.
+id: gcp
+name: Google Cloud
+identity:
+  annotation: iam.gke.io/gcp-service-account
+  # credential-file: another cluster federates through a credential configuration file, so nothing is injected and RESTORE.md has the steps
+  federation: credential-file
+  trust: gcp-workload-identity-pool
+registry:
+  hosts: ['^(?:[a-z0-9-]+-docker\.pkg\.dev|(?:[a-z]+\.)?gcr\.io)$']
+  login: {user: oauth2accesstoken, password: "gcloud auth print-access-token"}
+  # well-known public repositories on its hosts, pulled from anywhere without credentials
+  publicRepositories: ["gcr.io/google-samples/", "gcr.io/google-containers/", "gcr.io/distroless/", "gcr.io/kaniko-project/", "gcr.io/cloud-builders/", "gcr.io/k8s-staging-"]
+secretManager:
+  format: gcp-secrets
+  provider: gcp
+  nameCharacters: A-Za-z0-9_-
+buckets: config-connector
+
+# Copyright The SetDrift Authors
+# SPDX-License-Identifier: Apache-2.0

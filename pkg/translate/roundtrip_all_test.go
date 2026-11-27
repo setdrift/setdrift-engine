@@ -3,6 +3,7 @@ package translate
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
@@ -13,69 +14,17 @@ import (
 	"setdrift.io/setdrift-engine/pkg/platform"
 )
 
-// cluster builds a representative cluster of a platform as its export holds it: a storage class of its general SSD, an internal load balancer,
-// a workload pinned to a node pool on spot, a workload using the platform's cloud identity, a NetworkPolicy and a ConfigMap
+// cluster reads a representative cluster of a platform as its export holds it, from testdata/roundtrip/<distribution>.yaml
+// every platform in the capability map needs one, so a new platform is in every direction of the round trip from the start
 func cluster(t *testing.T, d platform.Distribution) []*unstructured.Unstructured {
 	t.Helper()
-	var class, tuned, lb, pool, spot, saAnn string
-	// a platform that taints its spot nodes has the toleration on a workload pinned to them, as it must to run there
-	tol := ""
-	switch d {
-	case platform.EKS:
-		class = "provisioner: ebs.csi.eks.amazonaws.com\nparameters: {type: gp3}"
-		tuned = "provisioner: ebs.csi.eks.amazonaws.com\nparameters: {type: gp3, iops: \"6000\", throughput: \"250\"}"
-		lb = "annotations: {service.beta.kubernetes.io/aws-load-balancer-scheme: internal}}\nspec: {type: LoadBalancer, loadBalancerClass: eks.amazonaws.com/nlb, ports: [{port: 80}]}"
-		pool, spot = "eks.amazonaws.com/nodegroup", "{eks.amazonaws.com/capacityType: SPOT}"
-		saAnn = "eks.amazonaws.com/role-arn: arn:aws:iam::111122223333:role/orders"
-	case platform.GKE:
-		class = "provisioner: pd.csi.storage.gke.io\nparameters: {type: pd-balanced}"
-		tuned = "provisioner: pd.csi.storage.gke.io\nparameters: {type: pd-ssd}"
-		lb = "annotations: {networking.gke.io/load-balancer-type: Internal}}\nspec: {type: LoadBalancer, ports: [{port: 80}]}"
-		pool, spot = "cloud.google.com/gke-nodepool", "{cloud.google.com/gke-spot: \"true\"}"
-		tol = `
-      tolerations: [{key: cloud.google.com/gke-spot, operator: Equal, value: "true", effect: NoSchedule}]`
-		saAnn = "iam.gke.io/gcp-service-account: orders@iam.gserviceaccount.com"
-	case platform.AKS:
-		class = "provisioner: disk.csi.azure.com\nparameters: {skuName: PremiumV2_LRS}"
-		tuned = "provisioner: disk.csi.azure.com\nparameters: {skuName: PremiumV2_LRS, cachingMode: None, DiskIOPSReadWrite: \"6000\", DiskMBpsReadWrite: \"250\"}"
-		lb = "annotations: {service.beta.kubernetes.io/azure-load-balancer-internal: \"true\"}}\nspec: {type: LoadBalancer, ports: [{port: 80}]}"
-		pool, spot = "kubernetes.azure.com/agentpool", "{kubernetes.azure.com/scalesetpriority: spot}"
-		tol = `
-      tolerations: [{key: kubernetes.azure.com/scalesetpriority, operator: Equal, value: spot, effect: NoSchedule}]`
-		saAnn = "azure.workload.identity/client-id: 00000000-0000-0000-0000-000000000000"
-	}
-	docs := []string{
-		"apiVersion: storage.k8s.io/v1\nkind: StorageClass\nmetadata: {name: fast}\n" + class,
-		"apiVersion: storage.k8s.io/v1\nkind: StorageClass\nmetadata: {name: tuned}\n" + tuned,
-		"apiVersion: v1\nkind: Service\nmetadata: {name: web-lb, namespace: shop, " + lb,
-		"apiVersion: v1\nkind: ServiceAccount\nmetadata: {name: orders, namespace: shop, annotations: {" + saAnn + "}}",
-		`apiVersion: apps/v1
-kind: Deployment
-metadata: {name: orders, namespace: shop}
-spec:
-  selector: {matchLabels: {app: orders}}
-  template:
-    metadata: {labels: {app: orders}}
-    spec:
-      serviceAccountName: orders
-      nodeSelector: {` + pool + `: batch}
-      containers: [{name: orders, image: busybox, ports: [{containerPort: 8080}]}]`,
-		`apiVersion: apps/v1
-kind: Deployment
-metadata: {name: batch, namespace: shop}
-spec:
-  selector: {matchLabels: {app: batch}}
-  template:
-    metadata: {labels: {app: batch}}
-    spec:
-      nodeSelector: ` + spot + tol + `
-      containers: [{name: batch, image: busybox}]`,
-		"apiVersion: networking.k8s.io/v1\nkind: NetworkPolicy\nmetadata: {name: deny-all, namespace: shop}\nspec: {podSelector: {}}",
-		"apiVersion: v1\nkind: ConfigMap\nmetadata: {name: settings, namespace: shop}\ndata: {mode: prod}",
+	b, err := os.ReadFile(filepath.Join("testdata", "roundtrip", string(d)+".yaml"))
+	if err != nil {
+		t.Fatalf("%s has no round-trip cluster: add testdata/roundtrip/%s.yaml, a representative cluster of it (%v)", d, d, err)
 	}
 	var out []*unstructured.Unstructured
-	for _, d := range docs {
-		out = append(out, u(t, d))
+	for _, doc := range strings.Split(string(b), "\n---\n") {
+		out = append(out, u(t, doc))
 	}
 	return out
 }
@@ -111,7 +60,10 @@ func jsonOf(m map[string]any) any {
 
 // every direction, there and back with every default, comes back exactly as it was, ROUNDTRIP=1 prints any difference
 func TestRoundTripAllDirections(t *testing.T) {
-	all := []platform.Distribution{platform.EKS, platform.AKS, platform.GKE}
+	var all []platform.Distribution
+	for _, p := range load(t).Platforms {
+		all = append(all, p.Distribution)
+	}
 	var report []string
 	for _, home := range all {
 		for _, away := range all {

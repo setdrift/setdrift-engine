@@ -13,6 +13,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
+	"setdrift.io/setdrift-engine/pkg/capability"
 	"setdrift.io/setdrift-engine/pkg/platform"
 )
 
@@ -85,10 +86,11 @@ const (
 	resourceGroupPlaceholder = "<resource group>"
 )
 
-// bucketEquivalent writes the target's bucket for o, with what to fill in and set by hand, nil when o isnt a bucket or the target has none SetDrift knows
-func bucketEquivalent(o *unstructured.Unstructured, to platform.Distribution) ([]*unstructured.Unstructured, []string) {
+// bucketEquivalent writes the target's bucket for o, by the target cloud's bucket strategy, with what to fill in and set by hand, nil when o isnt a bucket or the target has none SetDrift knows
+func bucketEquivalent(m *capability.Map, o *unstructured.Unstructured, to platform.Distribution) ([]*unstructured.Unstructured, []string) {
 	b, ok := readBucket(o)
-	if !ok {
+	c := m.CloudOf(to)
+	if !ok || c == nil || bucketWriters[c.Buckets] == nil {
 		return nil, nil
 	}
 	ns := o.GetNamespace()
@@ -102,56 +104,67 @@ func bucketEquivalent(o *unstructured.Unstructured, to platform.Distribution) ([
 	obj := func(apiVersion, kind, name string, spec map[string]any) *unstructured.Unstructured {
 		return &unstructured.Unstructured{Object: map[string]any{"apiVersion": apiVersion, "kind": kind, "metadata": meta(name), "spec": spec}}
 	}
-	var out []*unstructured.Unstructured
-	var notes []string
-	switch to {
-	case platform.EKS:
-		spec := map[string]any{"name": b.Name, "createBucketConfiguration": map[string]any{"locationConstraint": locationPlaceholder}}
-		if b.VersioningKnown {
-			spec["versioning"] = map[string]any{"status": map[bool]string{true: "Enabled", false: "Suspended"}[b.Versioning]}
-		}
-		if b.PublicKnown && b.PublicBlocked {
-			spec["publicAccessBlock"] = map[string]any{"blockPublicACLs": true, "blockPublicPolicy": true, "ignorePublicACLs": true, "restrictPublicBuckets": true}
-		}
-		out = append(out, obj("s3.services.k8s.aws/v1alpha1", "Bucket", o.GetName(), spec))
-		notes = append(notes, "set createBucketConfiguration.locationConstraint to the AWS region")
-	case platform.GKE:
-		spec := map[string]any{"resourceID": b.Name, "location": locationPlaceholder, "uniformBucketLevelAccess": true}
-		if b.VersioningKnown {
-			spec["versioning"] = map[string]any{"enabled": b.Versioning}
-		}
-		if b.PublicKnown {
-			spec["publicAccessPrevention"] = map[bool]string{true: "enforced", false: "inherited"}[b.PublicBlocked]
-		}
-		out = append(out, obj("storage.cnrm.cloud.google.com/v1beta1", "StorageBucket", o.GetName(), spec))
-		notes = append(notes, "set location to the Google Cloud location")
-	case platform.AKS:
-		// Azure keeps blobs in a container of a storage account, so the account and its blob service come with it
-		acct := storageAccountName(b.Name)
-		account := map[string]any{"location": locationPlaceholder, "kind": "StorageV2", "sku": map[string]any{"name": "Standard_LRS"},
-			"owner": map[string]any{"name": resourceGroupPlaceholder}}
-		if b.PublicKnown {
-			account["allowBlobPublicAccess"] = !b.PublicBlocked
-		}
-		svc := map[string]any{"owner": map[string]any{"name": acct}}
-		if b.VersioningKnown {
-			svc["isVersioningEnabled"] = b.Versioning
-		}
-		container := map[string]any{"azureName": containerName(b.Name), "owner": map[string]any{"name": acct + "-blob"}}
-		if b.PublicKnown && b.PublicBlocked {
-			container["publicAccess"] = "None"
-		}
-		out = append(out,
-			obj("storage.azure.com/v1api20230101", "StorageAccount", acct, account),
-			obj("storage.azure.com/v1api20230101", "StorageAccountsBlobService", acct+"-blob", svc),
-			obj("storage.azure.com/v1api20230101", "StorageAccountsBlobServicesContainer", o.GetName(), container))
-		notes = append(notes, fmt.Sprintf("set the storage account %s's location to the Azure region and owner.name to its Azure Service Operator ResourceGroup (or owner.armId to an existing one)", acct))
-	default:
-		return nil, nil
-	}
+	// invoking the cloud's bucket writer, theyre listed in strategies.go and defined below
+	out, notes := bucketWriters[c.Buckets](o, b, obj)
 	if len(b.Unmapped) > 0 {
 		notes = append(notes, "set by hand what didn't carry over: "+strings.Join(b.Unmapped, ", "))
 	}
+	return out, notes
+}
+
+// newObject makes an object of the target's for a bucket equivalent, in the source object's namespace
+type newObject func(apiVersion, kind, name string, spec map[string]any) *unstructured.Unstructured
+
+// ackS3Bucket writes an ACK Bucket, an S3 bucket on AWS
+func ackS3Bucket(o *unstructured.Unstructured, b bucket, obj newObject) (out []*unstructured.Unstructured, notes []string) {
+	spec := map[string]any{"name": b.Name, "createBucketConfiguration": map[string]any{"locationConstraint": locationPlaceholder}}
+	if b.VersioningKnown {
+		spec["versioning"] = map[string]any{"status": map[bool]string{true: "Enabled", false: "Suspended"}[b.Versioning]}
+	}
+	if b.PublicKnown && b.PublicBlocked {
+		spec["publicAccessBlock"] = map[string]any{"blockPublicACLs": true, "blockPublicPolicy": true, "ignorePublicACLs": true, "restrictPublicBuckets": true}
+	}
+	out = append(out, obj("s3.services.k8s.aws/v1alpha1", "Bucket", o.GetName(), spec))
+	notes = append(notes, "set createBucketConfiguration.locationConstraint to the AWS region")
+	return out, notes
+}
+
+// configConnectorBucket writes a Config Connector StorageBucket, a Cloud Storage bucket on Google Cloud
+func configConnectorBucket(o *unstructured.Unstructured, b bucket, obj newObject) (out []*unstructured.Unstructured, notes []string) {
+	spec := map[string]any{"resourceID": b.Name, "location": locationPlaceholder, "uniformBucketLevelAccess": true}
+	if b.VersioningKnown {
+		spec["versioning"] = map[string]any{"enabled": b.Versioning}
+	}
+	if b.PublicKnown {
+		spec["publicAccessPrevention"] = map[bool]string{true: "enforced", false: "inherited"}[b.PublicBlocked]
+	}
+	out = append(out, obj("storage.cnrm.cloud.google.com/v1beta1", "StorageBucket", o.GetName(), spec))
+	notes = append(notes, "set location to the Google Cloud location")
+	return out, notes
+}
+
+// azureBlobContainer writes Azure Service Operator's storage account, blob service and container, Azure keeps blobs in a container of a storage account
+func azureBlobContainer(o *unstructured.Unstructured, b bucket, obj newObject) (out []*unstructured.Unstructured, notes []string) {
+	// Azure keeps blobs in a container of a storage account, so the account and its blob service come with it
+	acct := storageAccountName(b.Name)
+	account := map[string]any{"location": locationPlaceholder, "kind": "StorageV2", "sku": map[string]any{"name": "Standard_LRS"},
+		"owner": map[string]any{"name": resourceGroupPlaceholder}}
+	if b.PublicKnown {
+		account["allowBlobPublicAccess"] = !b.PublicBlocked
+	}
+	svc := map[string]any{"owner": map[string]any{"name": acct}}
+	if b.VersioningKnown {
+		svc["isVersioningEnabled"] = b.Versioning
+	}
+	container := map[string]any{"azureName": containerName(b.Name), "owner": map[string]any{"name": acct + "-blob"}}
+	if b.PublicKnown && b.PublicBlocked {
+		container["publicAccess"] = "None"
+	}
+	out = append(out,
+		obj("storage.azure.com/v1api20230101", "StorageAccount", acct, account),
+		obj("storage.azure.com/v1api20230101", "StorageAccountsBlobService", acct+"-blob", svc),
+		obj("storage.azure.com/v1api20230101", "StorageAccountsBlobServicesContainer", o.GetName(), container))
+	notes = append(notes, fmt.Sprintf("set the storage account %s's location to the Azure region and owner.name to its Azure Service Operator ResourceGroup (or owner.armId to an existing one)", acct))
 	return out, notes
 }
 
