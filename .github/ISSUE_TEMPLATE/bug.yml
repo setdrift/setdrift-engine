@@ -1,0 +1,50 @@
+name: Something's wrong
+description: setdrift did something it shouldn't, or didn't do what it should
+body:
+  - type: markdown
+    attributes:
+      value: Leave out secret values and account IDs. setdrift's output doesn't contain secret values, but logs from other tools might. A secret value in setdrift's output is a vulnerability, report it privately from the Security tab instead.
+  - type: input
+    id: version
+    attributes:
+      label: setdrift version
+      description: What `setdrift version` prints
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      description: The cluster's, or for translate, both
+      multiple: true
+      options:
+        - EKS
+        - AKS
+        - GKE
+        - kind
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: The command you ran
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: happened
+    attributes:
+      label: What happened
+      description: The output or the error, and the file it's in if it's in the export
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+
+# Copyright The SetDrift Authors
+# SPDX-License-Identifier: Apache-2.0
