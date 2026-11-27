@@ -1,0 +1,27 @@
+name: An idea
+description: Something you'd like setdrift to do
+body:
+  - type: textarea
+    id: goal
+    attributes:
+      label: What you're trying to do
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platforms
+      multiple: true
+      options:
+        - EKS
+        - AKS
+        - GKE
+        - kind
+        - Other
+  - type: textarea
+    id: today
+    attributes:
+      label: What you do today instead
+
+# Copyright The SetDrift Authors
+# SPDX-License-Identifier: Apache-2.0
